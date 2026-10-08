@@ -71,6 +71,10 @@ def _t(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+#: Software encoders: heavy on the CPU at the doubled frame rate.
+CPU_ENCODERS = frozenset({"libx265", "libsvtav1", "libx264"})
+
+
 def encoder_name(encoder: str) -> str:
     names = {
         "hevc_nvenc": _t("HEVC (NVIDIA GPU)"),
@@ -108,32 +112,59 @@ def target_rate(target: Target, src_fps: Fraction | None) -> Fraction | None:
     return src_fps * 2 if src_fps is not None else None
 
 
-def estimate_s(size: RenderSize, duration_s: float, rate: Fraction | None) -> float | None:
+def load_rate(src: Fraction, target: Fraction) -> Fraction:
+    """The interpolation work of ``src`` → ``target`` as a 2× output rate: the
+    frames that do not land on a source frame, times two. The same arithmetic as
+    ``buttereye.core.mpvctl.decide.load_rate`` (the GUI imports only the core API)."""
+    s = Fraction(src).limit_denominator(1001)
+    t = Fraction(target).limit_denominator(1001)
+    if s <= 0 or t <= s:
+        return Fraction(0)
+    return 2 * t * (1 - Fraction(1, (t / s).numerator))
+
+
+def estimate_s(
+    size: RenderSize,
+    duration_s: float,
+    rate: Fraction | None,
+    src_fps: Fraction | None = None,
+) -> float | None:
+    """Seconds to convert at ``rate``. ``est_fps`` is a 2× rate: another
+    multiplier is costed by the frames it interpolates (``load_rate``)."""
     if not size.est_fps or rate is None or duration_s <= 0:
         return None
-    return duration_s * float(rate) / size.est_fps
+    work = load_rate(src_fps, rate) if src_fps is not None and src_fps > 0 else rate
+    return duration_s * float(work or rate) / size.est_fps
 
 
 def size_label(
-    size: RenderSize, *, original: bool, duration_s: float, rate: Fraction | None
+    size: RenderSize,
+    *,
+    original: bool,
+    duration_s: float,
+    rate: Fraction | None,
+    src_fps: Fraction | None = None,
 ) -> str:
     if original:
         text = _t("Original ({w} × {h})").format(w=size.width, h=size.height)
     else:
         text = _t("{h}p ({w} × {hh})").format(h=size.height, w=size.width, hh=size.height)
-    est = estimate_s(size, duration_s, rate)
+    est = estimate_s(size, duration_s, rate, src_fps)
     if est is not None:
         text += " — " + fmt_duration(est)
     return text
 
 
 def default_size_index(
-    sizes: Sequence[RenderSize], duration_s: float, rate: Fraction | None
+    sizes: Sequence[RenderSize],
+    duration_s: float,
+    rate: Fraction | None,
+    src_fps: Fraction | None = None,
 ) -> int:
     if not sizes:
         return 0
     for i, s in enumerate(sizes):
-        est = estimate_s(s, duration_s, rate)
+        est = estimate_s(s, duration_s, rate, src_fps)
         if est is None:
             return 0 if i == 0 else i
         if est <= DEFAULT_SIZE_FACTOR * duration_s:
@@ -390,6 +421,12 @@ class ConvertDialog(QDialog):
         self._fill_sizes()
         for enc in probe.encoders:
             self.format_combo.addItem(encoder_name(enc), enc)
+            if enc in CPU_ENCODERS:
+                self.format_combo.setItemData(
+                    self.format_combo.count() - 1,
+                    _t("Runs on the CPU and keeps most of its cores busy while converting."),
+                    Qt.ItemDataRole.ToolTipRole,
+                )
         notes = [note_text(w.id, without_code(render(w.cause))) for w in probe.warnings]
         kept = _kept_text(probe)
         if kept:
@@ -412,11 +449,13 @@ class ConvertDialog(QDialog):
         self.size_combo.clear()
         rate = target_rate(self.target(), probe.fps)
         for i, s in enumerate(probe.sizes):
-            label = size_label(s, original=i == 0, duration_s=probe.duration_s, rate=rate)
+            label = size_label(
+                s, original=i == 0, duration_s=probe.duration_s, rate=rate, src_fps=probe.fps
+            )
             self.size_combo.addItem(label, size_key((s.width, s.height)))
         idx = self.size_combo.findData(keep) if keep is not None else -1
         if idx < 0:
-            idx = default_size_index(probe.sizes, probe.duration_s, rate)
+            idx = default_size_index(probe.sizes, probe.duration_s, rate, probe.fps)
         self.size_combo.setCurrentIndex(idx)
         self.size_combo.blockSignals(False)
 
@@ -589,6 +628,7 @@ __all__ = [
     "fmt_duration",
     "copy_target",
     "target_rate",
+    "load_rate",
     "estimate_s",
     "size_label",
     "default_size_index",

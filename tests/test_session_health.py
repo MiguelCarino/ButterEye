@@ -237,6 +237,21 @@ NTSC = Fraction(24000, 1001)
 @pytest.mark.parametrize(
     ("src", "hz", "expected"),
     [
+        (NTSC, 119.88, Fraction(60000, 1001)),  # the lowest refresh/k that doubles
+        (NTSC, 180.0, Fraction(60)),  # refresh/3 (2.5x), not refresh/2 (3.75x)
+        (Fraction(24), 144.0, Fraction(48)),  # 144/3, an exact 2x
+        (NTSC, 60.0, Fraction(60)),  # 2.5x
+        (Fraction(50), 60.0, Fraction(60)),  # no refresh/k doubles: the highest one
+    ],
+)
+def test_display_target(src: Fraction, hz: float, expected: Fraction) -> None:
+    tc = decide.choose_target(src, hz, TargetKind.DISPLAY)
+    assert tc.bypass is None and tc.target == expected
+
+
+@pytest.mark.parametrize(
+    ("src", "hz", "expected"),
+    [
         (NTSC, 119.88, Fraction(120000, 1001)),  # 5x on 120 Hz
         (NTSC, 180.0, Fraction(90)),  # refresh/2 (3.75x) rather than 7.5x
         (Fraction(24), 144.0, Fraction(72)),  # 6x too high → 144/2
@@ -244,8 +259,8 @@ NTSC = Fraction(24000, 1001)
         (Fraction(50), 60.0, Fraction(60)),
     ],
 )
-def test_display_target(src: Fraction, hz: float, expected: Fraction) -> None:
-    tc = decide.choose_target(src, hz, TargetKind.DISPLAY)
+def test_display_max_target(src: Fraction, hz: float, expected: Fraction) -> None:
+    tc = decide.choose_target(src, hz, TargetKind.DISPLAY_MAX)
     assert tc.bypass is None and tc.target == expected
 
 
@@ -263,11 +278,15 @@ def test_targets_bypass_and_caps() -> None:
     assert decide.choose_target(Fraction(60), None, TargetKind.FPS, Fraction(30)).bypass is (
         BypassReason.ALREADY_AT_RATE
     )
-    # benchmark cap: 120 Hz with only 72 fps sustainable → 60 (k=2)
+    # benchmark cap (a 2x rate): 23.976 → 60 infers almost every frame (~120 at
+    # 2x), so 72 sustainable keeps plain 2x
     capped = decide.choose_target(NTSC, 120.0, TargetKind.DISPLAY, sustainable_fps=72.0)
-    assert capped.target == Fraction(60)
+    assert capped.target == NTSC * 2
+    roomy = decide.choose_target(NTSC, 120.0, TargetKind.DISPLAY_MAX, sustainable_fps=125.0)
+    assert roomy.target == Fraction(60)  # 120 needs 2x 96 inferences/s; 60 fits
+    # 24 → 30/40 costs as many inferences as 2x: a lower refresh/k does not help
     low = decide.choose_target(NTSC, 120.0, TargetKind.DISPLAY, sustainable_fps=30.0)
-    assert low.target == Fraction(30)  # the highest refresh/k under the cap (k=4)
+    assert low.bypass is BypassReason.NO_REALTIME
     none = decide.choose_target(NTSC, 120.0, TargetKind.DISPLAY, sustainable_fps=20.0)
     assert none.bypass is BypassReason.NO_REALTIME
     assert decide.choose_target(NTSC, None, TargetKind.X2, sustainable_fps=40.0).bypass is (
@@ -354,6 +373,49 @@ def test_step_down_chain() -> None:
     assert decide.step_down_target("fast", profiles) == "cpu"
     assert decide.step_down_target("cpu", profiles) is None
     assert decide.step_down_target("custom", profiles) == "cpu"
+    # a custom GPU profile above 2x first sheds load at 2x, then MVTools
+    assert decide.step_down_target("custom", profiles, multiplier=Fraction(5, 2)) == "fast"
+    assert decide.step_down_target("custom", profiles, multiplier=Fraction(2)) == "cpu"
+    assert decide.step_down_target("cpu", profiles, multiplier=Fraction(5, 2)) is None
+    # the lite model no faster here: "quality" goes straight to 2x
+    assert decide.step_down_target("quality", profiles, skip_lite=True) == "fast"
+    assert decide.step_down_target("balanced", profiles, skip_lite=True) == "fast"
+    # already at ~2x: "fast" (lite at 2x) would shed nothing, so go to MVTools
+    two = Fraction(2)
+    assert decide.step_down_target("quality", profiles, multiplier=two, skip_lite=True) == "cpu"
+    assert decide.step_down_target("balanced", profiles, multiplier=two) == "cpu"
+    assert decide.step_down_target("quality", profiles, multiplier=two) == "balanced"
+    assert decide.step_down_target("balanced", profiles, multiplier=Fraction(5, 2)) == "fast"
+    assert (
+        decide.step_down_target("quality", profiles, multiplier=Fraction(5, 2), skip_lite=True)
+        == "fast"
+    )
+
+
+def test_interpolation_work() -> None:
+    assert decide.interp_rate(Fraction(24), Fraction(48)) == 24
+    assert decide.interp_rate(Fraction(24), Fraction(60)) == 48  # 4 of 5 inferred
+    assert decide.interp_rate(Fraction(24), Fraction(90)) == 84  # 14 of 15
+    assert decide.interp_rate(NTSC, Fraction(60)) == Fraction(60) * Fraction(1000, 1001)
+    assert decide.interp_rate(NTSC, NTSC) == 0
+    assert decide.load_rate(NTSC, NTSC * 2) == NTSC * 2  # 2x costs its own rate
+    assert decide.load_rate(Fraction(24), Fraction(60)) == 96
+    # a bench measured at 2x stays; one measured at 2.5x is converted
+    assert decide.as_2x_rate(61.2, NTSC, None) == pytest.approx(61.2)
+    assert decide.as_2x_rate(48.0, Fraction(24), Fraction(60)) == pytest.approx(76.8)
+    assert decide.as_2x_rate(61.2, None, None) == 61.2
+
+
+def test_dev_box_cap_rejects_ntsc_to_60_at_1920x800() -> None:
+    # bench.json on the dev box: v4.26 61.2 fps in mpv at 1080p (2x); a 1920x800
+    # video has 1.35x fewer pixels. 23.976 → 60 dropped 864 of ~1500 frames live.
+    cap = 61.2 * (1920 * 1080) / (1920 * 800) / 1.25
+    fixed = decide.choose_target(NTSC, 180.0, TargetKind.FPS, Fraction(60), sustainable_fps=cap)
+    assert fixed.bypass is BypassReason.NO_REALTIME
+    shown = decide.choose_target(NTSC, 180.0, TargetKind.DISPLAY, sustainable_fps=cap)
+    assert shown.target == NTSC * 2  # 2x played with 0 drops at ~33 % GPU
+    assert decide.choose_target(Fraction(24), None, TargetKind.FPS, Fraction(48),
+                                sustainable_fps=cap).target == 48  # fmt: skip
 
 
 # ---------------------------------------------------------------------------
@@ -489,11 +551,12 @@ def test_include_and_argv(tmp_path: Path) -> None:
     assert settings[0] == "[buttereye]"
     assert not any(ln.startswith("vf") for ln in settings)  # filter only over IPC
     assert "hr-seek-framedrop=no" in text and "interpolation=no" in text
+    assert "hr-seek=default" in text and "hr-seek=yes" not in text  # no pre-roll through RIFE
     argv = launcher.build_argv("mpv", include=inc, socket=tmp_path / "s.sock",
                                file=Path("-weird name.mkv"))  # fmt: skip
     assert argv[1] == f"--include={inc}" and argv[2] == "--profile=buttereye"
     assert argv[3] == f"--script={launcher.LUA_HELPER}"
-    assert "--hwdec=auto-copy" in argv and "--video-sync=display-resample" in argv
+    assert "--hwdec=nvdec-copy,auto-copy" in argv and "--video-sync=display-resample" in argv
     assert argv[-2:] == ["--", "-weird name.mkv"]
     assert not any(a.startswith("--vf") for a in argv)
     lua = launcher.LUA_HELPER.read_text()

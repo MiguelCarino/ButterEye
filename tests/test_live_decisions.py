@@ -377,16 +377,21 @@ async def test_cap_skips_faults_failed_mpv_pass_and_other_gpu(
 
 @pytest.mark.parametrize("src", [Fraction(24), NTSC, ODD])
 def test_display_180hz_respects_the_cap(src: Fraction) -> None:
-    mv = decide.choose_target(src, 180.0, TargetKind.DISPLAY, sustainable_fps=MV_CAP)
-    assert mv.target == 60 and mv.bypass is None  # k=3 (90 > 81.8)
-    rife = decide.choose_target(src, 180.0, TargetKind.DISPLAY, sustainable_fps=RIFE_CAP)
-    assert rife.target == 45 and rife.bypass is None  # k=4 (60 > 49)
+    # caps are 2x rates; 60 from ~24 infers 4 frames in 5 or more (≥ 96 at 2x)
+    for kind in (TargetKind.DISPLAY, TargetKind.DISPLAY_MAX):
+        mv = decide.choose_target(src, 180.0, kind, sustainable_fps=MV_CAP)
+        assert mv.target == src * 2 and mv.bypass is None
+        rife = decide.choose_target(src, 180.0, kind, sustainable_fps=RIFE_CAP)
+        assert rife.target == src * 2 and rife.bypass is None
+        # 24 → 30/36/45 costs as many inferences as 2x: none of them fits 30
+        slow = decide.choose_target(src, 180.0, kind, sustainable_fps=30.0)
+        assert slow.target is None and slow.bypass is BypassReason.NO_REALTIME
     uncapped = decide.choose_target(src, 180.0, TargetKind.DISPLAY)
-    assert uncapped.target == 90  # k=2: 7.5x at k=1 is over the 5x limit
-    six = decide.choose_target(src, 180.0, TargetKind.DISPLAY, sustainable_fps=30.0)
-    assert six.target == 30  # k=6
-    slow = decide.choose_target(src, 180.0, TargetKind.DISPLAY, sustainable_fps=25.0)
-    assert slow.target is None and slow.bypass is BypassReason.NO_REALTIME  # 25.7 > 25 ≥ 22.5
+    assert uncapped.target == 60  # the lowest refresh/k that doubles (k=3)
+    smoothest = decide.choose_target(src, 180.0, TargetKind.DISPLAY_MAX)
+    assert smoothest.target == 90  # k=2: 7.5x at k=1 is over the 5x limit
+    fast = decide.choose_target(src, 180.0, TargetKind.DISPLAY_MAX, sustainable_fps=130.0)
+    assert fast.target == 60  # 90 needs ≥ 168 at 2x
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +412,8 @@ def test_auto_uses_rife_when_it_can_double() -> None:
     assert pick.notice is None
     fixed = decide.pick_engine(_opts(RIFE_CAP), NTSC, 180.0, TargetKind.FPS, Fraction(60),
                                auto=True)  # fmt: skip
-    assert fixed.backend is BackendId.MVTOOLS and fixed.target.target == 60  # 60 > 49
+    # 23.976 → 60 infers almost every frame (~120 at 2x): neither engine keeps up
+    assert fixed.backend is None and fixed.target.bypass is BypassReason.NO_REALTIME
 
 
 def test_auto_30fps_goes_to_mvtools() -> None:
@@ -425,14 +431,15 @@ def test_auto_without_rife_benchmark_uses_mvtools() -> None:
 
 
 def test_auto_display_prefers_the_engine_that_really_smooths() -> None:
-    # 180 Hz: RIFE reaches 45 (1.9x), MVTools 60 (2.5x) → MVTools
+    # 180 Hz: RIFE doubles (plain 2x); 60 would need ~120 at 2x → RIFE at 2x
     pick = decide.pick_engine(_opts(RIFE_CAP), NTSC, 180.0, TargetKind.DISPLAY, auto=True)
-    assert pick.backend is BackendId.MVTOOLS and pick.target.target == 60
-    # 144 Hz: RIFE reaches 48 (k=3, a doubling) → RIFE
-    pick = decide.pick_engine(_opts(RIFE_CAP), ODD, 144.0, TargetKind.DISPLAY, auto=True)
+    assert pick.backend is BackendId.RIFE_NCNN and pick.target.target == NTSC * 2
+    # 144 Hz: 24 → 48 (k=3) is an exact doubling → RIFE
+    pick = decide.pick_engine(_opts(RIFE_CAP), Fraction(24), 144.0, TargetKind.DISPLAY,
+                              auto=True)  # fmt: skip
     assert pick.backend is BackendId.RIFE_NCNN and pick.target.target == 48
-    # a fast GPU reaches the same 60 as MVTools → RIFE (quality first)
-    pick = decide.pick_engine(_opts(70.0), NTSC, 180.0, TargetKind.DISPLAY, auto=True)
+    # a GPU fast enough for 60 → RIFE at 60 (quality first)
+    pick = decide.pick_engine(_opts(125.0), NTSC, 180.0, TargetKind.DISPLAY, auto=True)
     assert pick.backend is BackendId.RIFE_NCNN and pick.target.target == 60
 
 
@@ -531,12 +538,12 @@ def test_pick_size_prefers_the_gpu_at_a_smaller_size() -> None:
 
 
 def test_pick_size_display_target_needs_a_doubling_for_the_gpu() -> None:
-    # 180 Hz: RIFE reaches 36 at most (180/5, never a doubling of 24); MVTools
-    # reaches 45 (180/4) already at 1440p, the largest size
+    # 180 Hz: RIFE never reaches 48 at 2x (no doubling at any size); MVTools
+    # doubles (plain 2x) already at 1440p, the largest size
     sized = _sized((30.0, 50.0), (37.0, 61.0), (40.0, 90.0))
     found = decide.pick_size(sized, Fraction(24), 180.0, TargetKind.DISPLAY, auto=True)
     assert found is not None and found[0].backend is BackendId.MVTOOLS
-    assert found[0].target.target == 45 and found[1] == (2560, 1440)
+    assert found[0].target.target == 48 and found[1] == (2560, 1440)
 
 
 def test_pick_size_pinned_rife_tries_smaller_before_cpu() -> None:
@@ -614,7 +621,8 @@ async def test_session_display_target_180hz(
     s = _session(FakeCtx(_paths(tmp_path), _config(profile)), tmp_path)
     _load(s, fps=24.0031, hz=180.0)
     await s.apply(raise_on_fail=False)
-    assert _engine(s) is BackendId.MVTOOLS and s.target == 60  # never 4-5x of 180 Hz
+    # the GPU doubles (2x) instead of MVTools at 60: never 4-5x of 180 Hz
+    assert _engine(s) is BackendId.RIFE_NCNN and s.multiplier == 2
 
 
 async def test_session_pinned_rife_falls_back_for_this_file(
@@ -891,3 +899,37 @@ async def test_device_lost_during_rife_switches_to_cpu(
     await _settle(ctx)
     assert _engine(s) is BackendId.MVTOOLS and s.active_gen is not None
     assert _changes(ctx)[0].health is Health.DEVICE_LOST
+
+
+# ---------------------------------------------------------------------------
+# per-frame property changes do not wake the controller
+# ---------------------------------------------------------------------------
+
+
+def test_per_frame_properties_wait_for_the_tick(tmp_path: Path) -> None:
+    s = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
+    s.wake.clear()
+    for name, value in (("playback-time", 1.5), ("frame-drop-count", 3), ("audio-pts", 1.4)):
+        s.on_event({"event": "property-change", "name": name, "data": value})
+    assert not s.wake.is_set() and s.props["frame-drop-count"] == 3
+    s.on_event({"event": "property-change", "name": "vf", "data": []})
+    assert s.wake.is_set()
+    s.wake.clear()
+    s.on_event({"event": "client-message", "args": ["buttereye-request", "toggle"]})
+    assert s.wake.is_set()
+
+
+async def test_step_down_skips_lite_only_when_the_bench_says_so(
+    tmp_path: Path, bench_history: list[BenchResult]
+) -> None:
+    cfg = sc.default_config()
+    s = _session(FakeCtx(_paths(tmp_path), cfg), tmp_path)
+    assert await s.lite_no_faster(cfg.profiles) is False  # no bench: full chain
+    bench_history.append(_devbox())  # v4.26 61.2, lite 62.61 (+2 %)
+    assert await s.lite_no_faster(cfg.profiles) is True
+    bench_history.clear()
+    bench_history.append(_result(
+        _m("rife-v4.26", 40.0),
+        _m("rife-v4.22-lite", 60.0, model="rife-v4.22_lite_ensembleFalse"),
+    ))  # fmt: skip
+    assert await s.lite_no_faster(cfg.profiles) is False  # lite clearly faster: keep it

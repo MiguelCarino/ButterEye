@@ -118,7 +118,8 @@ def test_profile_mapping() -> None:
     assert sw.target_for("x2") == Target(TargetKind.X2)
     assert sw.target_for("fps60") == Target(TargetKind.FPS, Fraction(60))
     assert sw.target_for("display") == Target(TargetKind.DISPLAY)
-    for key in ("x2", "fps60", "display"):
+    assert sw.target_for("display-max") == Target(TargetKind.DISPLAY_MAX)
+    for key in ("x2", "fps60", "display", "display-max"):
         assert sw.target_key(sw.target_for(key)) == key
     for key in ("auto", "best", "light", "cpu"):
         assert sw.smoothness_key(sw.simple_profile(key, "x2")) == key
@@ -354,7 +355,7 @@ def test_gpu_fault_row_has_no_codes(make_simple: Make, qtbot: Any) -> None:
 def test_display_rate_names_the_target(make_simple: Make, qtbot: Any) -> None:
     win = make_simple("live_active")
     i = win.target_combo.findData("display")
-    qtbot.waitUntil(lambda: win.target_combo.itemText(i) == "Your display (120 Hz)")
+    qtbot.waitUntil(lambda: win.target_combo.itemText(i) == "Match your display (120 Hz)")
     assert win.settings.value(sw.DISPLAY_HZ_KEY) is not None
 
 

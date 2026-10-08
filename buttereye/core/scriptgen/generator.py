@@ -69,6 +69,11 @@ class FilterParams:
     sc_threshold: float | None = None
     title: str = ""  # diagnostics only; never code
     size: tuple[int, int] | None = None  # smooth at this w×h instead of the source size
+    #: 8-bit RIFE output dither (zimg name); None = "ordered" (10-bit: none).
+    #: Offline renders ask for "error_diffusion" (§4.4).
+    dither: str | None = None
+    #: MVTools Super pel; None = 1 from 720p up, else 2 (renders ask for 2)
+    mv_pel: int | None = None
 
 
 def default_frames(backend: BackendId, *, cpu_count: int | None = None) -> tuple[int, int]:
@@ -124,6 +129,10 @@ def user_data(params: FilterParams) -> str:
         data["gpu_id"] = params.gpu_id
         data["gpu_thread"] = params.gpu_thread or RIFE_GPU_THREAD_DEFAULT
         data["uhd"] = params.uhd
+        if params.dither is not None:
+            data["dither"] = params.dither
+    elif params.backend is BackendId.MVTOOLS and params.mv_pel is not None:
+        data["mv_pel"] = int(params.mv_pel)
     return json.dumps(data, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 

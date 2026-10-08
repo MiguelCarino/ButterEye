@@ -200,14 +200,28 @@ def usable_encoders(listed: Sequence[str], *, nvidia: bool) -> tuple[str, ...]:
 
 
 def offline_fps(
-    bench_fps: float | None, size: tuple[int, int], src: tuple[int, int]
+    bench_fps: float | None,
+    size: tuple[int, int],
+    src: tuple[int, int],
+    *,
+    src_fps: Fraction | None = None,
+    target: Fraction | None = None,
 ) -> float | None:
     """Estimated output frames per second at ``size`` for a ``src``-sized video,
-    from an in-mpv benchmark rate already scaled to ``size``."""
+    from an in-mpv benchmark rate already scaled to ``size`` (a 2× rate,
+    ``decide.load_rate`` units). Without ``src_fps``/``target`` the estimate is
+    for 2×; another multiplier is converted by its interpolated frames
+    (23.976 → 60 infers almost every frame, so it runs at about half the 2× rate)."""
     if bench_fps is None or bench_fps <= 0:
         return None
     capped = decide.shrink_cap(bench_fps, *src) if size != src else bench_fps
-    return None if capped is None else round(capped * OFFLINE_FACTOR, 1)
+    if capped is None:
+        return None
+    if src_fps is not None and target is not None:
+        work = decide.load_rate(src_fps, target)
+        if work > 0:
+            capped *= float(target / work)
+    return round(capped * OFFLINE_FACTOR, 1)
 
 
 def render_sizes(

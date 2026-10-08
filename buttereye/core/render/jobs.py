@@ -45,6 +45,7 @@ from buttereye.core.ops import _own_group, terminate_group
 from buttereye.core.render import pipeline
 from buttereye.core.render import probe as rprobe
 from buttereye.core.scriptgen.generator import (
+    RIFE_CONCURRENT_FRAMES_DEFAULT,
     RIFE_GPU_THREAD_DEFAULT,
     FilterParams,
     ScriptConstants,
@@ -85,7 +86,7 @@ MODEL_SUBDIR = "rife-ncnn-models"
 USER_MODEL_SUBDIR = "models"
 PROBE_TIMEOUT_S = 60.0
 REMUX_TIMEOUT_S = 6 * 3600.0
-RENICE = 10  # §7.6: lower priority while playback is active
+RENICE = 10  # §7.6: renders always run at lower CPU priority than the desktop
 INSTALL_FFMS2 = "sudo dnf install ffms2"
 INSTALL_MKVTOOLNIX = "sudo dnf install mkvtoolnix"
 PROGRESS_INTERVAL_S = 0.5
@@ -285,6 +286,17 @@ def _profile(cfg: Config | None, profile_id: str | None) -> Profile | None:
     return by_id.get("simple") or cfg.profiles[0]
 
 
+def vspipe_requests(engine: BackendId) -> int | None:
+    """vspipe's frame requests in flight for a render. RIFE-ncnn runs only
+    ``gpu_thread`` frames at once; vspipe's default (one per CPU thread, 24 on the
+    dev box) only holds RGBS frames waiting for the GPU: 4K 24 → 60 used 18.9 GB
+    and ran 7.3 fps by default, 14.5 GB and 7.7 fps with 8. At least
+    gpu_thread + 2. MVTools (CPU-bound) keeps vspipe's default."""
+    if engine is BackendId.RIFE_NCNN:
+        return max(RIFE_CONCURRENT_FRAMES_DEFAULT, RIFE_GPU_THREAD_DEFAULT + 2)
+    return None
+
+
 def offline_target(target: Target, src_fps: Fraction) -> Fraction:
     """§7.8: 2× and a fixed rate as asked; a display target renders as 2×."""
     if target.kind is TargetKind.FPS and target.fps is not None:
@@ -335,7 +347,8 @@ def bench_rate(
     size: tuple[int, int],
 ) -> float | None:
     """In-mpv benchmark fps for ``backend``/``model`` scaled to ``size`` by pixel
-    count (closest measured size, then newest); None without a clean measurement."""
+    count (closest measured size, then newest), as a 2× output rate
+    (``decide.load_rate`` units); None without a clean measurement."""
     from buttereye.core.mpvctl.session import _measured_in_mpv, _measured_size
 
     px = size[0] * size[1]
@@ -353,7 +366,9 @@ def bench_rate(
             if w <= 0 or h <= 0:
                 continue
             ratio = (w * h) / px
-            found.append((round(-abs(math.log(ratio)), 6), when, float(m.mpv_fps) * ratio))
+            req = result.request
+            fps = decide.as_2x_rate(float(m.mpv_fps), req.source_fps, req.target_fps)
+            found.append((round(-abs(math.log(ratio)), 6), when, fps * ratio))
     return max(found)[2] if found else None
 
 
@@ -583,14 +598,6 @@ def _index_cache(ctx: ProviderContext, src: Path) -> Path:
     return d / (hashlib.sha256(key.encode()).hexdigest()[:32] + ".ffindex")
 
 
-def _live_sessions_running(ctx: ProviderContext) -> bool:
-    from buttereye.core.mpvctl import session
-
-    with contextlib.suppress(Exception):
-        return any(not s.ended for s in session.registry(ctx).sessions.values())
-    return False
-
-
 def _fail(
     code: ErrorCode, cause: Msg, fix: Msg | None = None, detail: str | None = None
 ) -> ButterEyeError:
@@ -704,6 +711,9 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
             else None,
             title=src.name,
             size=(w, h) if (w, h) != (info.width, info.height) else None,
+            # offline keeps the finest settings: no real-time limit (§4.4)
+            dither="error_diffusion",
+            mv_pel=2,
         )
         ud: dict[str, Any] = json.loads(user_data(params))
         ud["source"] = {
@@ -721,7 +731,10 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
         )  # fmt: skip
         paths.logs_dir.mkdir(parents=True, exist_ok=True)
         with open(log_path, "a", encoding="utf-8") as log:
-            await _encode(ctx, job, tools, script, ud, info, video_tmp, manifest, log, t0)
+            await _encode(
+                ctx, job, tools, script, ud, info, video_tmp, manifest, log, t0,
+                requests=vspipe_requests(engine),
+            )  # fmt: skip
 
             # ---- remux: every other stream of the source
             job.phase = RenderPhase.REMUX
@@ -809,6 +822,8 @@ async def _encode(
     manifest: _Manifest,
     log: Any,
     t0: float,
+    *,
+    requests: int | None = None,
 ) -> None:
     rfd, wfd = os.pipe()
     vs_proc: asyncio.subprocess.Process | None = None
@@ -819,7 +834,7 @@ async def _encode(
         # joined from the same session, so no new session here); cancel and the
         # stale-job check signal the whole group
         vs_proc = await asyncio.create_subprocess_exec(
-            *pipeline.vspipe_argv(tools.vspipe, script, ud),
+            *pipeline.vspipe_argv(tools.vspipe, script, ud, requests=requests),
             stdin=subprocess.DEVNULL,
             stdout=wfd,
             stderr=subprocess.PIPE,
@@ -838,9 +853,10 @@ async def _encode(
         rfd = wfd = -1
         manifest.data["pgid"] = vs_proc.pid
         manifest.save()
-        if _live_sessions_running(ctx):
-            with contextlib.suppress(OSError):
-                os.setpriority(os.PRIO_PGRP, vs_proc.pid, RENICE)
+        # §7.6: a render is a batch job; playback, the GUI and the desktop come
+        # first whether they start before or after it (threads started later inherit)
+        with contextlib.suppress(OSError):
+            os.setpriority(os.PRIO_PGRP, vs_proc.pid, RENICE)
 
         async def read_ffmpeg() -> str:
             assert ff_proc is not None and ff_proc.stderr is not None
@@ -912,7 +928,11 @@ async def _remux(
         argv = pipeline.mkvmerge_argv(tools.mkvmerge, video, src, part, start_s=info.start_s)
     else:
         argv = pipeline.ffmpeg_remux_argv(tools.ffmpeg, video, src, part, start_s=info.start_s)
-    res = await run(argv, timeout_s=REMUX_TIMEOUT_S)
+    res = await run(
+        pipeline.low_priority(argv, nice=shutil.which("nice"), ionice=shutil.which("ionice"),
+                              level=RENICE),
+        timeout_s=REMUX_TIMEOUT_S,
+    )  # fmt: skip
     text = (res.stdout or "") + (res.stderr or "")
     if text.strip():
         log.write(text)
@@ -1001,5 +1021,6 @@ __all__ = [
     "shutdown",
     "bench_rate",
     "offline_target",
+    "vspipe_requests",
     "refusal_for",
 ]

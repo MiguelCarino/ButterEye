@@ -254,7 +254,8 @@ class HdrClass(StrEnum):
 
 
 class TargetKind(StrEnum):
-    DISPLAY = "display"
+    DISPLAY = "display"  # lowest refresh/k that doubles the source (SCOPE §5.6)
+    DISPLAY_MAX = "display-max"  # highest refresh/k the GPU sustains (max smoothness)
     X2 = "2x"
     FPS = "fps"
 
@@ -405,7 +406,7 @@ class Profile:
     name: str
     backend: BackendId | Literal["auto"]
     model: str | None
-    scale: float | None  # vs-mlrt only; ncnn uses uhd (§5.3)
+    scale: float | None  # vs-mlrt only; ncnn at 4K: a smaller size via the benchmark caps (§5.3)
     target: Target
     sc_threshold: float
     buffered_frames: int | None  # None = §4.4 default
@@ -1414,7 +1415,7 @@ Accessible names: "Check result: Vulkan loader, OK", "Copy dnf command", "Engine
   | Name | `QLineEdit` |
   | Engine | combo Automatic / RIFE (Vulkan) / RIFE · TensorRT (experimental) / MVTools (CPU); unavailable entries disabled, reason in accessible description and a visible note line; TRT listed only after opt-in |
   | Model | combo from `models()` for that backend ("extra", "unpinned" labelled); if MODELS unavailable, free text with note |
-  | Scale | spin, TRT only; for RIFE (Vulkan) a note "Uses UHD mode at 4K automatically" (§5.3) |
+  | Scale | spin, TRT only; for RIFE (Vulkan) a note "At 4K, RIFE (Vulkan) works at a smaller size when the speed test says it can't keep up." (§5.3; v4.x models ignore `uhd`) |
   | Target | radios Match my display / Double (2×) / Fixed rate + `FractionEdit` (n/d) |
   | Scene-cut sensitivity | slider + spin (both expose the value) |
   | Buffered / concurrent frames | spins with "Automatic" checkbox (§4.4 default shown), inside "Expert" disclosure |
@@ -1885,13 +1886,13 @@ Field report (RTX 4090, 3440×1440 @ 180 Hz, Hyprland): live playback kept stall
    - *Pinned* RIFE-ncnn (profile or Setup choice) that can't reach its target falls back to MVTools for this file with the notice "The GPU engine can't keep up with {target} fps at this size, so ButterEye is using CPU smoothing for this video." (`{target}` is the uncapped target, e.g. `60`). Pinned MVTools never moves to RIFE.
    - Nothing reaches a target → BYPASSED `NO_REALTIME`, `snapshot.notice` = "This video is too demanding to smooth in real time on this computer, so it plays without smoothing." (the OSD keeps `BYPASS_TEXT`).
    - A bypass clears `backend`, `model`, `target_fps` and `multiplier` in the snapshot (no engine runs).
-4. **Display target** keeps §5.6 (highest refresh/k ≤ cap, multiplier ≤ 5×) with the scaled cap: 24 fps at 180 Hz → 60 (k = 3) with MVTools' ~82, 45 (k = 4) with RIFE's ~49, 90 uncapped.
+4. **Display target** follows §5.6 with the scaled cap, costed in interpolated frames (`decide.load_rate`: 2 × the frames per second that do not land on a source frame, compared with the 2× benchmark rate): `"display"` takes the lowest refresh/k ≥ 1.98× that fits, `"display-max"` the highest; when none fits, both take 2× (if below the display rate), else the highest refresh/k that fits. 24 fps at 180 Hz: `"display"` → 60 uncapped, 48 (2×) with RIFE's ~49 or MVTools' ~82 (24 → 60 costs 96); `"display-max"` → 90 uncapped.
 5. **Benchmark rule** (`bench.runner.RULE_FPS_TOLERANCE = 101/100`): `fps_max` = measured rate × 1.01 as an exact Fraction (24000/1001 → 24240/1001 ≈ 24.22), so 24.0031 and 24 match; 25 does not.
 6. **Stall or GPU fault on RIFE-ncnn → MVTools once.** A stall (STALLED or DEVICE_LOST), a lost device logged while the filter runs, or a new Xid found while RIFE-ncnn runs switches *this session* to MVTools (an in-session engine override, `_Session.backend_override`): `HealthChanged(<STALLED|DEVICE_LOST|GPU_FAULT>, …, auto_action="ButterEye switched this video to CPU smoothing.")`, a new verified gen with MVTools, then `HealthChanged(OK, "Frames are flowing again with CPU smoothing.")`. While the override holds, `snapshot.notice` = "The GPU couldn't keep up, so ButterEye switched this video to CPU smoothing." and `snapshot.backend` is MVTools. The override is never lifted in that session (not by `set_interpolation`, `apply_profile`, another file or a display change); a new `play()` starts fresh. If MVTools then stalls, interpolation turns off as before ("Video stalled while audio kept playing; interpolation was turned off.") and is not retried; if MVTools can't reach the target, the video plays unsmoothed (`NO_REALTIME`). Without MVTools installed, the RIFE stall turns interpolation off as before. An Xid found later while MVTools runs leaves it running and emits `Notice(RIFE_GPU_FAULT)` "The GPU reported a fault while RIFE-ncnn was running earlier; {engine} is running now."
 
 ## 12. Simple window (2026-10-07 redesign)
 
-Owner feedback: the multi-page window "looks like an SVP clone; it should be its own thing, aiming to be simpler." The owner chose (1) one small window: drop or open a video and it plays smooth, one **Smooth motion** switch and one **Smoothness** choice, everything else silent, a **Details** area for system information and licences; (2) the user picks the **Target**: "Double (2×)", "60 fps" or "Your display (N Hz)".
+Owner feedback: the multi-page window "looks like a clone of existing proprietary tools; it should be its own thing, aiming to be simpler." The owner chose (1) one small window: drop or open a video and it plays smooth, one **Smooth motion** switch and one **Smoothness** choice, everything else silent, a **Details** area for system information and licences; (2) the user picks the **Target**: "Double (2×)", "60 fps" or "Your display (N Hz)".
 
 ```
 ┌ ButterEye ───────────────────────┐
@@ -1938,7 +1939,8 @@ The three choices are one non-built-in profile, id `simple`, name "ButterEye": `
 |---|---|
 | Double (2×) (default) | `Target(X2)` |
 | 60 fps | `Target(FPS, 60)` |
-| Your display (N Hz) | `Target(DISPLAY)`; N is the last live session's `display_fps` (remembered in `QSettings` `simple/display_hz`); "(N Hz)" is left out while unknown |
+| Match your display (N Hz) | `Target(DISPLAY)`; N is the last live session's `display_fps` (remembered in `QSettings` `simple/display_hz`); "(N Hz)" is left out while unknown; tooltip: refresh/k, the lowest that at least doubles the video (60 on 180 Hz, 48 on 144 Hz, SCOPE §5.6) |
+| Match your display, smoothest | `Target(DISPLAY_MAX)`; listed only while the "simple" profile already has `target = "display-max"` (config.toml), so other choice changes keep it instead of saving `"display"` |
 
 - On every change: `save_config(cfg, expected_revision=<last revision>)`, then `apply_profile(sid, "simple")` for each live session that isn't paused (a paused one gets it when it resumes). A `ConfigConflict` reloads the config once and saves the same choice on top of it; a read-only (newer schema) config shows a problem line and nothing is written.
 - At start, a config that already routes everything to `simple` is the truth (the combos show it). Any other config — first run, or one written by the classic window — is **adopted**: the current choices are saved as above. Hand-written rules are replaced at that point (pre-alpha; noted here on purpose).

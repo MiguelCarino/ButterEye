@@ -1,0 +1,52 @@
+--- a/RIFE/rife.cpp
++++ b/RIFE/rife.cpp
+@@ -392,10 +392,16 @@
+ 
+     const size_t in_out_tile_elemsize = opt.use_fp16_storage ? 2u : 4u;
+ 
++    // ButterEye: host frames come from one pool per filter instead of three fresh
++    // w*h*12-byte mmaps (in0, in1, the download) per interpolated frame. The
++    // pool is locked and the gpu_thread semaphore bounds the calls in flight,
++    // so it keeps at most ~3*gpu_thread frames.
++    opt.blob_allocator = &host_pool;
++
+     ncnn::Mat in0;
+     ncnn::Mat in1;
+-    in0.create(w, h, channels, sizeof(float), 1);
+-    in1.create(w, h, channels, sizeof(float), 1);
++    in0.create(w, h, channels, sizeof(float), 1, &host_pool);
++    in1.create(w, h, channels, sizeof(float), 1, &host_pool);
+     float* in0R{ in0.channel(0) };
+     float* in0G{ in0.channel(1) };
+     float* in0B{ in0.channel(2) };
+@@ -1187,10 +1193,16 @@
+ 
+     const size_t in_out_tile_elemsize = opt.use_fp16_storage ? 2u : 4u;
+ 
++    // ButterEye: host frames come from one pool per filter instead of three fresh
++    // w*h*12-byte mmaps (in0, in1, the download) per interpolated frame. The
++    // pool is locked and the gpu_thread semaphore bounds the calls in flight,
++    // so it keeps at most ~3*gpu_thread frames.
++    opt.blob_allocator = &host_pool;
++
+     ncnn::Mat in0;
+     ncnn::Mat in1;
+-    in0.create(w, h, channels, sizeof(float), 1);
+-    in1.create(w, h, channels, sizeof(float), 1);
++    in0.create(w, h, channels, sizeof(float), 1, &host_pool);
++    in1.create(w, h, channels, sizeof(float), 1, &host_pool);
+     float* in0R{ in0.channel(0) };
+     float* in0G{ in0.channel(1) };
+     float* in0B{ in0.channel(2) };
+--- a/RIFE/rife.h
++++ b/RIFE/rife.h
+@@ -52,6 +52,9 @@
+     bool rife_v2;
+     bool rife_v4;
+     int padding;
++    // ButterEye: reused host buffers for process/process_v4 (locked, bounded by
++    // gpu_thread); see rife.cpp
++    mutable ncnn::PoolAllocator host_pool;
+ };
+ 
+ #endif // RIFE_H

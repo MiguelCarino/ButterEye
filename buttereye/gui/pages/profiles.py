@@ -389,11 +389,22 @@ class ProfilesPage(Page):
         tl = QVBoxLayout(self.target_box)
         tl.setContentsMargins(0, 0, 0, 0)
         self.target_display = QRadioButton(self.tr("Match m&y display"), self.target_box)
+        self.target_display.setToolTip(
+            self.tr("The lowest rate your display shows evenly that doubles the video's.")
+        )
+        self.target_display_max = QRadioButton(
+            self.tr("Maximi&ze smoothness (highest display rate)"), self.target_box
+        )
+        self.target_display_max.setToolTip(
+            self.tr("Smoothest motion; the GPU works up to twice as hard on fast displays.")
+        )
         self.target_2x = QRadioButton(self.tr("Double (&2×)"), self.target_box)
         self.target_fixed = QRadioButton(self.tr("F&ixed rate"), self.target_box)
         self.target_group = QButtonGroup(self)
-        for i, r in enumerate((self.target_display, self.target_2x, self.target_fixed)):
-            r.setObjectName(("target.display", "target.2x", "target.fixed")[i])
+        radios = (self.target_display, self.target_display_max, self.target_2x, self.target_fixed)
+        names = ("target.display", "target.display_max", "target.2x", "target.fixed")
+        for i, r in enumerate(radios):
+            r.setObjectName(names[i])
             r.setAccessibleName(plain(r.text()))
             self.target_group.addButton(r, i)
             tl.addWidget(r)
@@ -1225,6 +1236,7 @@ class ProfilesPage(Page):
                 kind = p.target.kind
                 {
                     TargetKind.DISPLAY: self.target_display,
+                    TargetKind.DISPLAY_MAX: self.target_display_max,
                     TargetKind.X2: self.target_2x,
                     TargetKind.FPS: self.target_fixed,
                 }[kind].setChecked(True)
@@ -1368,7 +1380,10 @@ class ProfilesPage(Page):
         backend = self._engine() if p is not None else "auto"
         note = ""
         if backend == BackendId.RIFE_NCNN:
-            note = self.tr("Uses UHD mode at 4K automatically.")
+            note = self.tr(
+                "At 4K, RIFE (Vulkan) works at a smaller size when the speed test "
+                "says it can't keep up."
+            )
         elif backend != BackendId.RIFE_TRT:
             note = self.tr("Scale applies to TensorRT only.")
         self.scale_note.setText(note)
@@ -1398,6 +1413,7 @@ class ProfilesPage(Page):
             self.engine_combo,
             self.model_combo,
             self.target_display,
+            self.target_display_max,
             self.target_2x,
             self.target_fixed,
             self.sc_slider,
@@ -1437,6 +1453,8 @@ class ProfilesPage(Page):
             if self.target_fixed.isChecked()
             else TargetKind.X2
             if self.target_2x.isChecked()
+            else TargetKind.DISPLAY_MAX
+            if self.target_display_max.isChecked()
             else TargetKind.DISPLAY
         )
         target = Target(kind, self.target_fps.value() if kind is TargetKind.FPS else None)

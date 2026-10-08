@@ -42,7 +42,6 @@ HELPER_NAME = "buttereye"
 OBSERVABLE: frozenset[str] = frozenset(
     {
         "container-fps",
-        "estimated-vf-fps",
         "display-fps",
         "frame-drop-count",
         "decoder-frame-drop-count",

@@ -188,7 +188,9 @@ def test_edits_use_frozen_replace_and_engine_rules(make_window: Any, qtbot: Any)
     i = page.engine_combo.findData(BackendId.RIFE_NCNN.value)
     page.engine_combo.setCurrentIndex(i)
     page.engine_combo.activated.emit(i)
-    assert page.scale_note.text() == "Uses UHD mode at 4K automatically."
+    assert page.scale_note.text() == (
+        "At 4K, RIFE (Vulkan) works at a smaller size when the speed test says it can't keep up."
+    )
     assert not page.scale_spin.isEnabled()
     assert page.concurrent_auto.text() == "Automatic (8)"  # §4.4: RIFE concurrent-frames 8
 

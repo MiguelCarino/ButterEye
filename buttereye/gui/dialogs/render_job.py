@@ -66,6 +66,9 @@ MKVTOOLNIX_INSTALL = "sudo dnf install mkvtoolnix"
 HDR10_ENCODERS = ("libx265", "libsvtav1")
 #: SCOPE §7.5 defaults, best first, after the configured per-vendor encoders.
 SDR_DEFAULTS = ("hevc_nvenc", "hevc_vaapi", "libsvtav1")
+#: Software encoders: at the doubled frame rate they keep most CPU cores busy
+#: (x265 ~9 cores, SVT-AV1 ~8 on the dev box; NVENC under 1).
+CPU_ENCODERS = frozenset({"libx265", "libsvtav1", "libx264"})
 
 Confirm = Callable[[QWidget, str, str], bool]
 
@@ -225,6 +228,12 @@ class RenderJobDialog(FitDialog):
             description=self.tr("Only encoders your ffmpeg provides are listed."),
         )
         form.addRow(e_label, self.encoder_combo)
+        self.encoder_hint = QLabel(content)
+        self.encoder_hint.setObjectName("encoderHint")
+        self.encoder_hint.setTextFormat(Qt.TextFormat.PlainText)
+        self.encoder_hint.setWordWrap(True)
+        self.encoder_hint.setVisible(False)
+        form.addRow(self.encoder_hint)
 
         out_row = QWidget(content)
         orl = QHBoxLayout(out_row)
@@ -251,6 +260,7 @@ class RenderJobDialog(FitDialog):
         form.addRow(self.space_label)
 
         self.encoder_combo.currentIndexChanged.connect(self._update_add)
+        self.encoder_combo.currentIndexChanged.connect(lambda _i: self._update_encoder_hint())
         self.profile_combo.currentIndexChanged.connect(self._update_add)
 
     # ------------------------------------------------------------------ profiles
@@ -434,12 +444,39 @@ class RenderJobDialog(FitDialog):
         current = self.encoder_combo.currentText()
         self.encoder_combo.blockSignals(True)
         self.encoder_combo.clear()
-        for e in probe.encoders:
+        for i, e in enumerate(probe.encoders):
             self.encoder_combo.addItem(e, e)
+            if e in CPU_ENCODERS:
+                self.encoder_combo.setItemData(
+                    i, self.tr("Runs on the CPU; uses it heavily"), Qt.ItemDataRole.ToolTipRole
+                )
         want = current if current in probe.encoders else pick_encoder(probe, self._preferred)
         if want is not None:
             self.encoder_combo.setCurrentIndex(probe.encoders.index(want))
         self.encoder_combo.blockSignals(False)
+        self._update_encoder_hint()
+
+    def _update_encoder_hint(self) -> None:
+        """A software encoder at the doubled rate keeps most CPU cores busy: say so."""
+        enc = self.encoder_combo.currentData()
+        if enc not in CPU_ENCODERS:
+            self.encoder_hint.setVisible(False)
+            self.encoder_hint.clear()
+            return
+        text = self.tr(
+            "This encoder runs on the CPU and keeps most of its cores busy for the "
+            "whole conversion; a GPU encoder, when listed, is much lighter."
+        )
+        probe = self.probe
+        if probe is not None and probe.hdr_class in (
+            HdrClass.HDR10, HdrClass.HDR10PLUS, HdrClass.DV
+        ):  # fmt: skip
+            text = self.tr(
+                "HDR10 copies need a CPU encoder (x265 or SVT-AV1), which keeps most "
+                "CPU cores busy for the whole conversion."
+            )
+        self.encoder_hint.setText(text)
+        self.encoder_hint.setVisible(True)
 
     # ------------------------------------------------------------------ validation
     def hdr10_state(self) -> CapState | None:

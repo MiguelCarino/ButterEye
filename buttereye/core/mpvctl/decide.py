@@ -168,6 +168,43 @@ class TargetChoice:
     bypass: BypassReason | None
 
 
+def interp_rate(src: Fraction, target: Fraction) -> Fraction:
+    """Interpolated (inferred) frames per second for ``src`` → ``target``.
+
+    The interpolators make only the output frames that do not land on a source
+    frame: with ``target / src = p / q`` in lowest terms, one output frame in
+    ``p`` is a source frame. 2× → ``target / 2``; 24 → 60 → ``0.8 × 60``;
+    23.976 → 60 (``1001/400``) → almost every output frame. Both rates are read
+    to 1/1001 so a float-derived rate does not invent a huge ``p``."""
+    s = Fraction(src).limit_denominator(1001)
+    t = Fraction(target).limit_denominator(1001)
+    if s <= 0 or t <= s:
+        return Fraction(0)
+    return t * (1 - Fraction(1, (t / s).numerator))
+
+
+def load_rate(src: Fraction, target: Fraction) -> Fraction:
+    """The interpolation work of ``src`` → ``target`` as the output rate that
+    costs the same at exactly 2× (``2 × interp_rate``).
+
+    Live caps (``sustainable_fps``) are in this unit: the benchmark measures 2×,
+    and at 2× ``load_rate == target``, so 2× decisions compare the target itself.
+    Interpolation cost follows the inferred frames, not the output frames: on the
+    dev box (RTX 4090, v4.26) 1080p 2× ran 53.7 output fps untimed and 3.75×
+    only 30.1, both about 27-28 inferences per second."""
+    return 2 * interp_rate(src, target)
+
+
+def as_2x_rate(fps: float, src: object, target: object = None) -> float:
+    """A rate measured at ``src`` → ``target`` (None = 2×) in ``load_rate`` units:
+    the 2× output rate with the same interpolation work."""
+    if not isinstance(src, Fraction) or src <= 0:
+        return fps
+    t = target if isinstance(target, Fraction) else src * 2
+    work = load_rate(src, t)
+    return fps * float(work / t) if work > 0 else fps
+
+
 def choose_target(
     src: Fraction,
     display_hz: float | None,
@@ -176,21 +213,35 @@ def choose_target(
     *,
     sustainable_fps: float | None = None,
 ) -> TargetChoice:
-    """§5.6: the highest refresh/k ≤ the sustainable rate, multiplier ≤ 5×.
+    """§5.6: the target rate for ``kind``, multiplier ≤ 5×.
 
-    Without a benchmark (``sustainable_fps`` None) only the multiplier cap applies;
-    the health detector then reports drops (§4.11 step-down).
+    ``sustainable_fps`` is the engine's live cap as a 2× output rate (see
+    ``load_rate``); a target fits when its ``load_rate`` does. Without a
+    benchmark (None) only the multiplier cap applies; the health detector then
+    reports drops (§4.11 step-down).
+
+    * ``DISPLAY`` (efficient): the lowest refresh/k that at least doubles the
+      source (180 Hz: 23.976 → 60; 144 Hz → 48).
+    * ``DISPLAY_MAX`` (max smoothness): the highest such refresh/k
+      (180 Hz: 23.976 → 90).
+
+    When no refresh/k ≥ 2× fits the cap, both take plain 2× if it fits below the
+    display rate, then the highest refresh/k that fits (50 fps on 60 Hz → 60).
     """
     cap = Fraction(sustainable_fps).limit_denominator(1001) if sustainable_fps else None
+
+    def fits(t: Fraction) -> bool:
+        return cap is None or load_rate(src, t) <= cap
+
     if kind is TargetKind.X2:
         t = src * 2
-        if cap is not None and t > cap:
+        if not fits(t):
             return TargetChoice(None, BypassReason.NO_REALTIME)
         return TargetChoice(t, None)
     if kind is TargetKind.FPS:
         if fixed is None or fixed <= src:
             return TargetChoice(None, BypassReason.ALREADY_AT_RATE)
-        if cap is not None and fixed > cap:
+        if not fits(fixed):
             return TargetChoice(None, BypassReason.NO_REALTIME)
         return TargetChoice(fixed, None)
     display = fps_fraction(display_hz)
@@ -198,18 +249,28 @@ def choose_target(
         return TargetChoice(None, None)  # pending: no display rate yet
     if display <= src:
         return TargetChoice(None, BypassReason.ALREADY_AT_RATE)
-    capped = False
+    # refresh/k above the source and within the multiplier cap, highest first;
+    # every candidate is costed on its own (24 → 30 needs as many inferences as
+    # 24 → 48), so the scan never stops at the first rate that is too high
+    rates: list[Fraction] = []
     k = 1
-    while True:
-        t = display / k
-        if t <= src:
-            break
+    while (t := display / k) > src:
         if t / src <= MAX_MULTIPLIER:
-            if cap is None or t <= cap:
-                return TargetChoice(t, None)
-            capped = True
+            rates.append(t)
         k += 1
-    return TargetChoice(None, BypassReason.NO_REALTIME if capped else BypassReason.ALREADY_AT_RATE)
+    doubling = src * 2 * AUTO_DOUBLING_TOLERANCE
+    doubles = [t for t in rates if t >= doubling]
+    if kind is not TargetKind.DISPLAY_MAX:
+        doubles.reverse()  # lowest first
+    for t in doubles:
+        if fits(t):
+            return TargetChoice(t, None)
+    if src * 2 < display and fits(src * 2):
+        return TargetChoice(src * 2, None)
+    for t in rates:
+        if t < doubling and fits(t):
+            return TargetChoice(t, None)
+    return TargetChoice(None, BypassReason.NO_REALTIME if rates else BypassReason.ALREADY_AT_RATE)
 
 
 def fmt_rate(r: Fraction) -> str:
@@ -590,7 +651,12 @@ def resolve_model(
 
 
 def uhd_mode(width: int, height: int) -> bool:
-    """RIFE-ncnn has no ``scale``; it uses ``uhd`` above 1440p (§5.3)."""
+    """RIFE-ncnn's ``uhd`` flag above 1440p (§5.3).
+
+    The plugin reads ``uhd`` only for RIFE v1-v3 models (a user's own model);
+    v4.x models, all the packaged ones, ignore it and compute flow at full size,
+    so a 4K source costs about 4× 1080p. What lowers 4K cost is a smaller
+    processing size (``smaller_sizes``/``pick_size``, the render size choice)."""
     return width * height > 2560 * 1440
 
 
@@ -621,18 +687,58 @@ def bypass_reason(
     return None
 
 
-def step_down_target(profile_id: str | None, profiles: Sequence[Profile]) -> str | None:
-    """§5.3 step 5 through the shipped chain: lite model, lower multiplier, MVTools."""
+#: Above this multiplier a GPU profile first steps down to RIFE at 2× ("fast").
+STEP_DOWN_ABOVE = Fraction(2) / AUTO_DOUBLING_TOLERANCE
+
+
+def _same_work(
+    cur: Profile | None, nxt: Profile, multiplier: Fraction | None, skip_lite: bool
+) -> bool:
+    """``nxt`` (a 2× profile) would redo what ``cur`` already runs at about 2×."""
+    if cur is None or multiplier is None or multiplier > STEP_DOWN_ABOVE:
+        return False
+    if nxt.target.kind is not TargetKind.X2 or nxt.backend is not cur.backend:
+        return False
+    return nxt.model == cur.model or skip_lite
+
+
+def step_down_target(
+    profile_id: str | None,
+    profiles: Sequence[Profile],
+    *,
+    multiplier: Fraction | None = None,
+    skip_lite: bool = False,
+) -> str | None:
+    """§5.3 step 5: the next profile that sheds load, MVTools last.
+
+    Shipped chain: lite model ("balanced"), 2× ("fast"), MVTools ("cpu");
+    ``skip_lite`` (this machine's benchmark shows the lite model no faster than
+    the full one) goes from "quality" straight to "fast". A custom GPU profile
+    running above 2× (``multiplier``) first steps to "fast": the same engine at a
+    lower multiplier sheds far more than MVTools costs the CPU (~9.5 cores for
+    1920×800 at 60 fps). A chain step that would run the same engine and model
+    (lite counts as the full model under ``skip_lite``) at the 2× already running
+    is skipped: it sheds nothing (the "display" rule often lands near 2×)."""
     chain = ("quality", "balanced", "fast", "cpu")
     ids = [p.id for p in profiles]
+    by_id = {p.id: p for p in profiles}
     if profile_id in chain:
-        for nxt in chain[chain.index(profile_id) + 1 :]:
-            if nxt in ids:
-                return nxt
+        rest = chain[chain.index(profile_id) + 1 :]
+        if skip_lite and profile_id == "quality":
+            rest = tuple(n for n in rest if n != "balanced")
+        cur = by_id.get(profile_id)
+        for nxt in rest:
+            if nxt not in ids:
+                continue
+            if _same_work(cur, by_id[nxt], multiplier, skip_lite):
+                continue
+            return nxt
         return None
     current = next((p for p in profiles if p.id == profile_id), None)
     if current is not None and current.backend is BackendId.MVTOOLS:
         return None
+    if multiplier is not None and multiplier > STEP_DOWN_ABOVE and "fast" in ids:
+        return "fast"
     return "cpu" if "cpu" in ids and profile_id != "cpu" else None
 
 
@@ -643,6 +749,9 @@ __all__ = [
     "MPV_MATRIX",
     "BACKEND_NAMES",
     "TargetChoice",
+    "interp_rate",
+    "load_rate",
+    "as_2x_rate",
     "EngineOption",
     "EnginePick",
     "pick_engine",
@@ -671,4 +780,5 @@ __all__ = [
     "uhd_mode",
     "bypass_reason",
     "step_down_target",
+    "STEP_DOWN_ABOVE",
 ]

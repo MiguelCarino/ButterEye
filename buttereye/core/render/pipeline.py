@@ -24,12 +24,15 @@ from buttereye.core.render.probe import TEN_BIT_ENCODERS, SourceInfo
 _FRAME_RE = re.compile(r"Frame:\s*(\d+)/(\d+)(?:\s*\(([\d.]+)\s*fps\))?")
 
 # quality settings per encoder, SDR (§7.5); 10-bit sources stay 10-bit when the
-# encoder can do it
+# encoder can do it. Software presets are one step lighter than the encoders'
+# defaults: at the doubled frame rate x265 medium kept ~9 cores and SVT-AV1 6
+# ~8 cores busy; fast / 8 are ~1.5-2x lighter for files a few % larger at the
+# same CRF.
 _ENCODER_ARGS: Mapping[str, tuple[str, ...]] = {
     "hevc_nvenc": ("-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "20", "-b:v", "0"),
     "av1_nvenc": ("-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "28", "-b:v", "0"),
-    "libx265": ("-preset", "medium", "-crf", "20"),
-    "libsvtav1": ("-preset", "6", "-crf", "28"),
+    "libx265": ("-preset", "fast", "-crf", "20"),
+    "libsvtav1": ("-preset", "8", "-crf", "28"),
     "libx264": ("-preset", "medium", "-crf", "18"),
 }
 _TEN_BIT_PIX = {"hevc_nvenc": "p010le", "av1_nvenc": "p010le"}
@@ -54,9 +57,16 @@ def parse_progress(chunk: str) -> Progress | None:
     return Progress(int(last.group(1)), int(last.group(2)), fps)
 
 
-def vspipe_argv(vspipe: str, script: Path, user_data: Mapping[str, Any]) -> list[str]:
+def vspipe_argv(
+    vspipe: str, script: Path, user_data: Mapping[str, Any], *, requests: int | None = None
+) -> list[str]:
+    """``vspipe -c y4m -p -a user_data=… [-r N] script -``; ``requests`` bounds the
+    frames in flight (vspipe's default is one per CPU thread)."""
     data = json.dumps(user_data, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    return [vspipe, "-c", "y4m", "-p", "-a", f"user_data={data}", os.fspath(script), "-"]
+    argv = [vspipe, "-c", "y4m", "-p", "-a", f"user_data={data}"]
+    if requests:
+        argv += ["-r", str(int(requests))]
+    return [*argv, os.fspath(script), "-"]
 
 
 def encode_argv(
@@ -106,6 +116,19 @@ def ffmpeg_remux_argv(
     return argv
 
 
+def low_priority(
+    argv: Sequence[str], *, nice: str | None, ionice: str | None, level: int
+) -> list[str]:
+    """``argv`` behind ``nice -n level`` and ``ionice -c2 -n7`` (best effort, not
+    idle: idle can starve under other disk IO), each only when installed (§7.6)."""
+    out = list(argv)
+    if ionice:
+        out = [ionice, "-c2", "-n7", *out]
+    if nice:
+        out = [nice, "-n", str(int(level)), *out]
+    return out
+
+
 def target_frames(src: SourceInfo, target: Fraction) -> int:
     """How many frames the render writes (for progress before vspipe says)."""
     return max(1, round(src.duration_s * float(target)))
@@ -132,6 +155,7 @@ __all__ = [
     "encode_argv",
     "mkvmerge_argv",
     "ffmpeg_remux_argv",
+    "low_priority",
     "target_frames",
     "temp_paths",
     "tail",

@@ -90,7 +90,8 @@ class HdrClass(StrEnum):
 
 
 class TargetKind(StrEnum):
-    DISPLAY = "display"
+    DISPLAY = "display"  # lowest refresh/k that doubles the source (§5.6)
+    DISPLAY_MAX = "display-max"  # highest refresh/k the GPU sustains (max smoothness)
     X2 = "2x"
     FPS = "fps"
 
@@ -241,7 +242,7 @@ class Profile:
     name: str
     backend: BackendId | Literal["auto"]
     model: str | None
-    scale: float | None  # vs-mlrt only; ncnn uses uhd (§5.3)
+    scale: float | None  # vs-mlrt only; ncnn has uhd, read by v1-v3 models only (§5.3)
     target: Target
     sc_threshold: float
     buffered_frames: int | None  # None = §4.4 default
@@ -595,7 +596,7 @@ class RenderSize:
 
     width: int
     height: int
-    est_fps: float | None  # estimated output frames per second; None = no benchmark
+    est_fps: float | None  # estimated output fps at 2× (decide.load_rate); None = no benchmark
 
 
 @dataclass(frozen=True, slots=True)

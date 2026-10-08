@@ -197,7 +197,9 @@ def _validate_profile_engine(p: Profile, f: str, out: _Issues, trt_on: bool) -> 
         if backend in (BackendId.RIFE_NCNN, BackendId.MVTOOLS):
             out.add(
                 f"{f}.scale",
-                "Scale applies to TensorRT only. RIFE (Vulkan) uses UHD mode at 4K automatically.",
+                "Scale applies to TensorRT only. "
+                "At 4K, RIFE (Vulkan) works at a smaller size when the speed test says "
+                "it can't keep up.",
             )
         elif not _is_number(p.scale) or float(p.scale) not in VALID_SCALES:
             out.add(f"{f}.scale", "Scale must be one of 0.25, 0.5, 1, 2 or 4.")
@@ -213,7 +215,7 @@ def _validate_profile_engine(p: Profile, f: str, out: _Issues, trt_on: bool) -> 
 
 def _validate_target(t: Target, f: str, out: _Issues) -> None:
     if not isinstance(t, Target) or not isinstance(t.kind, TargetKind):
-        out.add(f, "The target must be display, 2x or a fixed rate.")
+        out.add(f, "The target must be display, display-max, 2x or a fixed rate.")
         return
     if t.kind is TargetKind.FPS:
         if not isinstance(t.fps, Fraction):

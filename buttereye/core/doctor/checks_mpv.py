@@ -307,9 +307,11 @@ def conflict_findings(
                     {"v": o["hwdec"] or "auto", "tail": short_tail},
                 ),
                 fix=M(
-                    "Use a copy-back mode such as hwdec=auto-copy in {path}.", {"path": str(conf)}
+                    "Use a copy-back mode in {path}: hwdec=auto-copy, or "
+                    "hwdec=nvdec-copy,auto-copy on NVIDIA (less CPU).",
+                    {"path": str(conf)},
                 ),
-                commands=("hwdec=auto-copy",),
+                commands=("hwdec=nvdec-copy,auto-copy",),
                 evidence=(f"hwdec={o['hwdec']}",),
             )
         )

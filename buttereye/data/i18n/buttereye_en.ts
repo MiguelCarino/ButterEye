@@ -1151,6 +1151,11 @@
     </message>
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>Runs on the CPU and keeps most of its cores busy while converting.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
         <source>Save a smooth copy of {name}</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2125,6 +2130,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>At 4K, RIFE (Vulkan) works at a smaller size when the speed test says it can't keep up.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
         <source>Automatic</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2325,6 +2335,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>Maximi&amp;ze smoothness (highest display rate)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
         <source>Mode&amp;l</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2520,6 +2535,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>Smoothest motion; the GPU works up to twice as hard on fast displays.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
         <source>Sour&amp;ce fps</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2560,6 +2580,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>The lowest rate your display shows evenly that doubles the video's.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
         <source>Unsaved changes</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2586,11 +2611,6 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
         <source>Used by rules {list}</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/pages/profiles.py"/>
-        <source>Uses UHD mode at 4K automatically.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2864,6 +2884,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/dialogs/render_job.py"/>
+        <source>HDR10 copies need a CPU encoder (x265 or SVT-AV1), which keeps most CPU cores busy for the whole conversion.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/render_job.py"/>
         <source>HDR10 render needs the x265 or SVT-AV1 encoder.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2929,6 +2954,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/dialogs/render_job.py"/>
+        <source>Runs on the CPU; uses it heavily</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/render_job.py"/>
         <source>SDR video</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2955,6 +2985,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <message>
         <location filename="buttereye/gui/dialogs/render_job.py"/>
         <source>The output must be a Matroska (.mkv) file.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/render_job.py"/>
+        <source>This encoder runs on the CPU and keeps most of its cores busy for the whole conversion; a GPU encoder, when listed, is much lighter.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4847,6 +4882,21 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Match your display</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Match your display ({hz} Hz)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Match your display, smoothest</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Measuring your GPU (about a minute)…</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4898,6 +4948,16 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>Playing normally</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Plays at the highest rate your display allows, up to 5× the video. Smoother, but costs more power.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Plays at your display's refresh rate divided by a whole number: the lowest such rate that at least doubles the video (60 fps on a 180 Hz screen, 48 on 144 Hz).</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5078,16 +5138,6 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>Video files (*.mkv *.mp4 *.webm *.mov *.avi *.m2ts *.ts);;All files (*)</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>Your display</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>Your display ({hz} Hz)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

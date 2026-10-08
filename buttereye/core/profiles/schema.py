@@ -18,7 +18,7 @@ Schema v1 layout (keys are the ``types.py`` field names)::
                                     # sc_threshold, buffered_frames, concurrent_frames, hdr
     [[rules]]                       # profile = "<id>", match = { fps_max = 30, ... }
 
-- ``target`` is ``"display"``, ``"2x"`` or ``"fps:<n>/<d>"`` (``"fps:60"`` and
+- ``target`` is ``"display"``, ``"display-max"``, ``"2x"`` or ``"fps:<n>/<d>"`` (``"fps:60"`` and
   ``"fps:59.94"`` are read too). Rule fps bounds are an integer, a decimal, or a
   ``"<n>/<d>"`` string (24000/1001 stays exact).
 - Built-in profiles always exist. A ``[[profiles]]`` entry whose ``id`` is a
@@ -146,6 +146,8 @@ def parse_target(value: object) -> Target | None:
     text = value.strip()
     if text == TargetKind.DISPLAY.value:
         return Target(TargetKind.DISPLAY)
+    if text == TargetKind.DISPLAY_MAX.value:
+        return Target(TargetKind.DISPLAY_MAX)
     if text == TargetKind.X2.value:
         return Target(TargetKind.X2)
     if text.startswith("fps:"):
@@ -885,7 +887,7 @@ class _Reader:
 
 _BACKEND_CHOICES = ", ".join(f'"{b.value}"' for b in BackendId)
 _BACKEND_OR_AUTO = '"auto", ' + _BACKEND_CHOICES
-_TARGET_CHOICES = '"display", "2x" or "fps:<n>/<d>"'
+_TARGET_CHOICES = '"display", "display-max", "2x" or "fps:<n>/<d>"'
 _HDR_CHOICES = ", ".join(f'"{h.value}"' for h in HdrClass)
 _FPS_EXPECTED = 'a frame rate such as 30, 59.94 or "24000/1001"'
 

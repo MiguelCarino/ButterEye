@@ -14,7 +14,7 @@
 
 Name:           buttereye-vs-rife-ncnn
 Version:        9.33
-Release:        0.2.spike%{?dist}
+Release:        0.3.spike%{?dist}
 Summary:        RIFE frame interpolation for VapourSynth on ncnn/Vulkan (ButterEye build)
 
 # Plugin MIT (HolyWu); bundled RIFE/VapourSynth4.h LGPL-2.1-or-later;
@@ -36,6 +36,10 @@ Source2:        https://github.com/Tencent/ncnn/archive/%{ncnn_commit}/ncnn-%{nc
 Source3:        https://github.com/nihui/glslang/archive/%{glslang_commit}/glslang-%{glslang_commit}.tar.gz
 # Fedora's ncnn (20250916) removed Option::use_shader_pack8 (system_ncnn only).
 Patch0:         buttereye-vs-rife-ncnn-no-pack8.patch
+# Reuse host frame buffers (one locked ncnn::PoolAllocator per filter, bounded by
+# gpu_thread) instead of three fresh full-frame mmaps per interpolated frame;
+# page faults were 25-40 % of vspipe CPU. Output is bit-identical.
+Patch1:         buttereye-vs-rife-ncnn-host-pool.patch
 
 BuildRequires:  gcc-c++
 BuildRequires:  meson
@@ -62,6 +66,7 @@ through ncnn. Installed into ButterEye's private plugin directory
 %if %{with system_ncnn}
 %autopatch -p1
 %else
+%patch -P1 -p1
 mkdir -p subprojects/ncnn/glslang
 tar -xzf %{SOURCE2} -C subprojects/ncnn --strip-components=1
 tar -xzf %{SOURCE3} -C subprojects/ncnn/glslang --strip-components=1
@@ -101,6 +106,10 @@ if ldd %{buildroot}%{_libdir}/buttereye/vapoursynth/librife.so | grep -q 'libncn
 %{_libdir}/buttereye/vapoursynth/librife.so
 
 %changelog
+* Thu Oct 08 2026 ButterEye contributors - 9.33-0.3.spike
+- Pool host frame buffers in process/process_v4 (Patch1): fewer page faults,
+  less kernel CPU, bit-identical output
+
 * Wed Oct 07 2026 ButterEye contributors - 9.33-0.2.spike
 - Bundle the pinned ncnn 305837fd + glslang a9ac7d5 (static) by default;
   system ncnn + pack8 patch kept behind --with system_ncnn

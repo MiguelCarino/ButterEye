@@ -32,6 +32,7 @@ from buttereye.core.types import (
     BenchMeasurement,
     BenchRequest,
     BenchResult,
+    BypassReason,
     Config,
     FilterState,
     HdrClass,
@@ -176,7 +177,8 @@ async def test_cap_ignores_failed_mpv_pass_and_keeps_headroom(
                                   sc.default_config())  # fmt: skip
     assert cap == pytest.approx(46.0 / live.LIVE_HEADROOM)
     tc = decide.choose_target(NTSC, 60.0, TargetKind.DISPLAY, sustainable_fps=cap)
-    assert tc.target != 60 and tc.target == 30  # 60 needs 69 fps in mpv
+    # 60 and 30 both infer almost every frame of 23.976 (≥ 60 at 2x): too much
+    assert tc.target is None and tc.bypass is BypassReason.NO_REALTIME
     # the newest confirmed result wins over a faster older one
     bench_history.append(_result(now - timedelta(days=5), _m(80.0, 90.0, realtime=True)))
     cap = await s.sustainable_fps(BackendId.RIFE_NCNN, "rife-v4.26_ensembleFalse", _facts(),

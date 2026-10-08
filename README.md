@@ -1,11 +1,15 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<p align="center">
+  <img src="buttereye/gui/icons/buttereye.svg" alt="ButterEye logo" width="128" height="128">
+</p>
+
 # ButterEye
 
 ButterEye is a free, open-source (AGPL-3.0-or-later) smooth-motion control center for
-[mpv](https://mpv.io) on Linux: it interpolates video to your display's refresh rate with
-RIFE (Vulkan, via VapourSynth) or MVTools, live in mpv or as an offline render. It is an
-alternative to SVP. Status: pre-alpha; the design lives in `docs/SCOPE.md` and
-`docs/design/GUI.md`.
+[mpv](https://mpv.io) on Linux: it interpolates video to a rate that suits your display with
+RIFE (Vulkan, via VapourSynth) or MVTools, live in mpv or as an offline render. It works
+with your distribution's own mpv and never edits your `mpv.conf`. Status: pre-alpha; the
+design lives in `docs/SCOPE.md` and `docs/design/GUI.md`.
 
 Copyright (C) 2026 The ButterEye contributors. This program comes with ABSOLUTELY NO
 WARRANTY; see the GNU Affero General Public License v3.0 or later, full text in
@@ -63,8 +67,32 @@ Pre-alpha, verified on the dev box (Fedora 44, RTX 4090, mpv 0.41.0, VapourSynth
   and no GPU faults in 9 runs. Latency and seek behaviour with 8 are not measured yet
   (M0(b)); a profile can still set `concurrent_frames` explicitly.
 
-Screenshots over the real core are in `docs/design/screenshots/` (`simple-*.png` for
-the default window and its Details dialog; the others show the classic window).
+## Screenshots
+
+Taken over the real core on the dev box. The top row and the speed test show the default
+window and its Details dialog; the setup wizard and the rest come from the classic
+multi-page window (`BUTTEREYE_DEV=1 … --classic`, see below). More are in
+[`docs/design/screenshots/`](docs/design/screenshots/).
+
+<table>
+  <tr>
+    <td align="center" valign="top"><img src="docs/design/screenshots/simple-playing.png" width="240" alt="The default window, playing a video smoothly"><br><sub>The default window, playing a video smoothly</sub></td>
+    <td align="center" valign="top"><img src="docs/design/screenshots/simple-playing-dark.png" width="240" alt="The same window with a dark palette"><br><sub>The same window with a dark palette</sub></td>
+    <td align="center" valign="top"><img src="docs/design/screenshots/simple-first-run.png" width="240" alt="First start: the GPU is measured in the background"><br><sub>First start: the GPU is measured in the background</sub></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><img src="docs/design/screenshots/setup-wizard.png" width="280" alt="Setup wizard (classic window): checks first, nothing saved until the end"><br><sub>Setup wizard (classic window): checks first, nothing saved until the end</sub></td>
+    <td align="center" valign="top"><img src="docs/design/screenshots/simple-details-speed.png" width="280" alt="Details: the in-mpv speed test"><br><sub>Details: the in-mpv speed test</sub></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><img src="docs/design/screenshots/bench.png" width="400" alt="Benchmark results (classic window): RIFE v4.26 vs MVTools, in mpv and in vspipe"><br><sub>Benchmark results (classic window): RIFE v4.26 vs MVTools, in mpv and in vspipe</sub></td>
+    <td align="center" valign="top"><img src="docs/design/screenshots/sessions.png" width="400" alt="Live session details (classic window): rates, engine, frame drops"><br><sub>Live session details (classic window): rates, engine, frame drops</sub></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><img src="docs/design/screenshots/profiles.png" width="400" alt="Profiles &amp; Rules (classic window): built-in Quality, Balanced, Fast and CPU profiles"><br><sub>Profiles &amp; Rules (classic window): built-in Quality, Balanced, Fast and CPU profiles</sub></td>
+    <td align="center" valign="top"><img src="docs/design/screenshots/system.png" width="400" alt="System checks (classic window): causes, fixes and raw evidence for each finding"><br><sub>System checks (classic window): causes, fixes and raw evidence for each finding</sub></td>
+  </tr>
+</table>
 
 ## Development setup (Fedora 44)
 
@@ -93,10 +121,17 @@ Ctrl+O) and it plays in mpv with smooth motion. There are three choices:
 
 - **Smooth motion** — on or off. Off: new videos play normally, and videos already
   playing turn smoothing off.
-- **Target** — *Double (2×)*, *60 fps*, or *Your display (N Hz)*.
+- **Target** — *Double (2×)*, *60 fps*, or *Match your display (N Hz)* (the lowest
+  refresh/k that at least doubles the video: 60 fps on 180 Hz, 48 on 144 Hz).
 - **Smoothness** — *Auto (recommended)*, *Best quality — GPU*, *Lighter — GPU* or
   *CPU only*. Auto uses the GPU when the speed test shows it can keep up, and the CPU
   otherwise. The GPU choices are hidden when RIFE can't run on this computer.
+
+To keep CPU and GPU load down, live CPU smoothing (MVTools) searches at full-pixel
+precision (`pel=1`) from 720p up, and converted files use the lighter software encoder
+presets `libx265` *fast* and `libsvtav1` *8* (about 1.5-2× less CPU than *medium*/*6*,
+for files a few % larger at the same quality setting); conversions keep MVTools at
+`pel=2`. See SCOPE §7.5.
 
 Each playing video gets a row with its rates (for example "24 → 48 fps"), whether the
 GPU or the CPU is smoothing it, a **Pause smoothing** button and **Let go** (mpv keeps

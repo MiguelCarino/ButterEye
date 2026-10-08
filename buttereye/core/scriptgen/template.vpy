@@ -135,6 +135,34 @@ def _output_format(clip, cfg):
                                    clip.format.subsampling_w, clip.format.subsampling_h)
 
 
+def _dither(fmt, cfg):
+    # Float to 10 bits shows no banding (and mpv dithers to the display itself):
+    # no dither. 8 bits: ordered, unless the caller asks for another (offline
+    # renders ask for error_diffusion, zimg's serial path at ~2x the cost).
+    if fmt.bits_per_sample > 8:
+        return 'none'
+    name = cfg.get('dither')
+    return name if name in ('none', 'ordered', 'random', 'error_diffusion') else 'ordered'
+
+
+def _passthrough(clip, interpolated, target):
+    # At an integer multiplier m every m-th output frame is a source frame: take
+    # it from the source untouched (no YUV->RGB->YUV round trip, no dither) and
+    # only the others from RIFE. Evaluation is lazy, so the RIFE output frames at
+    # source positions are never requested. Same format and length, or no change.
+    ratio = target / Fraction(clip.fps_num, clip.fps_den) if clip.fps_num else None
+    if ratio is None or ratio.denominator != 1 or ratio.numerator < 2:
+        return interpolated
+    if clip.format.id != interpolated.format.id:
+        return interpolated
+    m = ratio.numerator
+    out = core.std.Interleave([clip] + [core.std.SelectEvery(interpolated, m, i)
+                                        for i in range(1, m)])
+    if out.num_frames != interpolated.num_frames:
+        return interpolated
+    return out
+
+
 def _rife(clip, cfg, props, target):
     _load('rife', 'librife.so')
     matrix = _matrix(cfg, clip, props)
@@ -144,19 +172,27 @@ def _rife(clip, cfg, props, target):
     if sc:
         clip = _mark_scene_changes(clip, float(threshold))
     rgb = core.resize.Bicubic(clip, format=vs.RGBS, matrix_in_s=matrix, range_in_s=rng)
+    # uhd is read by RIFE v1-v3 models only; v4.x ignore it (SCOPE 5.3)
     opts = {'model_path': cfg['model_path'], 'fps_num': target.numerator,
             'fps_den': target.denominator, 'gpu_thread': int(cfg.get('gpu_thread') or 4),
             'uhd': bool(cfg.get('uhd')), 'sc': sc}
     if cfg.get('gpu_id') is not None:
         opts['gpu_id'] = int(cfg['gpu_id'])
     rgb = core.rife.RIFE(rgb, **opts)
-    return core.resize.Bicubic(rgb, format=_output_format(clip, cfg).id, matrix_s=matrix,
-                               range_s=rng, dither_type='error_diffusion')
+    fmt = _output_format(clip, cfg)
+    out = core.resize.Bicubic(rgb, format=fmt.id, matrix_s=matrix, range_s=rng,
+                              dither_type=_dither(fmt, cfg))
+    return _passthrough(clip, out, target)
 
 
 def _mvtools(clip, cfg, target):
     _load('mv', 'mvtools.so')
-    sup = core.mv.Super(clip, pel=2)
+    # pel 1 (full-pixel search) from 720p up: ~20-30 % less CPU, and vectors are
+    # already fine-grained at that size; offline renders ask for pel 2
+    pel = cfg.get('mv_pel')
+    if pel not in (1, 2, 4):
+        pel = 1 if clip.width >= 1280 or clip.height >= 720 else 2
+    sup = core.mv.Super(clip, pel=pel)
     bv = core.mv.Analyse(sup, isb=True, blksize=16, overlap=4)
     fv = core.mv.Analyse(sup, isb=False, blksize=16, overlap=4)
     return core.mv.FlowFPS(clip, sup, bv, fv, num=target.numerator, den=target.denominator)

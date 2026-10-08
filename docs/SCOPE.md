@@ -10,7 +10,7 @@ Every claim in this document was researched and then checked by an independent v
 
 ## 1. Summary
 
-ButterEye is a free/open-source alternative to SVP (SmoothVideo Project) for Linux. It adds real-time motion interpolation to video playing in the user's own mpv. It also has an offline mode that renders an interpolated file.
+ButterEye is a free/open-source smooth-motion tool for Linux. It adds real-time motion interpolation to video playing in the user's own mpv. It also has an offline mode that renders an interpolated file.
 
 ButterEye has no player of its own in v1. It does four things:
 
@@ -19,7 +19,7 @@ ButterEye has no player of its own in v1. It does four things:
 - launches or attaches to mpv and controls it over mpv's JSON IPC;
 - renders interpolated files through `vspipe` → `ffmpeg`.
 
-**Who it is for.** The main audience is Linux desktop users who watch local video in mpv and want SVP-style smoothness without a proprietary tool. A secondary audience is people who want scriptable batch interpolation through the CLI.
+**Who it is for.** The main audience is Linux desktop users who watch local video in mpv and want smooth motion interpolation without a proprietary tool. A secondary audience is people who want scriptable batch interpolation through the CLI.
 
 **Hardware expectations.** The v1 real-time target is **≤1440p**.
 
@@ -27,13 +27,13 @@ ButterEye has no player of its own in v1. It does four things:
 - Real-time RIFE on non-NVIDIA GPUs is expected only on discrete GPUs of roughly RX 7800 / Arc A770 class at ≤1080p. This is **unverified** until spike M0(a).
 - Integrated Intel and AMD GPUs are expected to get MVTools only.
 
-At 4K, RIFE's RGB-float frames and the CPU-side YUV↔RGB conversion make memory bandwidth the bottleneck. vs-mlrt's v13 release notes say so, and SVP's own estimated table puts 4K@48 at RTX 4090 level.
+At 4K, RIFE's RGB-float frames and the CPU-side YUV↔RGB conversion make memory bandwidth the bottleneck. vs-mlrt's v13 release notes say so.
 
 **Installation.** The cross-vendor (RIFE-ncnn-Vulkan) and CPU (MVTools) paths install from a single `dnf copr enable <owner>/buttereye` plus `dnf install buttereye`, with no run-time downloads (§9). The only network fetch left is the optional ONNX models for the experimental TensorRT path (§5.4).
 
 **Licence.** AGPL-3.0-or-later, with an adopted §7 additional permission that covers generated output (§8.4).
 
-**Governance.** A standalone community project. It is not affiliated with any company, and it is not affiliated with or endorsed by SVP.
+**Governance.** A standalone community project. It is not affiliated with or endorsed by any company or other interpolation product.
 
 ---
 
@@ -67,7 +67,7 @@ At 4K, RIFE's RGB-float frames and the CPU-side YUV↔RGB conversion make memory
 - Upscaling or denoising. The architecture does not rule them out.
 - Any network-reachable interface: web UI, phone remote, or HTTP/TCP control. AGPL §13 puts a duty on anyone who **modifies** ButterEye and lets users interact with it remotely: they must offer those users the Corresponding Source. Through §13 of the AGPL and GPLv3, that duty also covers any GPL-3.0 code combined in-process. Local Unix-socket IPC, D-Bus portals and pipes are not "remote interaction through a computer network".
 - Telemetry, analytics, crash upload or update checks. ButterEye makes **no network connections** except downloads the user starts (§4.8). Logs, benchmark results (including GPU UUIDs) and crash traces stay local. `doctor --report` produces a text bundle the user can attach to a bug report themselves. Home paths and media filenames are redacted by default, and `engines/` is always excluded.
-- Loading, reading or redistributing any SVP component, profile or asset.
+- Loading, reading or redistributing any component, profile or asset of a proprietary interpolation tool.
 - Deinterlacing. Interlaced sources skip interpolation (§4.11).
 
 ### Deferred to after v1 (explicitly out of v1 acceptance)
@@ -86,7 +86,7 @@ At 4K, RIFE's RGB-float frames and the CPU-side YUV↔RGB conversion make memory
 
 | Decision | One-line rationale |
 |---|---|
-| **Player strategy A**: ButterEye controls the user's own mpv through a generated `.vpy`, config and JSON IPC | mpv 0.41 already ships a VapourSynth bridge, and SVP's own Linux integration uses the same attach-over-IPC pattern ([SVP:Linux](https://www.svp-team.com/wiki/SVP:Linux)). This avoids writing a player and keeps mpv (GPL-2.0-or-later) in a separate process. |
+| **Player strategy A**: ButterEye controls the user's own mpv through a generated `.vpy`, config and JSON IPC | mpv 0.41 already ships a VapourSynth bridge ([mpv manual: vapoursynth filter](https://mpv.io/manual/stable/#video-filters-vapoursynth)) and a JSON IPC ([mpv manual: JSON IPC](https://mpv.io/manual/stable/#json-ipc)), so the user's own player can be driven from outside. This avoids writing a player and keeps mpv (GPL-2.0-or-later) in a separate process. |
 | **Linux only for v1** | The gap ButterEye fills is Linux-specific. The dev box is Fedora 44 + Wayland + NVIDIA, and more platforms would multiply the packaging work in §9. |
 | **Offline render in scope for v1** | The mpv manual itself recommends `vspipe` for reliable, full-featured VapourSynth use ([vf.rst](https://raw.githubusercontent.com/mpv-player/mpv/v0.41.0/DOCS/man/vf.rst)), and offline render reuses the same script graph. |
 | **Name "ButterEye"** | No hard conflict was found in software or video (§10). The GitHub org and PyPI names are free. |
@@ -181,7 +181,7 @@ packaging/       RPM specs (MIT) + SRPM build helpers for the ButterEye COPR (§
 
 **Attach** (`buttereye attach`):
 
-- Discover sockets in `$XDG_RUNTIME_DIR/buttereye/*` and in `/tmp/mpvSockets/*`. The latter is the convention of the [mpvSockets](https://github.com/wis/mpvSockets) script, which SVP also supports.
+- Discover sockets in `$XDG_RUNTIME_DIR/buttereye/*` and in `/tmp/mpvSockets/*`. The latter is the convention of the [mpvSockets](https://github.com/wis/mpvSockets) script.
 - Refuse the instance if it fails F1's mpv checks: version, the `vapoursynth` filter, and being a host binary. The refusal uses the same message as F1, and ButterEye never sends `vf add` to such an instance.
 - Never change the instance's socket path or the user's per-PID scheme.
 - On attach, set these over IPC, recording the previous values so they can be restored on detach:
@@ -193,8 +193,8 @@ packaging/       RPM specs (MIT) + SRPM build helpers for the ButterEye COPR (§
 
 **Profile contents** (`[buttereye]`):
 
-- `hwdec=auto-copy` (or an explicit `nvdec-copy,vulkan-copy,vaapi-copy`) and `hwdec-codecs=all`. The bridge takes only system-memory frames ([SVP:mpv](https://www.svp-team.com/wiki/SVP:mpv)).
-- `hr-seek=yes` and `hr-seek-framedrop=no`. With the default `hr-seek-framedrop=yes`, filters that add frames can make precise seeks skip the target.
+- `hwdec=nvdec-copy,auto-copy` and `hwdec-codecs=all`. NVDEC comes first because mpv 0.41's `auto-copy` settles on `vulkan-copy` on NVIDIA, which costs about 1.6-2× the CPU for the same decode; on other GPUs `nvdec-copy` fails to start and mpv falls through to `auto-copy`. The bridge takes only system-memory frames (it maps only regular software image formats to VapourSynth; see `mp_from_vs` in [vf_vapoursynth.c](https://raw.githubusercontent.com/mpv-player/mpv/v0.41.0/video/filter/vf_vapoursynth.c)).
+- `hr-seek=default` and `hr-seek-framedrop=no`. Relative (arrow-key) seeks snap to keyframes, so the keyframe pre-roll is not run through the interpolation filter only to be thrown away; absolute and exact seeks stay precise. With the default `hr-seek-framedrop=yes`, filters that add frames can make those precise seeks skip the target. (mpv still rebuilds the script on every seek.)
 - `interpolation=no`, so mpv's tscale does not blend over RIFE frames.
 - `video-sync=display-resample`.
 - `watch-later-options-remove=vf`. Without it, `save-position-on-quit` stores the `@buttereye` filter, because `vf` is in mpv's default `--watch-later-options`, and plain mpv later tries to load a stale script.
@@ -249,7 +249,7 @@ Rules every generated script follows:
   - Convert YUV → RGBS/RGBH with an explicit `matrix_in` and range taken from `user_data`. mpv exports only the non-standard `_ColorSpace` and never `_Matrix`, `_Primaries` or `_Transfer`. Never hard-code 709.
 - **Output format.**
   - Convert back to planar YUV with the same matrix and transfer. The bridge accepts only YUV in and out.
-  - Output is `YUV420P10` for 10-bit or HDR sources, and `YUV420P8` for 8-bit SDR, using error-diffusion dither when going from float to 8-bit.
+  - Output is `YUV420P10` for 10-bit or HDR sources, and `YUV420P8` for 8-bit SDR, with no dither for 10-bit output, ordered dither for 8-bit live playback and error-diffusion dither for 8-bit offline renders. MVTools searches at `pel=1` (full-pixel) from 720p up during live playback (about 20-30 % less CPU; vectors are already fine-grained at that size) and at `pel=2` below 720p and in every offline render. These live defaults have no profile key yet. At an integer multiplier the frames that land on a source frame are taken from the source untouched; only the others go through RIFE and the float round trip.
   - 4:2:2 and 4:4:4 sources keep their subsampling.
 - **Alignment (vs-mlrt only).**
   - Pad to the per-model alignment, then crop back. Never scale to align.
@@ -268,7 +268,7 @@ Rules every generated script follows:
 
   The benchmark (F14) tries ±1 around each default.
 
-Every seek or format change destroys and recreates the VSScript **and the core** (`createScript`/`freeScript` in [vf_vapoursynth.c](https://raw.githubusercontent.com/mpv-player/mpv/v0.41.0/video/filter/vf_vapoursynth.c)). That means plugin loading, Vulkan device and ncnn model creation, and TRT engine deserialisation all repeat on every seek. Seek latency is therefore a first-class metric for **every** backend (F2, F12). Community reports say static-shape TRT engines make seeks "almost instant" ([SVP forum](https://www.svp-team.com/forum/viewtopic.php?pid=82137); community-reported, not measured).
+Every seek or format change destroys and recreates the VSScript **and the core** (`createScript`/`freeScript` in [vf_vapoursynth.c](https://raw.githubusercontent.com/mpv-player/mpv/v0.41.0/video/filter/vf_vapoursynth.c)). That means plugin loading, Vulkan device and ncnn model creation, and TRT engine deserialisation all repeat on every seek. Seek latency is therefore a first-class metric for **every** backend (F2, F12).
 
 ### 4.5 Hardware and display detection
 
@@ -381,7 +381,7 @@ Behaviour:
 | TRT engine not built yet | Playback uses RIFE-ncnn (or MVTools) while the engine builds in the background. ButterEye switches with a notice once the engine is ready (on the next hot reload). |
 | GPU out of memory, or a script evaluation error | Roll back (F4), then show the error. |
 | Multiple mpv instances | Each has its own profile and connection. A VRAM warning appears when the summed estimates exceed the budget. |
-| Offline render running on the same GPU during playback | Allowed, with a warning, and the render runs at lower priority (`nice`). There is no automatic arbitration in v1. |
+| Offline render running on the same GPU during playback | Allowed, with a warning; renders always run at lower CPU priority (`nice`). There is no automatic GPU arbitration in v1. |
 
 ### 4.12 Security model (summary)
 
@@ -472,15 +472,15 @@ The rules are defined in the sections listed below; this is a summary.
    | Situation | Default |
    |---|---|
    | TRT (experimental) at 4K | RIFE 4.6 with scale=0.5 (`scale≠1` is rejected for vs-mlrt models ≥4.7; needs `python3-onnx`, §5.2), or a lite model ≥4.7 at scale=1 if the benchmark allows |
-   | RIFE-ncnn at 4K | `uhd=True` (the plugin has no `scale` parameter) |
+   | RIFE-ncnn at 4K | `uhd=True` is passed, but the plugin reads it only for v1-v3 models; the packaged v4.x models ignore it and compute flow at full size (about 4× the 1080p cost, ~17 GB VRAM). What lowers 4K cost is a smaller processing size: live through the benchmark caps (GUI.md §11.9), offline through the render size choice (§7.8) |
    | ≤1440p on mid-range GPUs | RIFE 4.6 or 4.22-lite (4.25-lite not shipped, Appendix B) |
    | 1080p on high-end GPUs | 4.25/4.26. Upstream recommends 4.25 for most scenes ([Practical-RIFE](https://github.com/hzwer/Practical-RIFE)). |
 
-5. If the benchmark shows real time cannot be held, step down: lite model, then lower multiplier, then MVTools. Never drop frames silently without telling the user.
-   - Live, the engine is chosen **after** the target (GUI.md §11.9): each engine's cap is its in-mpv benchmark rate ÷ 1.25 (live headroom: the bench runs untimed with `--vo=null`), scaled by pixel count from the closest measured size. Automatic uses RIFE-ncnn only when it is benchmarked and at least doubles the rate (or matches the best engine), otherwise MVTools; a RIFE-ncnn chosen explicitly that can't keep up uses MVTools for that file with a notice.
+5. If the benchmark shows real time cannot be held, step down: lite model (skipped when this machine's benchmark shows it no more than 5% faster than the full model), then lower multiplier, then MVTools. A custom GPU profile running above 2× steps to RIFE at 2× ("fast") before MVTools. Never drop frames silently without telling the user.
+   - Live, the engine is chosen **after** the target (GUI.md §11.9): each engine's cap is its in-mpv benchmark rate ÷ 1.25 (live headroom: the bench runs untimed with `--vo=null`), scaled by pixel count from the closest measured size. The cap is costed in interpolated frames, not output frames: only the output frames that do not land on a source frame are inferred (half at 2×, 4 in 5 at 24 → 60, almost all at 23.976 → 60), so a target's cost is 2 × its interpolated frames per second compared with the 2× benchmark rate. Automatic uses RIFE-ncnn only when it is benchmarked and at least doubles the rate (or matches the best engine), otherwise MVTools; a RIFE-ncnn chosen explicitly that can't keep up uses MVTools for that file with a notice.
 6. The user can always override the choice.
 
-Published speed figures are community or vendor estimates and are used only as a sanity check. The VSGAN-tensorrt-docker numbers are vs-rife/Torch-TRT 2x with sc=False and are flagged "no verified output". The SVP wiki table is labelled "estimated" ([SVP RIFE wiki](https://www.svp-team.com/wiki/RIFE_AI_interpolation)). No primary Linux 4K numbers exist, so ButterEye's in-mpv benchmark is the source of truth.
+Published speed figures are community or vendor estimates and are used only as a sanity check. The VSGAN-tensorrt-docker numbers are vs-rife/Torch-TRT 2x with sc=False and are flagged "no verified output". No primary Linux 4K numbers exist, so ButterEye's in-mpv benchmark is the source of truth.
 
 ### 5.4 Model handling
 
@@ -512,8 +512,10 @@ Published speed figures are community or vendor estimates and are used only as a
 
 ### 5.6 Multipliers and target rate
 
-- **Target rule.** The target is the highest refresh/k (k a positive integer) that is ≤ the benchmark-sustainable output rate (live: in-mpv benchmark fps ÷ 1.25, scaled to the video's pixel count, GUI.md §11.9; e.g. 24 fps on 180 Hz → 60 with MVTools, 45 with a 1080p RIFE-ncnn at ~61 fps in the bench).
-  - Preferred multipliers are 2–5×. For example, 23.976 → 119.88 on 120 Hz; on 180 Hz, 23.976 → 89.91 (refresh/2, ≈3.75×) rather than 7.5×.
+- **Target rule.** The display target (`"display"`, the shipped default) is the **lowest** refresh/k (k a positive integer) that at least doubles the source (≥ 1.98×) and that the benchmark says the engine sustains (live: in-mpv benchmark fps ÷ 1.25, scaled to the video's pixel count, GUI.md §11.9). For example, 23.976 → 60 on 180 Hz, → 48 on 144 Hz, → 59.94 on 119.88 Hz (60 on 120 Hz). Every output frame costs GPU inference, transfers and colour conversion, so a higher rate than doubling buys little smoothness for up to twice the work.
+  - If no such refresh/k fits, plain 2× is used when it fits below the display rate (23.976 → 47.952 on 180 Hz with a 1080p RIFE-ncnn at ~61 fps in the bench), then the highest refresh/k that fits (50 fps on 60 Hz → 60).
+  - Cost is counted in interpolated frames, not output frames (§5.3 step 5): 23.976 → 60 infers almost every output frame and costs about as much as 2× at 120.
+  - `"display-max"` (Profiles: "Maximize smoothness (highest display rate)"): the **highest** refresh/k ≥ 2× that fits, multiplier ≤ 5× (23.976 → 119.88 on 119.88 Hz, but 60 on 120 Hz, where 120 would be just over 5×; on 180 Hz, 23.976 → 90, refresh/2, ≈3.75×, rather than 7.5×), with the same fallbacks.
   - On VRR outputs, cap the target at the benchmark-sustainable rate and do not chase the mode maximum.
   - The `target` profile key can force `"2x"` or a fixed `"fps:n/d"`.
 - **Live.**
@@ -586,6 +588,7 @@ vspipe -c y4m -p -r <N> job.vpy -    |  ffmpeg -f yuv4mpegpipe -i - \
 mkvmerge -o out.mkv [--color-* / mastering flags] [--sync] video.mkv -D source.ext
 ```
 
+- **`-r <N>`** bounds the frames in flight: 8 for RIFE-ncnn (at least `gpu_thread` + 2), which runs only `gpu_thread` frames at once. vspipe's default (one per CPU thread) only holds float RGB frames waiting for the GPU: a 4K 23.976 → 60 render used 18.9 GB at the default and 14.5 GB with `-r 8`, at the same speed. MVTools (CPU-bound) keeps the default.
 - **Use vspipe, not `ffmpeg -f vapoursynth`.** The ffmpeg VapourSynth demuxer requests frames synchronously, one at a time. It reads the deprecated `_ColorRange`, carries no mastering data, and **leaves pts unset for VFR scripts** ([libavformat/vapoursynth.c](https://raw.githubusercontent.com/FFmpeg/FFmpeg/release/8.1/libavformat/vapoursynth.c)).
 - **The y4m header carries no colour or range metadata** ([vspipe.cpp R72](https://raw.githubusercontent.com/vapoursynth/vapoursynth/R72/src/vspipe/vspipe.cpp)). Colour flags are therefore always passed explicitly, from the `ffprobe` results.
 - **vspipe `-c mkv`** exists from R79, which ships in Fedora 45. It carries only a ColourSpace FourCC (no HDR elements) and refuses `--start/--end` with more than one track. v1 keeps y4m as the single code path and feature-detects mkv for later use.
@@ -639,6 +642,7 @@ mkvmerge -o out.mkv [--color-* / mastering flags] [--sync] video.mkv -D source.e
   | SDR, software | `libsvtav1` |
   | HDR10 | `libx265` if present, else `libsvtav1` |
 
+- **Encoder settings** (`render/pipeline.py`): `hevc_nvenc` p5/hq CQ 20, `av1_nvenc` p5/hq CQ 28, `libx264` medium CRF 18, and the software HEVC/AV1 encoders **one preset lighter than their defaults**: `libx265` `fast` CRF 20 (not `medium`) and `libsvtav1` preset 8 CRF 28 (not 6). At the doubled frame rate `medium`/6 kept about 9/8 CPU cores busy; `fast`/8 are about 1.5-2× lighter, at the cost of files a few % larger (lower quality per bit) at the same CRF. There is no setting to go back to `medium`/6 yet; a hardware encoder avoids the trade-off.
 - **Default audio:** `-c:a copy` (via the remux). If re-encoding is needed, use the native `aac` encoder. Never default to `libfdk_aac`.
 
 ### 7.6 Progress and cancel
@@ -651,7 +655,7 @@ mkvmerge -o out.mkv [--color-* / mastering flags] [--sync] video.mkv -D source.e
   - The pipeline runs in its own process group (`start_new_session`).
   - Cancelling sends SIGTERM to the group and then deletes partial files. R72 vspipe has no Ctrl-C handling on non-Windows systems; R76 fixed that.
 - **Free-space check.** Before starting, estimate the output size as encoder bitrate × duration, plus temporary files. Refuse to start if the space is not available.
-- **Priority.** Renders run at lower CPU priority (`nice`) when playback is active (§4.11).
+- **Priority.** Renders always run at lower CPU priority (`nice` 10 on the vspipe/ffmpeg process group; the remux under `nice` and best-effort `ionice -c2 -n7`), so playback, the GUI and the desktop keep the CPU whether they start before or after the render (§4.11). This does not arbitrate the GPU.
 - **Deferred to after v1:**
   - Pause (SIGSTOP/SIGCONT; GPU memory would stay allocated).
   - "Stop and keep" (kill only vspipe so ffmpeg finalizes; untested).
@@ -673,7 +677,7 @@ Test media follows the rules in §6.1.
 
 - **Smaller output size (owner decision 2026-10-08).** A render may be made at the source size (default) or at a smaller size: 1440p, 1080p or 720p below the source height, same shape, even sides. The script shrinks with Spline36 before interpolating (the same `size` step live playback uses, GUI.md §11.9). Upscaling stays a non-goal. Reason: on the dev box (RTX 4090) RIFE v4.26 converts 4K at ~10 output fps — about 7–8 hours for a 97-minute film at 2× — and 1080p at ~47 fps (~1.5–2 hours).
 - **Estimated time per size.** The add-job dialog shows an estimated time for each size, from the benchmark's vspipe rate scaled by pixel count plus the measured cost of decoding and shrinking the source (`decide.shrink_cap`).
-- **Target rate offline.** `Double (2×)` or a fixed fps from the profile; a display target ("Your display") has no meaning for a file and renders as 2×.
+- **Target rate offline.** `Double (2×)` or a fixed fps from the profile; a display target ("Match your display") has no meaning for a file and renders as 2×.
 - **Engine offline.** The profile's engine; Automatic means RIFE-ncnn when it is installed with a model (time, not real-time speed, is the cost offline), else MVTools.
 - **First cut: SDR only (owner decision 2026-10-08).** SDR/CFR conversion ships first, then HDR10 (§7.4) as before. Until then an HDR10 source is refused with a plain explanation (BE-4003), not converted wrongly.
 - **Simple window.** Each Now playing row has "Save smooth copy…", and "Convert a video…" sits next to "Open video". One small dialog (size with estimated times, target, encoder, output path); a progress row with Cancel. Details are in GUI.md §12.7.
@@ -731,8 +735,7 @@ Test media follows the rules in §6.1.
 | FFmpeg | as built by the distro: `ffmpeg-free` GPL-3.0-or-later; RPM Fusion GPLv3+ | separate process | detected, never bundled | no |
 | mkvtoolnix | GPL-2.0-or-later AND LGPL-2.1-or-later | separate process | detected, optional | no |
 | TensorRT, CUDA runtime, `trtexec` | proprietary NVIDIA SLA / EULA | loaded by `vstrt` in mpv/vspipe; `trtexec` run by vspipe | **user-installed from NVIDIA; never bundled, re-hosted, or loaded in ButterEye's process** | no |
-| SVP svpflow1 | GPL MVTools derivative, but shipped only inside SVP and gated on SVP Manager | — | **never loaded** | no |
-| SVP svpflow2 | closed source ([SVP wiki](https://www.svp-team.com/wiki/Manual:SVPflow)) | — | **never loaded or redistributed** | no |
+| Proprietary or closed-source interpolation plugins (including plugins shipped only inside a proprietary product) | proprietary / closed source | — | **never loaded or redistributed** | no |
 
 For every row marked "yes (COPR)", the RPM ships the full licence text as `%license`, `THIRD-PARTY` lists it, and the complete corresponding source is the SRPM published in the same chroot repository (§8.1). Every spec's `License:` is a full SPDX expression covering all files compiled or installed, checked with `license-validate` before each upload. All of these licences are on Fedora's allowed list, as COPR requires (raw LICENSE/meson.build upstream; `dnf repoquery --qf %{license}` for Fedora's fftw; the pinned `LICENSE.txt` for the bundled ncnn and glslang).
 
@@ -767,7 +770,7 @@ For every row marked "yes (COPR)", the RPM ships the full licence text as `%lice
 - **No code from GPL-2.0-only or unlicensed sources.** The following are design references only, and no code is copied from them:
   - president-not-sure/mpv-interpolation (file header "Licensed under GPLv2", plain GPLv2 LICENSE, so GPL-2.0-only);
   - the archlinuxcn forum script;
-  - SVP forum and wiki snippets;
+  - forum and wiki snippets from other interpolation tools;
   - any other post without a licence.
 
   Templates and the Lua helper are written from scratch. Each PR that touches `scriptgen/` or `data/mpv/` states its provenance.
@@ -789,14 +792,14 @@ For every row marked "yes (COPR)", the RPM ships the full licence text as `%lice
 - **ButterEye's own Corresponding Source.**
   - Every release publishes an sdist (on PyPI alongside the wheel, and inside the COPR SRPM). Once a repository exists, releases are built from a signed git tag; until then the sdist and SRPM are the authoritative source.
   - The sdist and the repository include the sources of every generated asset: Qt `.ts` translations (not only `.qm`), `.qrc` and `.ui` sources (not only `pyside6-rcc` output), icon SVGs (not only PNGs), and the generator for the plugin and model manifest.
-- **SVP.** ButterEye never reads, imports, copies or converts SVP profiles, generated SVP scripts, preset values or UI assets. SVP's name is used only nominatively ("an alternative to SVP"), and no SVP marks are used.
+- **Proprietary tools.** ButterEye never reads, imports, copies or converts profiles, generated scripts, preset values or UI assets from proprietary interpolation tools, and uses no third-party marks.
 - **Re-check at release.** The TRT 11 SLA, the vs-mlrt licence, and the VapourSynth and FFmpeg versions all move quickly.
 
 ### 8.5 Contributor policy: DCO, not a CLA
 
 **Adopted (owner decision 2026-10-07): the DCO**, with `Signed-off-by:` on every commit and no CLA. A CI check enforces it once a repository exists; until then there are no outside contributions to check. The reasons:
 
-- **Contributor trust.** A CLA that grants one party relicensing rights over an AGPL community project creates an asymmetry: the copyright holder could ship proprietary versions while contributors are bound by the AGPL. That is a known deterrent, and it undercuts a project whose selling point is "fully open, unlike SVP".
+- **Contributor trust.** A CLA that grants one party relicensing rights over an AGPL community project creates an asymmetry: the copyright holder could ship proprietary versions while contributors are bound by the AGPL. That is a known deterrent, and it undercuts a project whose selling point is being fully open.
 - **Low friction.** The DCO certifies provenance, which is the legal protection a community project actually needs, with no paperwork.
 - **Licence evolution is already covered.** "Or later" lets the project move to future AGPL versions without a CLA.
 - **Provenance.** The DCO sign-off also covers code copied from elsewhere.
@@ -876,7 +879,6 @@ For every row marked "yes (COPR)", the RPM ships the full licence text as `%lice
 
 | Project | Licence | Linux | Real-time | Notes |
 |---|---|---|---|---|
-| [SVP 4](https://www.svp-team.com/get/) | proprietary; $24.99 lifetime, 30-day trial | yes | yes | Linux requires Python **exactly 3.12** and its own mpv ("do not install mpv via package manager"); no Snap/Flatpak players ([SVP:Linux](https://www.svp-team.com/wiki/SVP:Linux)) |
 | [REAL Video Enhancer](https://github.com/TNTwise/REAL-Video-Enhancer) | AGPL-3.0 (AGPL-3.0-only on Flathub) | Flatpak | no (offline only) | PySide6 GUI + separate backend process; architecture similar to ButterEye's; code not copied (§8.4) |
 | [Flowframes](https://github.com/n00mkrad/flowframes) | GPL-3.0 | no | Patreon builds only | C#/.NET |
 | [Enhancr](https://github.com/mafiosnik777/enhancr) | GPL-3.0 | promised, never shipped | yes (Windows) | dormant since 2024-01 |
@@ -890,7 +892,7 @@ For every row marked "yes (COPR)", the RPM ships the full licence text as `%lice
 
 ### 10.2 Differentiators (honest)
 
-1. Fully open (AGPL-3.0-or-later), Linux-first real-time interpolation. SVP is the only polished option, and it is proprietary.
+1. Fully open (AGPL-3.0-or-later), Linux-first real-time interpolation. The polished existing options are proprietary.
 2. Works with the distro's own mpv and Python, and never edits `mpv.conf`.
 3. Solves the Linux provisioning gap on Fedora. vs-mlrt has no Linux release binaries, and Fedora packages no interpolation plugins. One `dnf copr enable` plus `dnf install buttereye` gives the cross-vendor and CPU paths with no run-time downloads. (Other distributions are not targets; on Arch the AUR covers part of this gap independently.)
 4. One profile and one script graph for both live and offline use. Existing open tools do one or the other.

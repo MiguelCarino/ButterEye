@@ -25,7 +25,7 @@ DATA = "@buttereye:vapoursynth=file=%8%/a/b.vpy:buffered-frames=4:concurrent-fra
     "cmd",
     [
         ("observe_property", 1, "vf"),
-        ("observe_property", 2, "estimated-vf-fps"),
+        ("observe_property", 2, "display-fps"),
         ("get_property", "pid"),
         ("get_property", "video-params"),
         ("set_property", "interpolation", False),

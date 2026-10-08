@@ -38,6 +38,12 @@ DATA_DIR = Path(buttereye.__file__).resolve().parent / "data" / "mpv"
 LUA_HELPER = DATA_DIR / "buttereye.lua"
 CONF_TEMPLATE = DATA_DIR / "buttereye.conf"
 PROFILE = "buttereye"
+#: Copy-back decoding for the VapourSynth bridge (§4.3), NVDEC first: with mpv
+#: 0.41 ``auto-copy`` settles on vulkan-copy on NVIDIA, about 1.6-2x the CPU of
+#: nvdec-copy for the same frames. Without NVIDIA/CUDA nvdec-copy fails to start
+#: and mpv falls through to ``auto-copy`` exactly as before. Keep in step with
+#: ``data/mpv/buttereye.conf``.
+HWDEC = "nvdec-copy,auto-copy"
 #: Per-session mpv logs kept in ``logs_dir`` (SCOPE §4.6: 5 files of at most 5 MB).
 LOG_KEEP = 5
 LOG_MAX_BYTES = 5 * 1024 * 1024
@@ -109,7 +115,7 @@ def build_argv(
         f"--profile={PROFILE}",
         f"--script={os.fspath(LUA_HELPER)}",
         f"--input-ipc-server={os.fspath(socket)}",
-        "--hwdec=auto-copy",
+        f"--hwdec={HWDEC}",
         "--video-sync=display-resample",
         "--term-status-msg=",
         *extra,
@@ -420,6 +426,7 @@ __all__ = [
     "LUA_HELPER",
     "CONF_TEMPLATE",
     "PROFILE",
+    "HWDEC",
     "ensure_private_dir",
     "write_include",
     "LOG_KEEP",

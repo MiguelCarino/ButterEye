@@ -81,11 +81,13 @@ if backend == 'rife':
     if cfg.get('gpu_id') is not None:
         args['gpu_id'] = int(cfg['gpu_id'])
     rgb = core.rife.RIFE(rgb, **args)
+    # as template.vpy plays it: no dither for 10-bit output, ordered for 8-bit
     out = core.resize.Bicubic(rgb, format=clip.format.id, matrix_s=matrix,
-                              dither_type='error_diffusion')
+                              dither_type='none' if clip.format.bits_per_sample > 8 else 'ordered')
 elif backend == 'mvtools':
     load('mv', 'mvtools.so')
-    sup = core.mv.Super(clip, pel=2)
+    # as template.vpy plays it: pel 1 from 720p up
+    sup = core.mv.Super(clip, pel=1 if clip.width >= 1280 or clip.height >= 720 else 2)
     bv = core.mv.Analyse(sup, isb=True, blksize=16, overlap=4)
     fv = core.mv.Analyse(sup, isb=False, blksize=16, overlap=4)
     out = core.mv.FlowFPS(clip, sup, bv, fv, num=out_num, den=out_den)

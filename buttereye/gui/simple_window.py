@@ -153,12 +153,17 @@ def target_for(key: str) -> Target:
         return Target(TargetKind.FPS, Fraction(60))
     if key == "display":
         return Target(TargetKind.DISPLAY)
+    if key == "display-max":
+        return Target(TargetKind.DISPLAY_MAX)
     return Target(TargetKind.X2)
 
 
 def target_key(target: Target) -> str:
     if target.kind is TargetKind.DISPLAY:
         return "display"
+    if target.kind is TargetKind.DISPLAY_MAX:
+        # kept apart so a choice change never downgrades it to "display"
+        return "display-max"
     if target.kind is TargetKind.FPS and target.fps == Fraction(60):
         return "fps60"
     return "x2"
@@ -784,10 +789,32 @@ class SimpleWindow(QMainWindow):
             combo.addItem(self.tr("Double (2×)"), "x2")
             combo.addItem(self.tr("60 fps"), "fps60")
             if self._display_hz:
-                text = self.tr("Your display ({hz} Hz)").format(hz=short_rate(self._display_hz))
+                text = self.tr("Match your display ({hz} Hz)").format(
+                    hz=short_rate(self._display_hz)
+                )
             else:
-                text = self.tr("Your display")
+                text = self.tr("Match your display")
             combo.addItem(text, "display")
+            combo.setItemData(
+                combo.count() - 1,
+                self.tr(
+                    "Plays at your display's refresh rate divided by a whole number: "
+                    "the lowest such rate that at least doubles the video "
+                    "(60 fps on a 180 Hz screen, 48 on 144 Hz)."
+                ),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+            if self._target_key == "display-max":
+                # only set in config.toml; listed so it survives other changes
+                combo.addItem(self.tr("Match your display, smoothest"), "display-max")
+                combo.setItemData(
+                    combo.count() - 1,
+                    self.tr(
+                        "Plays at the highest rate your display allows, up to 5× the "
+                        "video. Smoother, but costs more power."
+                    ),
+                    Qt.ItemDataRole.ToolTipRole,
+                )
             combo.setCurrentIndex(max(combo.findData(self._target_key), 0))
         finally:
             self._updating = False

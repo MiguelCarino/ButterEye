@@ -157,6 +157,31 @@ def test_encode_argv_keeps_10_bit_and_colour() -> None:
     assert argv[-1] == "/o/v.mkv" and "-an" in argv
 
 
+def test_software_encoder_presets_and_low_priority() -> None:
+    info = rp.source_info(_ffprobe())
+    assert info is not None
+    x265 = pipeline.encode_argv("ffmpeg", "libx265", info, Path("/o/v.mkv"))
+    assert x265[x265.index("-preset") + 1] == "fast"
+    av1 = pipeline.encode_argv("ffmpeg", "libsvtav1", info, Path("/o/v.mkv"))
+    assert av1[av1.index("-preset") + 1] == "8"
+    argv = ["mkvmerge", "-o", "x"]
+    assert pipeline.low_priority(argv, nice="/n", ionice="/i", level=10) == [
+        "/n", "-n", "10", "/i", "-c2", "-n7", *argv
+    ]  # fmt: skip
+    assert pipeline.low_priority(argv, nice=None, ionice=None, level=10) == argv
+
+
+def test_offline_fps_costs_the_interpolated_frames() -> None:
+    assert rp.offline_fps(60.0, (1920, 1080), (1920, 1080)) == rp.offline_fps(
+        60.0, (1920, 1080), (1920, 1080), src_fps=Fraction(24), target=Fraction(48)
+    )
+    two = rp.offline_fps(60.0, (1920, 1080), (1920, 1080))
+    sixty = rp.offline_fps(60.0, (1920, 1080), (1920, 1080), src_fps=Fraction(24),
+                           target=Fraction(60))  # fmt: skip
+    assert two is not None and sixty is not None
+    assert sixty == pytest.approx(two * 60 / 96, abs=0.1)  # 4 of 5 frames inferred
+
+
 def test_remux_argv_keeps_everything_but_video() -> None:
     mk = pipeline.mkvmerge_argv("mkvmerge", Path("v.mkv"), Path("s.mkv"), Path("o"), start_s=0.042)
     assert mk == ["mkvmerge", "--quiet", "-o", "o", "--sync", "0:42", "v.mkv", "-D", "s.mkv"]
@@ -177,6 +202,11 @@ def test_vspipe_argv_and_temp_paths() -> None:
     argv = pipeline.vspipe_argv("vspipe", Path("/c/job.vpy"), {"v": 1, "title": "a'b"})
     assert argv[:5] == ["vspipe", "-c", "y4m", "-p", "-a"]
     assert argv[5] == 'user_data={"title":"a\'b","v":1}' and argv[-1] == "-"
+    assert "-r" not in argv
+    bounded = pipeline.vspipe_argv("vspipe", Path("/c/job.vpy"), {"v": 1}, requests=8)
+    assert bounded[6:8] == ["-r", "8"] and bounded[-2:] == ["/c/job.vpy", "-"]
+    assert jobs.vspipe_requests(BackendId.RIFE_NCNN) == 8
+    assert jobs.vspipe_requests(BackendId.MVTOOLS) is None
     video, part = pipeline.temp_paths(Path("/m/Film.smooth.mkv"))
     assert video == Path("/m/.Film.smooth.mkv.buttereye-video.mkv")
     assert part == Path("/m/.Film.smooth.mkv.buttereye-part")

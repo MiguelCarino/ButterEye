@@ -185,6 +185,55 @@ def test_template_shrinks_to_the_asked_size() -> None:
     assert shrink(clip, {"size": [3840, 2160]}) is clip  # type: ignore[operator]
 
 
+def test_user_data_dither_and_mv_pel_only_when_asked() -> None:
+    plain = json.loads(g.user_data(_params()))
+    assert "dither" not in plain and "mv_pel" not in plain
+    assert json.loads(g.user_data(_params(dither="error_diffusion")))["dither"] == (
+        "error_diffusion"
+    )
+    mv = json.loads(g.user_data(_params(backend=BackendId.MVTOOLS, mv_pel=2)))
+    assert mv["mv_pel"] == 2 and "dither" not in mv
+
+
+def _template_ns() -> dict[str, object]:
+    text = g.render_script()
+    ns: dict[str, object] = {}
+    exec(compile(text.replace("build().set_output()", ""), "gen.vpy", "exec"), ns)
+    return ns
+
+
+def test_template_dither_by_output_depth() -> None:
+    vs = pytest.importorskip("vapoursynth")
+    dither = _template_ns()["_dither"]
+    assert dither(vs.core.get_video_format(vs.YUV420P10), {}) == "none"  # type: ignore[operator]
+    p8 = vs.core.get_video_format(vs.YUV420P8)
+    assert dither(p8, {}) == "ordered"  # type: ignore[operator]
+    assert dither(p8, {"dither": "error_diffusion"}) == "error_diffusion"  # type: ignore[operator]
+    assert dither(p8, {"dither": "bogus"}) == "ordered"  # type: ignore[operator]
+
+
+def test_template_passes_source_frames_through_at_integer_multipliers() -> None:
+    vs = pytest.importorskip("vapoursynth")
+    passthrough = _template_ns()["_passthrough"]
+    core = vs.core
+    src = core.std.BlankClip(format=vs.YUV420P8, width=64, height=32, length=4,
+                             fpsnum=24, fpsden=1, color=[200, 128, 128])  # fmt: skip
+    interp = core.std.BlankClip(src, length=8, fpsnum=48, color=[16, 128, 128])
+    out = passthrough(src, interp, Fraction(48))  # type: ignore[operator]
+    assert out.num_frames == 8 and (out.fps_num, out.fps_den) == (48, 1)
+
+    def luma(clip: object, n: int) -> int:
+        return int(clip.get_frame(n)[0][0, 0])  # type: ignore[attr-defined]
+
+    assert [luma(out, n) for n in range(8)] == [200, 16] * 4
+    # not an integer multiplier, another format or another length: unchanged
+    assert passthrough(src, interp, Fraction(60)) is interp  # type: ignore[operator]
+    ten = core.std.BlankClip(interp, format=vs.YUV420P10)
+    assert passthrough(src, ten, Fraction(48)) is ten  # type: ignore[operator]
+    longer = core.std.BlankClip(interp, length=9)  # more than the source covers
+    assert passthrough(src, longer, Fraction(48)) is longer  # type: ignore[operator]
+
+
 # ---- the template itself, through vspipe (blank synthetic source) ----
 
 

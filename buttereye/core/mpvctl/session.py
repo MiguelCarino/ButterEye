@@ -135,8 +135,32 @@ REALTIME_HEADROOM = 1.15
 #: untimed with ``--vo=null``; real playback also renders every output frame to the
 #: display and shares the GPU with the desktop compositor, so it sustains less.
 #: 1080p RIFE-ncnn at 61 fps in the bench → ~49 live: enough for 24 → 48, not for
-#: 30 → 60 (which then uses MVTools or plays unsmoothed).
+#: 30 → 60 (which then uses MVTools or plays unsmoothed). The cap is a 2× rate;
+#: other multipliers are costed by their interpolated frames (``decide.load_rate``),
+#: so 23.976 → 60 needs ~120 (almost every frame inferred), not 60.
 LIVE_HEADROOM = 1.25
+#: The lite model must beat the full one by more than this in this machine's
+#: benchmark to be offered as a step down (§5.3 step 5).
+LITE_GAIN = 1.05
+#: Targets that follow the display rate (re-decided when it changes, §4.11).
+DISPLAY_KINDS = frozenset({TargetKind.DISPLAY, TargetKind.DISPLAY_MAX})
+#: Property changes that wake the controller at once. The others (playback-time,
+#: audio-pts, video-frame-info and the drop counters change every frame, several
+#: times per output frame in all) are only stored and read on the 0.25 s tick.
+WAKE_PROPS = frozenset(
+    {
+        "vf",
+        "video-params",
+        "path",
+        "display-fps",
+        "pause",
+        "seeking",
+        "core-idle",
+        "paused-for-cache",
+        "current-tracks/video",
+        "container-fps",
+    }
+)
 #: Properties that describe the loaded file; dropped when mpv starts another file.
 FILE_PROPS = (
     "path",
@@ -240,6 +264,12 @@ def _follows_setup_choice(profile: Profile) -> bool:
     if shipped is None:
         return profile.backend is BackendId.RIFE_NCNN
     return bool(shipped.backend == profile.backend)
+
+
+def _when_key(result: Any) -> float:
+    """A benchmark result's time for sorting (-inf = undated)."""
+    when = getattr(result, "when", None)
+    return when.timestamp() if isinstance(when, datetime) else -math.inf
 
 
 def _measured_in_mpv(m: Any) -> bool:
@@ -492,6 +522,8 @@ class _Session:
             name = msg.get("name")
             if isinstance(name, str):
                 self.props[name] = msg.get("data")
+            if name not in WAKE_PROPS:
+                return  # per-frame counters: the 0.25 s tick reads them
         elif ev == "log-message":
             kind = classify_log(msg, only_our_vapoursynth=self._only_our_vapoursynth())
             ours = self.active_gen is not None or self.busy
@@ -615,7 +647,10 @@ class _Session:
         pixel-count ratio (bench w×h / video w×h: interpolation cost grows with the
         pixels); the measurement closest in pixel count wins, the newest among
         equally close ones, then the fastest. The result is ``mpv_fps /
-        LIVE_HEADROOM``. None = no benchmark for this engine."""
+        LIVE_HEADROOM`` as a 2× output rate (``decide.load_rate`` units: a bench
+        run at another multiplier is converted by its interpolated frames), so
+        ``decide.choose_target`` costs each target by the frames it infers. None =
+        no benchmark for this engine."""
         history = capabilities.resolve(_BENCH_HISTORY)
         if history is None:
             return None
@@ -649,10 +684,57 @@ class _Session:
                 if w <= 0 or h <= 0:
                     continue
                 ratio = (w * h) / video_px
-                found.append((round(-abs(math.log(ratio)), 6), stamp, float(m.mpv_fps) * ratio))
+                fps = decide.as_2x_rate(
+                    float(m.mpv_fps),
+                    getattr(req, "source_fps", None),
+                    getattr(req, "target_fps", None),
+                )
+                found.append((round(-abs(math.log(ratio)), 6), stamp, fps * ratio))
         if not found:
             return None
         return max(found)[2] / LIVE_HEADROOM
+
+    async def step_down_choice(self) -> str | None:
+        """The profile to offer when frames drop (§5.3 step 5)."""
+        cfg, _ = self.config()
+        profiles = cfg.profiles if cfg is not None else ()
+        return decide.step_down_target(
+            self.profile_id,
+            profiles,
+            multiplier=self.multiplier,
+            skip_lite=self.profile_id == "quality" and await self.lite_no_faster(profiles),
+        )
+
+    async def lite_no_faster(self, profiles: Sequence[Profile]) -> bool:
+        """This machine's newest benchmark shows "balanced"'s (lite) model at most
+        ``LITE_GAIN`` faster in mpv than "quality"'s, at the same size: stepping
+        to it would not shed load (RTX 4090: v4.26 61.2 fps, v4.22-lite 62.6).
+        False without such a pair, so untested GPUs keep the full chain."""
+        by_id = {p.id: p for p in profiles}
+        heavy = by_id.get("quality")
+        lite = by_id.get("balanced")
+        if heavy is None or lite is None or not heavy.model or not lite.model:
+            return False
+        history = capabilities.resolve(_BENCH_HISTORY)
+        if history is None:
+            return False
+        try:
+            results = await history(self.ctx)
+        except Exception:
+            return False
+        for result in sorted(results, key=_when_key, reverse=True):
+            rates: dict[tuple[str | None, tuple[int, int]], float] = {}
+            for m in getattr(result, "measurements", ()):
+                if m.backend is not BackendId.RIFE_NCNN or m.gpu_faults:
+                    continue
+                if not _measured_in_mpv(m) or not m.mpv_fps > 0:
+                    continue
+                rates[(m.model, _measured_size(m.label, result.request))] = float(m.mpv_fps)
+            for (model, size), fps in rates.items():
+                lite_fps = rates.get((lite.model, size))
+                if model == heavy.model and lite_fps is not None:
+                    return lite_fps <= fps * LITE_GAIN
+        return False
 
     def vulkan_devices(self) -> tuple[VulkanDevice, ...]:
         report = self.ctx.last_report()
@@ -776,7 +858,7 @@ class _Session:
         if reason is not None:
             await self.bypass_with(reason)
             return
-        if profile.target.kind is TargetKind.DISPLAY and not facts.display_hz:
+        if profile.target.kind in DISPLAY_KINDS and not facts.display_hz:
             return  # PENDING: "waiting for the video window" (§4.2 step 2)
 
         paths = self.ctx.paths
@@ -890,7 +972,7 @@ class _Session:
             )
             # ALREADY_AT_RATE / NO_REALTIME for a display target depend on the
             # display rate: remember it so a new rate re-decides (§4.11).
-            depends = profile.target.kind is TargetKind.DISPLAY and tc.bypass in (
+            depends = profile.target.kind in DISPLAY_KINDS and tc.bypass in (
                 BypassReason.ALREADY_AT_RATE,
                 BypassReason.NO_REALTIME,
             )
@@ -1511,9 +1593,7 @@ class _Session:
             elif verdict.health is Health.DROPPING:
                 if self.health is not Health.DROPPING:
                     self.health, self.health_code = Health.DROPPING, None
-                    cfg, _ = self.config()
-                    profiles = cfg.profiles if cfg is not None else ()
-                    self.step_down_to = decide.step_down_target(self.profile_id, profiles)
+                    self.step_down_to = await self.step_down_choice()
                     self.emit(
                         HealthChanged(self.sid, Health.DROPPING, None,
                                       verdict.reason or Msg("Dropping frames."), (), None)
@@ -1769,8 +1849,7 @@ async def step_down(ctx: ProviderContext, sid: SessionId) -> SessionSnapshot:
     s = _get(ctx, sid)
     target = s.step_down_to
     if target is None:
-        cfg, _ = s.config()
-        target = decide.step_down_target(s.profile_id, cfg.profiles if cfg is not None else ())
+        target = await s.step_down_choice()
     if target is None:
         raise ButterEyeError(
             ErrorCode.CONFIG_VALUE,

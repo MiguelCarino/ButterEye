@@ -220,7 +220,8 @@ def user_data(
         "model_path": os.fspath(c.model_path) if c.model_path is not None else None,
         "gpu_thread": RIFE_GPU_THREAD,
         "gpu_id": gpu_id,
-        "uhd": width > 2560 or height > 1440,  # §5.3: RIFE-ncnn at 4K uses uhd
+        # §5.3: RIFE-ncnn's uhd flag at 4K; only v1-v3 models read it (v4.x ignore it)
+        "uhd": width > 2560 or height > 1440,
         "matrix": "709" if height >= 720 else "170m",
         "src_num": source.numerator,
         "src_den": source.denominator,
