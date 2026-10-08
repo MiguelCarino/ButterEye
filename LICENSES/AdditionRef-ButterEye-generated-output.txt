@@ -1,0 +1,9 @@
+Additional permission under GNU AGPL version 3 section 7 (generated output)
+
+As an additional permission under section 7 of the GNU Affero General Public License, version 3, the copyright holders of ButterEye grant you permission to use, copy, modify, distribute and license any Generated File under terms of your choice, without the conditions of the GNU Affero General Public License applying to that Generated File solely because it contains or is derived from material that ButterEye inserted into it when generating it (from its templates or from code fragments emitted by its script generator).
+
+A "Generated File" is a file that ButterEye writes at run time by filling one of its templates with data, namely: VapourSynth scripts (`.vpy`), mpv configuration include files (`buttereye.conf`), mpv `input.conf` snippets, and offline render job manifests.
+
+This permission does not apply to ButterEye itself as distributed (its Python package, `buttereye.lua` and the template files as files), and it does not apply to any material in a Generated File whose copyright is not held by the ButterEye copyright holders, including third-party code imported or loaded by a Generated File (such as `vsmlrt.py` or VapourSynth plugins).
+
+If you modify ButterEye, you may extend this permission to your version, but you are not obliged to do so. If you do not wish to do so, delete this permission statement from your version, as section 7 allows.

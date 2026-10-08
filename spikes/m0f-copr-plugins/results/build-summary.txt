@@ -1,0 +1,16 @@
+Building target platforms: noarch
+Building for target noarch
+==> buttereye-vs-rife-ncnn on fedora-44-x86_64
+==> buttereye-rife-ncnn-models on fedora-44-x86_64
+==> buttereye-vs-mvtools on fedora-44-x86_64
+==> buttereye-vs-rife-ncnn on fedora-45-x86_64
+==> buttereye-rife-ncnn-models on fedora-45-x86_64
+==> buttereye-vs-mvtools on fedora-45-x86_64
+
+Summary
+  fedora-44-x86_64   buttereye-vs-rife-ncnn       OK
+  fedora-44-x86_64   buttereye-rife-ncnn-models   OK
+  fedora-44-x86_64   buttereye-vs-mvtools         OK
+  fedora-45-x86_64   buttereye-vs-rife-ncnn       OK
+  fedora-45-x86_64   buttereye-rife-ncnn-models   OK
+  fedora-45-x86_64   buttereye-vs-mvtools         OK

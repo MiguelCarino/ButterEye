@@ -1,0 +1,12 @@
+--- a/RIFE/warp.cpp	2025-09-05 21:19:03.000000000 -0600
++++ b/RIFE/warp.cpp	2026-10-07 02:43:07.533082140 -0600
+@@ -59,7 +59,8 @@
+     }
+ 
+     // pack8
+-    if (opt.use_shader_pack8)
++    // ncnn 20250916 (Fedora 44) dropped Vulkan pack8 (Option::use_shader_pack8); elempack is never 8 there.
++    if (false)
+     {
+         static std::vector<uint32_t> spirv;
+         static ncnn::Mutex lock;

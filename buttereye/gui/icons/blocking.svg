@@ -1,0 +1,5 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026 The ButterEye contributors. Monochrome; recoloured from the palette at runtime. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <path fill="#000000" fill-rule="evenodd" d="M5.2 1 L10.8 1 L15 5.2 L15 10.8 L10.8 15 L5.2 15 L1 10.8 L1 5.2 Z M4 7 L12 7 L12 9 L4 9 Z"/>
+</svg>

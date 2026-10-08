@@ -1,0 +1,10 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026 The ButterEye contributors. ButterEye app icon: a soft butter droplet with an eye. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <path d="M32 4 C27 11 11 27 11 40 C11 52 20.5 60 32 60 C43.5 60 53 52 53 40 C53 27 37 11 32 4 Z"
+        fill="#E8B931" stroke="#7A5A08" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M20 22 C23 17 27 12.5 30 9.5" fill="none" stroke="#FFF3C4" stroke-width="3" stroke-linecap="round" opacity="0.85"/>
+  <path d="M17 41 C22 33.5 42 33.5 47 41 C42 48.5 22 48.5 17 41 Z" fill="#FFFBEA" stroke="#7A5A08" stroke-width="2.2" stroke-linejoin="round"/>
+  <circle cx="32" cy="41" r="6" fill="#3A2C06"/>
+  <circle cx="34.2" cy="38.8" r="1.8" fill="#FFFBEA"/>
+</svg>

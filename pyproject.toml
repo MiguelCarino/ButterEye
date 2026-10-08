@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The ButterEye contributors
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "buttereye"
+dynamic = ["version"]
+description = "Smooth-motion (frame interpolation) control center for mpv on Linux"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["COPYING*", "LICENSES/*"]
+requires-python = ">=3.14"
+authors = [{ name = "The ButterEye contributors" }]
+keywords = ["mpv", "vapoursynth", "frame interpolation", "rife", "mvtools"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Video :: Display",
+]
+# PySide6-Essentials only (F17); on Fedora the distro python3-pyside6 provides it.
+dependencies = []
+
+[project.optional-dependencies]
+gui = ["PySide6-Essentials>=6.11"]
+dev = ["pytest", "pytest-qt", "pytest-asyncio", "ruff", "mypy"]
+
+[project.scripts]
+buttereye-gui = "buttereye.gui.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "buttereye.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["buttereye*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.vpy", "*.lua"]
+buttereye = ["data/**/*"]
+"buttereye.gui" = ["icons/*.svg"]
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+extend-exclude = [
+    "spikes/m0f-copr-plugins/work",
+    "spikes/m0f-copr-plugins/results",
+    ".scratch-*",  # throwaway review/integration trees, never shipped
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["buttereye"]
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.14"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+explicit_package_bases = true
+ignore_missing_imports = false
+
+[[tool.mypy.overrides]]
+module = ["buttereye.core", "buttereye.core.*", "buttereye.gui", "buttereye.gui.*"]
+strict = true
+
+# Fedora's python3-pyside6 ships .pyi stubs but no py.typed marker.
+[[tool.mypy.overrides]]
+module = ["PySide6", "PySide6.*", "shiboken6", "shiboken6.*"]
+follow_untyped_imports = true
+ignore_errors = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = ["--import-mode=importlib", "-ra"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: needs real mpv and vspipe (run with --vo=null --ao=null)",
+    "gpu: needs a real GPU (/dev/nvidia0 or a non-CPU Vulkan device)",
+    "devbox: needs the installed buttereye-* RPMs of the dev box",
+    "manual: manual checklist item; never run automatically",
+]
