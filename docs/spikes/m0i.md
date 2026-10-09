@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 # Spike M0(i): performance breakdown (performance track P0)
 
-Status: **in progress** (started 2026-10-09; 1080p recorded the same day). Scope and decision rule: SCOPE §15.1.
+Status: **in progress** (started 2026-10-09; 1080p and 2160p recorded the same day). Scope and decision rule: SCOPE §15.1.
 Dev box: Fedora 44, VapourSynth R72, mpv 0.41.0, RTX 4090, Ryzen 9 5900X (12 cores / 24 threads).
 Reproducer: `tools/perf/breakdown.py` with `tools/perf/stage.vpy` (generated clips only).
 
@@ -70,11 +70,63 @@ before it becomes a default.
 Earlier, plugin-free 2160p runs: colour conversion alone reaches only ~51 source frames/s at
 4K, so at 4K the conversion does matter, unlike 1080p.
 
+## Results, full run (2026-10-09, `--mpv`)
+
+Raw numbers: `docs/spikes/m0i-results.json`; full table: `docs/spikes/m0i-table.md`. The GPU
+showed ~15–22 % "SM busy" even in stages that don't use it (the desktop was running), so SM %
+is high by about that much. No Xid faults in `journalctl -k` during the run (including
+`gpu_thread=8`).
+
+| Case | Out fps | New fps | Needed for real time | SM % |
+|---|---|---|---|---|
+| 1080p 2×, RIFE v4.26, vspipe | 71.1 | 35.5 | 48 out | 71 |
+| 1080p 2×, RIFE v4.26, mpv | 65.2 | 32.6 | 48 out | 64 |
+| 1080p 23.976 → 60, RIFE v4.26, vspipe | 40.4 | 40.4 | 60 out | 80 |
+| 1080p 2×, `gpu_thread` 8 (rife-rgb) | 81.9 | 41.0 | — | 86 |
+| 2160p 2×, RIFE v4.26 | 14.1 | 7.1 | 48 out | 32 |
+| 2160p 2×, RIFE without conversion (rife-rgb) | 14.2 | 7.1 | 48 out | 60 |
+| 2160p convert only | 50.4 src | — | — | 16 |
+| 2160p 2×, MVTools (CPU) | 37.1 | 18.6 | 48 out | 0 |
+| 1080p 2×, MVTools, vspipe / mpv | 149.8 / 73.9 | — | 48 out | — |
+
+What the full run changes:
+
+1. **1080p → 60 is not real time** with RIFE-ncnn v4.26 on the 4090: 40 fps against 60 needed.
+   Only 2× (48) fits, with ~35 % headroom in mpv. The 60 fps and display targets must keep
+   relying on the speed test (they do, §5.6), and 23.976 → 60 at 1080p is a P2 target, not a
+   P1 one.
+2. **At 4K the colour conversion is still not the limit.** RIFE with and without conversion
+   both give 7.1 new frames/s, a 3.4× shortfall for 2× live. Conversion (~50 source fps)
+   becomes the next wall only after RIFE gets ~7× faster.
+3. **4K costs 5× 1080p, not 4×** (7.1 vs 35.5 new frames/s), so 4K is worse than the pixel
+   count alone explains.
+4. **More frames in flight helps only up to a point.** `gpu_thread` 8 gives +15 % (41 new
+   frames/s) and the GPU is then ~86 % busy (~65–70 % after the desktop's share). Pipelining
+   inside the plugin (P2C) can therefore win roughly 15–30 % at 1080p, not the 3–5× needed
+   for 4K.
+5. **Model-indifference still holds at `gpu_thread` 4** (v4.26 / v4.22-lite / v4.18: 35.5 /
+   37.3 / 33.8). A model sweep at `gpu_thread` 8 is the open check: if lite pulls ahead
+   there, the ncnn kernels are the ceiling.
+6. **The implicit Vulkan layer doesn't matter** (71.2 vs 71.1; mpv 64.4 vs 65.2).
+7. **mpv halves MVTools again** (74 vs 150) while costing RIFE only ~8 %. MVTools at 4K
+   (37 out fps) can't do 2× live on this CPU in any case.
+
+**Revised decision (supersedes the 1080p-only one above):** the RIFE-ncnn plugin path is
+capped near ~41 new frames/s at 1080p and ~7 at 4K on an RTX 4090. Pipelining (P2C) is
+worth doing but can't close a 3–7× gap. The big step has to come from a faster runtime:
+**P2A (TensorRT, NVIDIA) and P2B (vs-mlrt's ncnn/ONNX Runtime, cross-vendor), benchmarked
+side by side with `scale=0.5` for 4K**, with P2C as the fallback for GPUs neither covers.
+P1 still takes: `gpu_thread` 8 (after repeated Xid checks), and the speed test choosing
+MVTools' `concurrent-frames` inside mpv.
+
 ## Still to run
 
-- [x] 1080p matrix with the plugins (above).
-- [ ] 2160p rows and the 60 fps target (full run without `--quick`, ~10–15 min).
-- [ ] Re-check `gpu_thread=8` for Xid faults over several runs (`journalctl -k`).
-- [ ] Optional: a Nsight Systems trace of one `rife` run; the standalone `rife-ncnn-vulkan`
-      image-pair rate as the inference ceiling.
+- [x] 1080p matrix with the plugins.
+- [x] 2160p rows and the 60 fps target.
+- [ ] Model sweep at `gpu_thread` 8 (are the ncnn kernels the ceiling?).
+- [ ] Repeat `gpu_thread=8` runs with Xid checks before making it a default.
+- [ ] MVTools in mpv at `concurrent-frames` 8 and 16.
+- [ ] P2A/P2B: the same stages through vs-mlrt (TensorRT and ncnn/ORT), RIFE v4.22-lite,
+      `scale` 1.0 and 0.5.
+- [ ] Optional: a Nsight Systems trace of one `rife` run.
 - [ ] Reference numbers from other tools on the same clips (kept outside the repository).

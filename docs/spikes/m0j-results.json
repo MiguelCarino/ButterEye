@@ -1,0 +1,122 @@
+[
+ {
+  "model": "rife_v4.26",
+  "ep": "cuda",
+  "provider": "CUDAExecutionProvider",
+  "size": "1080",
+  "padded": "1920x1088",
+  "setup_s": 1.1,
+  "gpu_fps": 55.5,
+  "host_fps": 38.8
+ },
+ {
+  "model": "rife_v4.26",
+  "ep": "trt-fp32",
+  "provider": "TensorrtExecutionProvider",
+  "size": "1080",
+  "padded": "1920x1088",
+  "setup_s": 20.2,
+  "gpu_fps": 92.8,
+  "host_fps": 54.6
+ },
+ {
+  "model": "rife_v4.26",
+  "ep": "trt-fp16",
+  "provider": "TensorrtExecutionProvider",
+  "size": "1080",
+  "padded": "1920x1088",
+  "setup_s": 39.1,
+  "gpu_fps": 148.3,
+  "host_fps": 69.6
+ },
+ {
+  "model": "rife_v4.26",
+  "ep": "cuda",
+  "provider": "CUDAExecutionProvider",
+  "size": "2160",
+  "padded": "3840x2176",
+  "setup_s": 0.6,
+  "gpu_fps": 12.6,
+  "host_fps": 9.0
+ },
+ {
+  "model": "rife_v4.26",
+  "ep": "trt-fp32",
+  "provider": "TensorrtExecutionProvider",
+  "size": "2160",
+  "padded": "3840x2176",
+  "setup_s": 29.1,
+  "gpu_fps": 21.2,
+  "host_fps": 12.5
+ },
+ {
+  "model": "rife_v4.26",
+  "ep": "trt-fp16",
+  "provider": "TensorrtExecutionProvider",
+  "size": "2160",
+  "padded": "3840x2176",
+  "setup_s": 52.0,
+  "gpu_fps": 33.5,
+  "host_fps": 16.2
+ },
+ {
+  "model": "rife_v4.22_lite",
+  "ep": "cuda",
+  "provider": "CUDAExecutionProvider",
+  "size": "1080",
+  "padded": "1920x1088",
+  "setup_s": 0.2,
+  "gpu_fps": 61.6,
+  "host_fps": 41.9
+ },
+ {
+  "model": "rife_v4.22_lite",
+  "ep": "trt-fp32",
+  "provider": "TensorrtExecutionProvider",
+  "size": "1080",
+  "padded": "1920x1088",
+  "setup_s": 4.5,
+  "gpu_fps": 103.5,
+  "host_fps": 58.0
+ },
+ {
+  "model": "rife_v4.22_lite",
+  "ep": "trt-fp16",
+  "provider": "TensorrtExecutionProvider",
+  "size": "1080",
+  "padded": "1920x1088",
+  "setup_s": 7.9,
+  "gpu_fps": 174.0,
+  "host_fps": 75.2
+ },
+ {
+  "model": "rife_v4.22_lite",
+  "ep": "cuda",
+  "provider": "CUDAExecutionProvider",
+  "size": "2160",
+  "padded": "3840x2176",
+  "setup_s": 0.5,
+  "gpu_fps": 14.3,
+  "host_fps": 9.8
+ },
+ {
+  "model": "rife_v4.22_lite",
+  "ep": "trt-fp32",
+  "provider": "TensorrtExecutionProvider",
+  "size": "2160",
+  "padded": "3840x2176",
+  "setup_s": 5.6,
+  "gpu_fps": 23.6,
+  "host_fps": 13.4
+ },
+ {
+  "model": "rife_v4.22_lite",
+  "ep": "trt-fp16",
+  "provider": "TensorrtExecutionProvider",
+  "size": "2160",
+  "padded": "3840x2176",
+  "setup_s": 9.5,
+  "gpu_fps": 38.8,
+  "host_fps": 17.2
+ }
+]
