@@ -5,6 +5,12 @@
 Markers (pyproject.toml): ``integration`` needs mpv + vspipe on PATH; ``gpu``
 needs /dev/nvidia0 or a non-CPU Vulkan ICD with a render node; ``devbox`` needs
 the installed buttereye-* RPMs; ``manual`` never runs unless ``--run-manual``.
+
+Memory failsafes (``tools/memguard.py``): the run refuses to start when the
+machine is short of memory, re-runs itself inside a systemd user scope capped
+at ``TEST_MEM_MAX_MIB`` (the kernel kills only the tests when they exceed it),
+and a watchdog stops the run and every mpv/vspipe it started when the system's
+available memory falls below the floor. See that module for the overrides.
 """
 
 from __future__ import annotations
@@ -13,6 +19,7 @@ import functools
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -20,9 +27,39 @@ from pathlib import Path
 
 import pytest
 
+from tools import memguard
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 DEVBOX_RPMS = ("buttereye-vs-rife-ncnn", "buttereye-vs-mvtools", "buttereye-rife-ncnn-models")
+
+
+TEST_MEM_MAX_MIB = 8192
+_WATCHDOG = pytest.StashKey[memguard.Watchdog]()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    reason = memguard.preflight()
+    if reason is not None:
+        pytest.exit(f"memory failsafe: {reason}", returncode=3)
+    cap = memguard.max_mib(TEST_MEM_MAX_MIB)
+    argv = [sys.executable, "-m", "pytest", *config.invocation_params.args]
+    why = memguard.reexec_capped(argv, cap, "tests")  # returns only when not re-run
+    if not memguard.capped():
+        print(f"memory failsafe: no hard cap ({why}); watchdog only", file=sys.stderr)
+    config.stash[_WATCHDOG] = memguard.Watchdog(label="pytest").start()
+
+
+def pytest_report_header(config: pytest.Config) -> str:
+    cap = os.environ.get("BUTTEREYE_MEMCAP")
+    head = f"memory failsafe: cap {cap} MiB" if cap else "memory failsafe: no hard cap"
+    return f"{head}, watchdog floor {memguard.floor_mib()} MiB available"
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    dog = config.stash.get(_WATCHDOG, None)
+    if dog is not None:
+        dog.stop()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

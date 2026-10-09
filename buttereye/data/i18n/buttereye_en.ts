@@ -4827,7 +4827,12 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>Drop a video here</source>
+        <source>Drop a video here to play it smooth</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Drop a video here to save a smooth copy</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5148,11 +5153,6 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>mpv keeps playing; ButterEye stops managing it.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>or</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

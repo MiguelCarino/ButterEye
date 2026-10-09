@@ -120,9 +120,11 @@ def test_job_words_without_codes() -> None:
 def test_convert_entry_points_follow_the_capability(make_simple: Make, qtbot: Any) -> None:
     devbox = make_simple("devbox_now", ready=False)
     qtbot.waitUntil(lambda: devbox.bridge.is_ready, timeout=5000)
+    assert not devbox.convert_drop.isVisibleTo(devbox)
     assert not devbox.convert_button.isVisibleTo(devbox)
     assert not devbox.act_convert.isEnabled()
     win = make_simple("live_active")
+    assert win.convert_drop.isVisibleTo(win)
     assert win.convert_button.isVisibleTo(win) and win.act_convert.isEnabled()
     sid = SessionId("s1")
     qtbot.waitUntil(lambda: sid in win.rows)
@@ -133,6 +135,30 @@ def test_convert_entry_points_follow_the_capability(make_simple: Make, qtbot: An
 
 def _chooser(path: Path) -> Any:
     return lambda _parent: path
+
+
+def test_two_drop_zones_play_and_convert(make_simple: Make, qtbot: Any, tmp_path: Path) -> None:
+    from PySide6.QtCore import QUrl
+    from PySide6.QtWidgets import QScrollArea
+
+    src = tmp_path / "Klaus.mkv"
+    src.write_bytes(b"x")
+    win = make_simple("all_ready")
+    assert not win.findChildren(QScrollArea)  # the window never scrolls (GUI.md §12.5)
+    assert win.drop.objectName() == "dropZone"
+    assert win.convert_drop.objectName() == "convertZone"
+    played: list[Path] = []
+    win.play_file = played.append  # type: ignore[method-assign]
+    win.drop.fileChosen.disconnect()
+    win.drop.fileChosen.connect(win.play_file)
+    assert win.drop.offer_urls([QUrl.fromLocalFile(str(src))])
+    assert played == [src] and win.convert_dialog is None
+    assert win.convert_drop.offer_urls([QUrl.fromLocalFile(str(src))])
+    dlg = win.convert_dialog
+    assert dlg is not None
+    qtbot.waitUntil(lambda: dlg.save_button.isEnabled(), timeout=5000)
+    assert calls(win, "render_probe")[-1].args[0] == src
+    dlg.reject()
 
 
 def test_dialog_probes_and_enqueues_the_choices(

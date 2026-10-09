@@ -1899,10 +1899,12 @@ Owner feedback: the multi-page window "looks like a clone of existing proprietar
 │ (icon) ButterEye                  │
 │        Smoother motion for the …  │
 │ [problem line, only when needed]  │
-│ ╭───────────────────────────────╮ │
-│ │       Drop a video here       │ │
-│ │     or  [ Open video… ]       │ │
-│ ╰───────────────────────────────╯ │
+│ ╭──────────────╮ ╭──────────────╮ │
+│ │ Drop a video │ │ Drop a video │ │
+│ │ here to play │ │ here to save │ │
+│ │  it smooth   │ │ a smooth copy│ │
+│ │[Open video…] │ │[Convert a v…]│ │
+│ ╰──────────────╯ ╰──────────────╯ │
 │ Smooth motion   (●  ) On          │
 │ Target          ( Double (2×) ▾ ) │
 │ Smoothness      ( Auto (rec.) ▾ ) │
@@ -1964,8 +1966,9 @@ The problem line (inline, never modal) shows one sentence and a "Details" button
 ### 12.5 Identity and accessibility
 
 - One brand colour: butter gold `theme.BUTTER_HSL` = (45, 204, 140) ≈ #E8B931, applied by `theme.butter_palette()` to Highlight and Accent with the palette's darkest text/background colour as HighlightedText (dark text on gold), then tuned by `accessible_palette()` like every role: in light schemes it settles on a deeper amber (≥ 3:1 against the window for the focus frame, ≥ 4.5:1 under the dark text); in dark schemes it stays bright gold. `ThemeController(app, accent=True)` is the default. It is defined with `QColor.fromHsl` from the named triple — the single sanctioned colour constant in `gui/`.
-- Rounded drop zone filled with Base (`DropZone.set_filled`), larger heading (1.8×), generous spacing in font-height units, glyph + word statuses everywhere.
-- Keyboard: Tab order Open video → Smooth motion → Target → Smoothness → row buttons → Details. Ctrl+O opens, F1 opens Details, Ctrl+Q quits (the usual quit dialog when players are live). The drop zone itself is not a Tab stop (the Open button is the keyboard path). Every control has an accessible name; combos and the switch have buddy labels with mnemonics.
+- Two rounded drop zones side by side, filled with Base (`DropZone.set_filled`): **play** (left, `dropZone`, plays the file smooth in mpv) and **convert** (right, `convertZone`, opens the Save a smooth copy dialog for the file). Larger heading (1.8×), generous spacing in font-height units, glyph + word statuses everywhere.
+- **No scrolling (owner decision 2026-10-09).** The window has no scroll area: the drop zones shrink (to 6 font heights) to make room for Now playing and Saving copies rows, and the window's minimum size follows its content.
+- Keyboard: Tab order Open video → Convert a video → Smooth motion → Target → Smoothness → row buttons → Details. Ctrl+O opens, F1 opens Details, Ctrl+Q quits (the usual quit dialog when players are live). The drop zones are not Tab stops (their buttons are the keyboard path). Every control has an accessible name; combos and the switch have buddy labels with mnemonics.
 
 ### 12.6 Tests and screenshots
 
@@ -1974,7 +1977,7 @@ The problem line (inline, never modal) shows one sentence and a "Details" button
 
 ### 12.7 Save a smooth copy (offline render, SCOPE §7.8)
 
-Entry points: "Convert a video…" (a plain button next to "Open video", also Ctrl+Shift+O; opens the file chooser) and "Save smooth copy…" on every Now playing row (the row's file). Both are hidden while `Feature.RENDER` is unavailable for a reason the user can't fix here (`NOT_IMPLEMENTED`); with `MISSING_DEPENDENCY` (ffms2 missing) they stay visible and the dialog opens on the one-line reason and its command (`sudo dnf install ffms2`).
+Entry points: the convert drop zone (drop a file, or its "Convert a video…" button, also Ctrl+Shift+O, which opens the file chooser) and "Save smooth copy…" on every Now playing row (the row's file). The convert zone and the row button are hidden while `Feature.RENDER` is unavailable for a reason the user can't fix here (`NOT_IMPLEMENTED`); with `MISSING_DEPENDENCY` (ffms2 missing) they stay visible and the dialog opens on the one-line reason and its command (`sudo dnf install ffms2`).
 
 **Dialog** (`gui/convert_dialog.py`, `ConvertDialog`, modal to the window): heading "Save a smooth copy of <file>". On open it calls `render_probe(src, profile_id="simple")` (busy line "Reading the video…").
 - **Refusal** (`probe.refusal`, e.g. HLG/Dolby Vision, an undecodable codec, or HDR10 in the SDR-first build): its title in one sentence, without a code; Save stays disabled.

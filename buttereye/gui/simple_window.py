@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -111,7 +110,7 @@ _log = logging.getLogger(__name__)
 
 APP_NAME = "ButterEye"
 APP_ICON = ICON_DIR / "buttereye.svg"
-DEFAULT_SIZE = QSize(460, 560)
+DEFAULT_SIZE = QSize(540, 540)
 MINIMUM_SIZE = QSize(360, 420)
 SCREEN_FRACTION = 0.9
 
@@ -555,15 +554,11 @@ class SimpleWindow(QMainWindow):
         outer.setSpacing(0)
         self.setCentralWidget(central)
 
-        scroll = QScrollArea(central)
-        scroll.setObjectName("simpleScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        body = QWidget()
+        # No scroll area: everything fits the window, and the drop zones give way
+        # first when Now playing or Saving copies rows appear.
+        body = QWidget(central)
         body.setObjectName("simpleBody")
-        scroll.setWidget(body)
-        outer.addWidget(scroll, 1)
+        outer.addWidget(body, 1)
         lay = QVBoxLayout(body)
         lay.setContentsMargins(unit * 3 // 2, unit * 3 // 2, unit * 3 // 2, unit)
         lay.setSpacing(unit)
@@ -608,40 +603,32 @@ class SimpleWindow(QMainWindow):
         self.problem.hide()
         lay.addWidget(self.problem)
 
-        # drop zone + Open
-        self.drop = DropZone(self.tr("Drop a video here"), body, chooser=chooser)
-        self.drop.setObjectName("dropZone")
-        self.drop.set_filled(True)
-        self.drop.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # the Open button is the keyboard path
-        self.drop.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.drop.setMinimumHeight(unit * 7)
-        big = QFont(self.drop.label.font())
-        if big.pointSizeF() > 0:
-            big.setPointSizeF(big.pointSizeF() * 1.25)
-        self.drop.label.setFont(big)
-        dl = self.drop.layout()
-        assert isinstance(dl, QVBoxLayout)
-        dl.setContentsMargins(unit, unit * 3 // 2, unit, unit * 3 // 2)
-        dl.setSpacing(unit * 3 // 4)
-        dl.insertStretch(0, 1)
-        row = QHBoxLayout()
-        row.addStretch(1)
-        self.or_label = QLabel(self.tr("or"), self.drop)
-        self.or_label.setTextFormat(Qt.TextFormat.PlainText)
-        row.addWidget(self.or_label)
+        # two drop zones: play smooth now (left), save a smooth copy (right)
+        zones = QHBoxLayout()
+        zones.setSpacing(unit)
+        self.drop = self._zone(
+            body,
+            self.tr("Drop a video here to play it smooth"),
+            "dropZone",
+            chooser,
+        )
         self.open_button = PrimaryButton(self.tr("&Open video…"), self.drop)
         self.open_button.setObjectName("openVideo")
         self.open_button.setAccessibleName(self.tr("Open video"))
         self.open_button.setDefault(True)
-        self.open_button.setMinimumHeight(round(unit * 2.2))
-        self.open_button.setMinimumWidth(unit * 8)
         self.open_button.clicked.connect(self.drop.choose)
-        row.addWidget(self.open_button)
-        row.addStretch(1)
-        dl.addLayout(row)
-        crow = QHBoxLayout()
-        crow.addStretch(1)
-        self.convert_button = QPushButton(self.tr("&Convert a video…"), self.drop)
+        self._zone_button(self.drop, self.open_button, unit)
+        self.drop.fileChosen.connect(self.play_file)
+        self.drop.rejected.connect(lambda text: self.set_status("info", without_code(text)))
+        zones.addWidget(self.drop, 1)
+
+        self.convert_drop = self._zone(
+            body,
+            self.tr("Drop a video here to save a smooth copy"),
+            "convertZone",
+            lambda parent: self._chooser(parent),
+        )
+        self.convert_button = QPushButton(self.tr("&Convert a video…"), self.convert_drop)
         self.convert_button.setObjectName("convertVideo")
         self.convert_button.setAccessibleName(self.tr("Convert a video"))
         self.convert_button.setAccessibleDescription(
@@ -649,14 +636,12 @@ class SimpleWindow(QMainWindow):
         )
         self.convert_button.setAutoDefault(False)
         self.convert_button.clicked.connect(self.convert_video)
-        self.convert_button.hide()
-        crow.addWidget(self.convert_button)
-        crow.addStretch(1)
-        dl.addLayout(crow)
-        dl.addStretch(1)
-        self.drop.fileChosen.connect(self.play_file)
-        self.drop.rejected.connect(lambda text: self.set_status("info", without_code(text)))
-        lay.addWidget(self.drop, 1)
+        self._zone_button(self.convert_drop, self.convert_button, unit)
+        self.convert_drop.fileChosen.connect(self._convert_dropped)
+        self.convert_drop.rejected.connect(lambda text: self.set_status("info", without_code(text)))
+        self.convert_drop.hide()
+        zones.addWidget(self.convert_drop, 1)
+        lay.addLayout(zones, 1)
 
         # settings
         grid = QGridLayout()
@@ -726,7 +711,6 @@ class SimpleWindow(QMainWindow):
         cl.addLayout(self.jobs_box)
         self.copies.hide()
         lay.addWidget(self.copies)
-        lay.addStretch(0)
 
         # bottom status line
         line = QFrame(central)
@@ -756,6 +740,37 @@ class SimpleWindow(QMainWindow):
         self.setTabOrder(self.convert_button, self.smooth_switch)
         self.setTabOrder(self.smooth_switch, self.target_combo)
         self.setTabOrder(self.target_combo, self.smooth_combo)
+
+    def _zone(self, parent: QWidget, text: str, name: str, chooser: FileChooser | None) -> DropZone:
+        unit = self.fontMetrics().height()
+        zone = DropZone(text, parent, chooser=chooser)
+        zone.setObjectName(name)
+        zone.set_filled(True)
+        zone.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # its button is the keyboard path
+        zone.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        zone.setMinimumHeight(unit * 6)
+        big = QFont(zone.label.font())
+        if big.pointSizeF() > 0:
+            big.setPointSizeF(big.pointSizeF() * 1.15)
+        zone.label.setFont(big)
+        zl = zone.layout()
+        assert isinstance(zl, QVBoxLayout)
+        zl.setContentsMargins(unit, unit, unit, unit)
+        zl.setSpacing(unit * 3 // 4)
+        zl.insertStretch(0, 1)
+        return zone
+
+    @staticmethod
+    def _zone_button(zone: DropZone, button: QPushButton, unit: int) -> None:
+        button.setMinimumHeight(round(unit * 2.2))
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(button)
+        row.addStretch(1)
+        zl = zone.layout()
+        assert isinstance(zl, QVBoxLayout)
+        zl.addLayout(row)
+        zl.addStretch(1)
 
     def _set_logo(self) -> None:
         size = round(self.fontMetrics().height() * 3.2)
@@ -948,7 +963,7 @@ class SimpleWindow(QMainWindow):
         self._convert_visible = rst is not None and (
             rst.available or rst.reason is not Reason.NOT_IMPLEMENTED
         )
-        self.convert_button.setVisible(self._convert_visible)
+        self.convert_drop.setVisible(self._convert_visible)
         self.act_convert.setEnabled(self._convert_visible)
         for row in self._rows.values():
             row.copy_button.setVisible(self._convert_visible and row.snap.source is not None)
@@ -1348,6 +1363,10 @@ class SimpleWindow(QMainWindow):
         if path is not None:
             self.convert_file(path)
 
+    def _convert_dropped(self, path: Path) -> None:
+        if self._convert_visible:
+            self.convert_file(path)
+
     def save_copy(self, sid: SessionId) -> None:
         snap = self._sessions.get(sid)
         if snap is not None and snap.source is not None:
@@ -1536,7 +1555,7 @@ class SimpleWindow(QMainWindow):
 
     def _on_fatal(self, err: ButterEyeError) -> None:
         self._busy = None
-        for w in (self.drop, self.open_button, self.smooth_switch):
+        for w in (self.drop, self.open_button, self.convert_drop, self.smooth_switch):
             w.setEnabled(False)
         self.target_combo.setEnabled(False)
         self.smooth_combo.setEnabled(False)

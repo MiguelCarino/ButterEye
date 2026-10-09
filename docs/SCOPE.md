@@ -64,7 +64,7 @@ At 4K, RIFE's RGB-float frames and the CPU-side YUV↔RGB conversion make memory
 - Windows and macOS.
 - Linux distributions other than Fedora 44 and 45, including Arch. Distro-installed plugins are still detected generically (§4.4 guard), with no support commitment (§9).
 - An embedded player. That would be strategy B, considered after v1 at the earliest.
-- Upscaling or denoising. The architecture does not rule them out.
+- Upscaling or denoising. The architecture does not rule them out; the post-v1 plan is §15.2.
 - Any network-reachable interface: web UI, phone remote, or HTTP/TCP control. AGPL §13 puts a duty on anyone who **modifies** ButterEye and lets users interact with it remotely: they must offer those users the Corresponding Source. Through §13 of the AGPL and GPLv3, that duty also covers any GPL-3.0 code combined in-process. Local Unix-socket IPC, D-Bus portals and pipes are not "remote interaction through a computer network".
 - Telemetry, analytics, crash upload or update checks. ButterEye makes **no network connections** except downloads the user starts (§4.8). Logs, benchmark results (including GPU UUIDs) and crash traces stay local. `doctor --report` produces a text bundle the user can attach to a bug report themselves. Home paths and media filenames are redacted by default, and `engines/` is always excluded.
 - Loading, reading or redistributing any component, profile or asset of a proprietary interpolation tool.
@@ -680,7 +680,7 @@ Test media follows the rules in §6.1.
 - **Target rate offline.** `Double (2×)` or a fixed fps from the profile; a display target ("Match your display") has no meaning for a file and renders as 2×.
 - **Engine offline.** The profile's engine; Automatic means RIFE-ncnn when it is installed with a model (time, not real-time speed, is the cost offline), else MVTools.
 - **First cut: SDR only (owner decision 2026-10-08).** SDR/CFR conversion ships first, then HDR10 (§7.4) as before. Until then an HDR10 source is refused with a plain explanation (BE-4003), not converted wrongly.
-- **Simple window.** Each Now playing row has "Save smooth copy…", and "Convert a video…" sits next to "Open video". One small dialog (size with estimated times, target, encoder, output path); a progress row with Cancel. Details are in GUI.md §12.7.
+- **Simple window.** Each Now playing row has "Save smooth copy…", and the window has a second drop zone, "save a smooth copy", beside the play zone (amended 2026-10-09; its button is "Convert a video…"). One small dialog (size with estimated times, target, encoder, output path); a progress row with Cancel. Details are in GUI.md §12.7.
 
 ---
 
@@ -973,6 +973,7 @@ Each milestone after M0 is shippable and versioned (a COPR build with a version 
   - (f) **COPR plugin builds**: `buttereye-vs-mvtools` (patched for R72) and `buttereye-vs-rife-ncnn` with `-Duse_system_ncnn=true` against Fedora ncnn 20250916, built in mock (network off) for `fedora-44-x86_64` and `fedora-45-x86_64`, then loaded from the private directory and run in mpv. If system ncnn fails, fall back to the bundled ncnn submodule tarball. Per-chroot builds replace the earlier wheel-ABI question. **Recorded 2026-10-07** (`docs/spikes/m0f.md`): all three packages build on both chroots; Fedora ncnn is a no-go (GPU faults at `gpu_thread` ≥ 2), the bundled pinned ncnn is a go (no Xid 13 in 42 headless runs, ~72 fps at 1080p 2x), adopted (§9). mpv playback with the bundled build and MVTools in mpv were played later the same day (m0f.md, "mpv playback, bundled build"); the bundled build then showed 2 × Xid 109 in vspipe with rife-v4.25-lite (m0f.md, "Bundled-build faults").
   - (g) Non-copy hwdec through mpv's autoconvert path.
   - (h) PySide6.QtAsyncio driving the core loop. **Recorded 2026-10-07** (`docs/spikes/m0h.md`): no-go on PySide6 6.11.2 (no subprocess, Unix-socket, fd-reader, pipe or signal-handler support); the core loop runs in a dedicated thread with a Qt-signal bridge (§4.1).
+  - (i) **Performance breakdown** (performance track P0, §15.1; added 2026-10-09). Split the cost of live and offline smoothing into colour conversion, RIFE inference, transfers, the mpv filter path and Vulkan-layer overhead, with `tools/perf/breakdown.py`. Recorded in `docs/spikes/m0i.md`. It decides between the plugin fixes (P2C) and a faster runtime (P2A/P2B). It is not a v1 gate.
   - **Exit:** every spike has a recorded result, and the scope is adjusted where a spike failed.
 - **M1: ButterEye COPR (plugins first), CLI play and live control.** Play needs the plugins, so COPR work starts here.
   - COPR scope: create the FAS account (or request the `@buttereye` FAS group, §13 Q5); create the project for `fedora-44-x86_64` and `fedora-45-x86_64` with `--enable-net off`; write ButterEye's own MIT-licensed specs; build SRPMs locally with `rpmbuild -bs` and upload them with `copr-cli build` for `buttereye-vs-mvtools`, `buttereye-vs-rife-ncnn`, `buttereye-rife-ncnn-models` and a pre-release `buttereye`; publish the signing-key fingerprint and the "Source for every binary" page. Every M1 upload already ships `COPYING`, the §7 permission text, `THIRD-PARTY`/`NOTICE` and all `%license` files, and `buttereye --version`/`buttereye licence` print the AGPL legal notices. No git-based build steps.
@@ -1057,6 +1058,30 @@ No git repository exists yet (owner decision 2026-10-07), so there are no outsid
 - **Issue templates** ask for `buttereye doctor --report` output (redacted by default) and error codes (`BE-xxxx`).
 - **Spike results** live in `docs/spikes/`. Error codes are documented in `docs/errors.md`.
 
+## 15. After v1: performance track and filter chain (added 2026-10-09)
+
+Nothing in this section is a v1 gate. It records the owner-approved direction so that v1 work does not close it off.
+
+### 15.1 Performance track (P0–P4)
+
+**Evidence (dev box, 2026-10-08/09).** At 1080p 23.976 → 2×, RIFE v4.26, v4.22-lite and v4.18 measure the same: ~69–70 fps in vspipe and ~62 fps in mpv (MVTools: 139 and 118). Models of clearly different cost running at the same rate mean inference is not the limit. A 4K 23.976 → 60 render ran at 8.25 output fps (14,774 frames in 1,792 s), almost exactly a quarter of the 1080p rate, so the limit grows with pixel count: CPU YUV↔RGBS conversion, float transfers to and from the GPU, or the plugin's per-frame handling (see also §1 on 4K bandwidth). A 4K video shrunk to 720p still dropped 14–19 % of frames at start. An implicit Vulkan layer from another tool (`VK_LAYER_NV_dlssnr`) loads into every RIFE process.
+
+- **P0, measure (spike M0(i)).** `tools/perf/breakdown.py` runs vspipe and mpv stages one at a time: source only; source + YUV→RGBS→YUV; RIFE per model and per `gpu_thread` (1/2/4/8); MVTools; each at 1080p and 2160p; with and without implicit Vulkan layers (`VK_LOADER_LAYERS_DISABLE`); while sampling `nvidia-smi dmon` (SM %, PCIe rx/tx). Optional: a Nsight Systems trace and the standalone `rife-ncnn-vulkan` image-pair rate as the inference ceiling. Reference numbers from other tools are kept outside the repository. **Decision rule:** GPU busy < ~60 % → overhead-bound → P2C first; ~100 % → inference-bound → P2A/P2B.
+- **P1, cheap wins in ButterEye.** Keep implicit Vulkan layers out of the mpv and vspipe environment if P0 shows a cost. Prefer integer multipliers for demanding sources (at 2× the source frames pass through, §4.4). Have the benchmark choose `gpu_thread` and `concurrent-frames` per resolution. Replace the Python per-frame scene-change callback with a native filter.
+- **P2, faster RIFE.** (A) Make the TensorRT path the NVIDIA default once the user has installed it (still user-built and out of process, §5.2, §8.3). (B) Benchmark vs-mlrt's other runtimes (ncnn, ONNX Runtime, MIGraphX), which also support RIFE `scale=0.5` for 4K. (C) Patch RIFE-ncnn-Vulkan, depending on P0: YUV input with GPU-side conversion, fp16 transfers, one upload per source frame, overlapped upload/compute/download, `scale` for v4 models. Offered upstream; carried in the COPR package meanwhile.
+- **P3, CPU and lightweight GPU path.** MVTools: analyse a downscaled clip, larger blocks at 4K, `BlockFPS` when `FlowFPS` cannot keep up. Research: `VK_NV_optical_flow` (the hardware optical-flow engine through the Vulkan driver, which counts as a system library, §8.1) as a free GPU motion engine.
+- **P4, mpv filter path** (~10 %). The vapoursynth filter takes system-memory frames only, so copy-back decode stays; changing that is upstream mpv work and not planned.
+- **Targets (dev box).** 1080p → 60 fps with ≥ 2× headroom; 4K at 2× in real time with RIFE; 4K → 60 offline at ≥ 30 fps.
+
+### 15.2 Filter chain and upscaling
+
+- **Two slots.** (1) The generated script, before mpv renders: denoise, deband, deinterlace, ML restoration and ML upscaling. Cleaning stages run before interpolation (noise and banding mislead motion search). (2) mpv GPU shaders (`--glsl-shaders`) after the filter, at almost no cost: CAS sharpening, FSR 1, FSRCNNX/RAVU, Anime4K-style shaders, deband. ButterEye passes these at launch and over IPC; it still never edits `mpv.conf` (§4.3).
+- **Order and cost.** Upscaling before interpolation makes RIFE work at the larger size; after it, there are 2–2.5× as many frames to upscale. The default is interpolate at the source size, then upscale with a shader.
+- **ML upscaling** (Real-ESRGAN compact, SPAN and similar) runs on the same runtimes as RIFE (P2), so P2 is built as a general model runtime, not a RIFE-only one. Light models are expected in real time on high-end GPUs; heavy ones are offline only. Each model's licence is checked before it is packaged, as for the RIFE models (§5.4).
+- **Vendor video upscalers.** NVIDIA's video super-resolution SDKs are proprietary; if one is usable on Linux, it follows the TensorRT pattern: installed by the user, loaded in mpv or vspipe, never in ButterEye's process (§8.1), labelled experimental.
+- **Game upscalers and frame generation (DLSS and similar)** need engine inputs (motion vectors, depth, jitter) that decoded video lacks. They are not a planned path. A vendor video mode, if one appears, would follow the pattern above.
+- **Needed in the core.** The script contract (§4.4) holds an ordered list of stages, each declaring its slot; the benchmark and the "play smaller" decision (GUI.md §11.9) budget the whole chain, not interpolation alone.
+
 ---
 
 ## Appendix A. Review notes (rejected or modified critiques)
@@ -1115,6 +1140,14 @@ Corrections made while applying these decisions: `vstrt` is a VapourSynth **API3
 | Item | Decision | Where applied |
 |---|---|---|
 | Live stalls on a 4090 at 180 Hz (BE-3004) | Live cap = in-mpv bench fps ÷ 1.25 (`LIVE_HEADROOM`; the bench's 1.15 real-time verdict unchanged), scaled by pixel count from any measured size; engine chosen after the target (Automatic: benchmarked RIFE-ncnn only if it at least doubles, else MVTools; pinned RIFE-ncnn that can't → MVTools for the file, with a notice); nothing keeps up → plain notice, no filter; benchmark rule `fps_max` +1 %; a RIFE-ncnn stall, device loss or Xid switches that session to MVTools once, never back | §4.11, §5.3, §5.6, GUI.md §11.9 |
+
+### 2026-10-09: performance track, filter chain, two drop zones
+
+| Item | Decision | Where applied |
+|---|---|---|
+| Performance | Measure first (spike M0(i), P0), then fix the plugin or move to a faster runtime per the P0 decision rule | §12 M0(i), §15.1 |
+| Filters and upscaling | A post-v1 filter chain with two slots (script, mpv shaders); ML upscaling on the P2 runtime; vendor upscalers only out of process; game upscalers/frame generation not planned | §2 non-goals, §15.2 |
+| Simple window | Two drop zones (play, save a smooth copy); no scrolling | §7.8, GUI.md §12, §12.5, §12.7 |
 
 ### 2026-10-08: converting videos (offline render in the simple window)
 

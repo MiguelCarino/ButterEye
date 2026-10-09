@@ -116,8 +116,10 @@ Runtime tools the core talks to: `mpv` (≥ 0.41 with the VapourSynth filter), `
 
 (The `buttereye-gui` entry point does the same once the package is installed.)
 
-ButterEye opens one small window. Drop a video on it (or press **Open video…**,
-Ctrl+O) and it plays in mpv with smooth motion. There are three choices:
+ButterEye opens one small window with two drop zones. Drop a video on the left one
+(or press **Open video…**, Ctrl+O) and it plays in mpv with smooth motion; drop one on
+the right (or press **Convert a video…**, Ctrl+Shift+O) to save a smooth copy as a new
+file. There are three choices:
 
 - **Smooth motion** — on or off. Off: new videos play normally, and videos already
   playing turn smoothing off.
@@ -154,6 +156,14 @@ QT_QPA_PLATFORM=offscreen QT_ACCESSIBILITY=1 .venv/bin/pytest
 .venv/bin/ruff check .
 .venv/bin/mypy buttereye/core buttereye/gui   # strict, see pyproject.toml
 ```
+
+The suite runs under memory failsafes (`tools/memguard.py`). It refuses to start when less
+than 4 GiB is available, and runs inside a systemd user scope capped at 8 GiB, so only the
+tests are killed if they go over. A watchdog also stops the run and every mpv/vspipe it
+started when the system falls below 3 GiB available. To change these, set
+`BUTTEREYE_MEM_MAX_MIB`, `BUTTEREYE_MEM_START_MIB` or `BUTTEREYE_MEM_FLOOR_MIB`;
+`BUTTEREYE_NO_MEMCAP=1` drops the cap but keeps the other two. `tools/perf/breakdown.py`
+uses the same failsafes.
 
 Markers: `integration` (needs `mpv` and `vspipe`), `gpu` (needs a real GPU), `devbox`
 (needs the installed `buttereye-*` RPMs) are skipped automatically when their
