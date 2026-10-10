@@ -179,19 +179,14 @@ honours `NO_COLOR`. Exit codes: 0 ok, 1 failure, 2 usage or config, 3 blocking `
 issue, 4 dependency missing, 130 cancelled. `attach` and `detach` say they aren't in this
 build yet.
 
-## Building the RPM
+## Building the RPMs
 
-`packaging/buttereye.spec` builds the application package (noarch) from the sdist, with
-the desktop file and AppStream metadata next to it. The plugin packages
-(`buttereye-vs-mvtools`, `buttereye-vs-rife-ncnn`, `buttereye-rife-ncnn-models`) have their
-own specs (`spikes/m0f-copr-plugins/specs/` until they move to `packaging/`).
+`packaging/` holds the specs for the application and its three plugin packages (SCOPE §9;
+details in `packaging/README.md`). One command builds the SRPMs and rebuilds each in mock
+for Fedora 44 and 45 with networking off, as the COPR will:
 
 ```sh
-W=~/rpmbuild-buttereye && mkdir -p $W/SOURCES $W/SRPMS
-.venv/bin/python -m build --sdist --outdir $W/SOURCES .
-cp packaging/io.github.buttereye.ButterEye.{desktop,metainfo.xml} $W/SOURCES/
-rpmbuild -bs --define "_sourcedir $W/SOURCES" --define "_srcrpmdir $W/SRPMS" packaging/buttereye.spec
-mock -r fedora-44-x86_64 --rebuild $W/SRPMS/buttereye-*.src.rpm   # network off, as in COPR
+packaging/build.sh                    # or: packaging/build.sh --srpm-only
 ```
 
 ## Tests and checks
