@@ -1,0 +1,738 @@
+{
+ "speed": [
+  {
+   "method": "bilinear",
+   "ms_per_frame": 8.86,
+   "extra_ms": -0.15
+  },
+  {
+   "method": "spline36",
+   "ms_per_frame": 9.31,
+   "extra_ms": 0.31
+  },
+  {
+   "method": "lanczos",
+   "ms_per_frame": 9.37,
+   "extra_ms": 0.36
+  },
+  {
+   "method": "ewa_lanczos",
+   "ms_per_frame": 9.63,
+   "extra_ms": 0.63
+  },
+  {
+   "method": "ewa_lanczossharp",
+   "ms_per_frame": 9.67,
+   "extra_ms": 0.67
+  },
+  {
+   "method": "ewa_lanczos4sharpest",
+   "ms_per_frame": 9.95,
+   "extra_ms": 0.95
+  },
+  {
+   "method": "FSRCNNX_x2_8",
+   "ms_per_frame": 10.73,
+   "extra_ms": 1.73
+  },
+  {
+   "method": "FSRCNNX_x2_16",
+   "ms_per_frame": 12.36,
+   "extra_ms": 3.36
+  },
+  {
+   "method": "ravu-lite-ar-r4",
+   "ms_per_frame": 10.17,
+   "extra_ms": 1.17
+  },
+  {
+   "method": "ravu-r3-yuv",
+   "ms_per_frame": 10.06,
+   "extra_ms": 1.05
+  },
+  {
+   "method": "ArtCNN_C4F16",
+   "ms_per_frame": 11.87,
+   "extra_ms": 2.86
+  },
+  {
+   "method": "Anime4K_CNN_x2_M",
+   "ms_per_frame": 9.77,
+   "extra_ms": 0.77
+  }
+ ],
+ "quality": [
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "method": "bilinear",
+   "psnr": 45.82,
+   "psnr_luma": 46.43,
+   "ssim": 0.98921
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "method": "spline36",
+   "psnr": 48.47,
+   "psnr_luma": 49.67,
+   "ssim": 0.99245
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "method": "lanczos",
+   "psnr": 48.61,
+   "psnr_luma": 49.85,
+   "ssim": 0.99257
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "method": "ewa_lanczos",
+   "psnr": 48.41,
+   "psnr_luma": 49.56,
+   "ssim": 0.99212
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "method": "ewa_lanczossharp",
+   "psnr": 48.5,
+   "psnr_luma": 49.66,
+   "ssim": 0.99225
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "method": "ewa_lanczos4sharpest",
+   "psnr": 48.54,
+   "psnr_luma": 49.71,
+   "ssim": 0.99239
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "method": "FSRCNNX_x2_8",
+   "psnr": 48.99,
+   "psnr_luma": 50.42,
+   "ssim": 0.99306
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "method": "FSRCNNX_x2_16",
+   "psnr": 49.24,
+   "psnr_luma": 50.77,
+   "ssim": 0.99334
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "method": "ravu-lite-ar-r4",
+   "psnr": 48.62,
+   "psnr_luma": 49.9,
+   "ssim": 0.99225
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "method": "ravu-r3-yuv",
+   "psnr": 42.79,
+   "psnr_luma": 43.16,
+   "ssim": 0.98671
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "method": "ArtCNN_C4F16",
+   "psnr": 48.91,
+   "psnr_luma": 50.35,
+   "ssim": 0.99274
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "method": "Anime4K_CNN_x2_M",
+   "psnr": 47.35,
+   "psnr_luma": 48.36,
+   "ssim": 0.99073
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "method": "bilinear",
+   "psnr": 42.53,
+   "psnr_luma": 43.64,
+   "ssim": 0.98867
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "method": "spline36",
+   "psnr": 45.71,
+   "psnr_luma": 47.71,
+   "ssim": 0.99241
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "method": "lanczos",
+   "psnr": 45.84,
+   "psnr_luma": 47.91,
+   "ssim": 0.99246
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "method": "ewa_lanczos",
+   "psnr": 45.52,
+   "psnr_luma": 47.5,
+   "ssim": 0.99185
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "method": "ewa_lanczossharp",
+   "psnr": 45.62,
+   "psnr_luma": 47.61,
+   "ssim": 0.992
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "method": "ewa_lanczos4sharpest",
+   "psnr": 45.87,
+   "psnr_luma": 47.83,
+   "ssim": 0.99276
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "method": "FSRCNNX_x2_8",
+   "psnr": 46.17,
+   "psnr_luma": 48.64,
+   "ssim": 0.99288
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "method": "FSRCNNX_x2_16",
+   "psnr": 46.35,
+   "psnr_luma": 49.0,
+   "ssim": 0.99319
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "method": "ravu-lite-ar-r4",
+   "psnr": 45.92,
+   "psnr_luma": 48.15,
+   "ssim": 0.99251
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "method": "ravu-r3-yuv",
+   "psnr": 38.12,
+   "psnr_luma": 38.74,
+   "ssim": 0.98244
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "method": "ArtCNN_C4F16",
+   "psnr": 46.02,
+   "psnr_luma": 48.44,
+   "ssim": 0.99266
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "method": "Anime4K_CNN_x2_M",
+   "psnr": 44.55,
+   "psnr_luma": 46.22,
+   "ssim": 0.9906
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "method": "bilinear",
+   "psnr": 41.29,
+   "psnr_luma": 41.7,
+   "ssim": 0.98231
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "method": "spline36",
+   "psnr": 44.43,
+   "psnr_luma": 45.34,
+   "ssim": 0.98939
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "method": "lanczos",
+   "psnr": 44.61,
+   "psnr_luma": 45.59,
+   "ssim": 0.98968
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "method": "ewa_lanczos",
+   "psnr": 44.36,
+   "psnr_luma": 45.28,
+   "ssim": 0.98898
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "method": "ewa_lanczossharp",
+   "psnr": 44.47,
+   "psnr_luma": 45.4,
+   "ssim": 0.98922
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "method": "ewa_lanczos4sharpest",
+   "psnr": 44.41,
+   "psnr_luma": 45.28,
+   "ssim": 0.98933
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "method": "FSRCNNX_x2_8",
+   "psnr": 45.04,
+   "psnr_luma": 46.3,
+   "ssim": 0.99103
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "method": "FSRCNNX_x2_16",
+   "psnr": 45.2,
+   "psnr_luma": 46.51,
+   "ssim": 0.99142
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "method": "ravu-lite-ar-r4",
+   "psnr": 44.34,
+   "psnr_luma": 45.34,
+   "ssim": 0.98916
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "method": "ravu-r3-yuv",
+   "psnr": 37.76,
+   "psnr_luma": 37.96,
+   "ssim": 0.9759
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "method": "ArtCNN_C4F16",
+   "psnr": 45.09,
+   "psnr_luma": 46.42,
+   "ssim": 0.99067
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "method": "Anime4K_CNN_x2_M",
+   "psnr": 43.48,
+   "psnr_luma": 44.37,
+   "ssim": 0.98763
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "method": "bilinear",
+   "psnr": 45.26,
+   "psnr_luma": 45.71,
+   "ssim": 0.99272
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "method": "spline36",
+   "psnr": 46.71,
+   "psnr_luma": 47.34,
+   "ssim": 0.99494
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "method": "lanczos",
+   "psnr": 46.76,
+   "psnr_luma": 47.4,
+   "ssim": 0.99499
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "method": "ewa_lanczos",
+   "psnr": 46.64,
+   "psnr_luma": 47.25,
+   "ssim": 0.9946
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "method": "ewa_lanczossharp",
+   "psnr": 46.68,
+   "psnr_luma": 47.29,
+   "ssim": 0.99472
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "method": "ewa_lanczos4sharpest",
+   "psnr": 46.49,
+   "psnr_luma": 47.04,
+   "ssim": 0.99493
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "method": "FSRCNNX_x2_8",
+   "psnr": 47.41,
+   "psnr_luma": 48.19,
+   "ssim": 0.99522
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "method": "FSRCNNX_x2_16",
+   "psnr": 47.66,
+   "psnr_luma": 48.52,
+   "ssim": 0.99554
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "method": "ravu-lite-ar-r4",
+   "psnr": 46.39,
+   "psnr_luma": 46.98,
+   "ssim": 0.99486
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "method": "ravu-r3-yuv",
+   "psnr": 42.79,
+   "psnr_luma": 43.13,
+   "ssim": 0.99024
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "method": "ArtCNN_C4F16",
+   "psnr": 47.32,
+   "psnr_luma": 48.14,
+   "ssim": 0.99494
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "method": "Anime4K_CNN_x2_M",
+   "psnr": 46.64,
+   "psnr_luma": 47.3,
+   "ssim": 0.99334
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "method": "bilinear",
+   "psnr": 32.57,
+   "psnr_luma": 33.5,
+   "ssim": 0.91984
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "method": "spline36",
+   "psnr": 34.53,
+   "psnr_luma": 36.15,
+   "ssim": 0.94396
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "method": "lanczos",
+   "psnr": 34.68,
+   "psnr_luma": 36.34,
+   "ssim": 0.94584
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "method": "ewa_lanczos",
+   "psnr": 34.14,
+   "psnr_luma": 35.71,
+   "ssim": 0.93926
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "method": "ewa_lanczossharp",
+   "psnr": 34.26,
+   "psnr_luma": 35.83,
+   "ssim": 0.9411
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "method": "ewa_lanczos4sharpest",
+   "psnr": 34.66,
+   "psnr_luma": 36.26,
+   "ssim": 0.94537
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "method": "FSRCNNX_x2_8",
+   "psnr": 35.42,
+   "psnr_luma": 37.82,
+   "ssim": 0.95016
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "method": "FSRCNNX_x2_16",
+   "psnr": 35.55,
+   "psnr_luma": 38.06,
+   "ssim": 0.95097
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "method": "ravu-lite-ar-r4",
+   "psnr": 34.99,
+   "psnr_luma": 36.99,
+   "ssim": 0.94652
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "method": "ravu-r3-yuv",
+   "psnr": 30.95,
+   "psnr_luma": 31.66,
+   "ssim": 0.90865
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "method": "ArtCNN_C4F16",
+   "psnr": 35.19,
+   "psnr_luma": 37.54,
+   "ssim": 0.94804
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "method": "Anime4K_CNN_x2_M",
+   "psnr": 34.59,
+   "psnr_luma": 36.67,
+   "ssim": 0.93922
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "method": "bilinear",
+   "psnr": 39.57,
+   "psnr_luma": 39.58,
+   "ssim": 0.98504
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "method": "spline36",
+   "psnr": 41.49,
+   "psnr_luma": 41.52,
+   "ssim": 0.98979
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "method": "lanczos",
+   "psnr": 41.67,
+   "psnr_luma": 41.7,
+   "ssim": 0.99017
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "method": "ewa_lanczos",
+   "psnr": 41.37,
+   "psnr_luma": 41.39,
+   "ssim": 0.98913
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "method": "ewa_lanczossharp",
+   "psnr": 41.47,
+   "psnr_luma": 41.5,
+   "ssim": 0.98942
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "method": "ewa_lanczos4sharpest",
+   "psnr": 41.6,
+   "psnr_luma": 41.63,
+   "ssim": 0.99005
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "method": "FSRCNNX_x2_8",
+   "psnr": 43.25,
+   "psnr_luma": 43.3,
+   "ssim": 0.9919
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "method": "FSRCNNX_x2_16",
+   "psnr": 43.33,
+   "psnr_luma": 43.38,
+   "ssim": 0.99242
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "method": "ravu-lite-ar-r4",
+   "psnr": 42.13,
+   "psnr_luma": 42.16,
+   "ssim": 0.99081
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "method": "ravu-r3-yuv",
+   "psnr": 38.78,
+   "psnr_luma": 38.84,
+   "ssim": 0.9844
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "method": "ArtCNN_C4F16",
+   "psnr": 43.27,
+   "psnr_luma": 43.32,
+   "ssim": 0.99144
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "method": "Anime4K_CNN_x2_M",
+   "psnr": 42.58,
+   "psnr_luma": 42.62,
+   "ssim": 0.99002
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "method": "bilinear",
+   "psnr": 47.58,
+   "psnr_luma": 47.67,
+   "ssim": 0.99725
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "method": "spline36",
+   "psnr": 48.57,
+   "psnr_luma": 48.66,
+   "ssim": 0.9979
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "method": "lanczos",
+   "psnr": 48.63,
+   "psnr_luma": 48.73,
+   "ssim": 0.99794
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "method": "ewa_lanczos",
+   "psnr": 48.5,
+   "psnr_luma": 48.58,
+   "ssim": 0.99774
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "method": "ewa_lanczossharp",
+   "psnr": 48.53,
+   "psnr_luma": 48.61,
+   "ssim": 0.99778
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "method": "ewa_lanczos4sharpest",
+   "psnr": 48.17,
+   "psnr_luma": 48.24,
+   "ssim": 0.99793
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "method": "FSRCNNX_x2_8",
+   "psnr": 49.56,
+   "psnr_luma": 49.67,
+   "ssim": 0.99753
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "method": "FSRCNNX_x2_16",
+   "psnr": 49.12,
+   "psnr_luma": 49.23,
+   "ssim": 0.99811
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "method": "ravu-lite-ar-r4",
+   "psnr": 47.85,
+   "psnr_luma": 47.93,
+   "ssim": 0.99785
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "method": "ravu-r3-yuv",
+   "psnr": 46.02,
+   "psnr_luma": 46.32,
+   "ssim": 0.99643
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "method": "ArtCNN_C4F16",
+   "psnr": 50.54,
+   "psnr_luma": 50.68,
+   "ssim": 0.99737
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "method": "Anime4K_CNN_x2_M",
+   "psnr": 49.38,
+   "psnr_luma": 49.49,
+   "ssim": 0.99754
+  }
+ ]
+}
