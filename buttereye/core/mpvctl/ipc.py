@@ -157,6 +157,20 @@ def check_command(args: Sequence[object]) -> None:
         if 1 <= len(rest) <= 2 and isinstance(rest[0], str):
             if len(rest) == 1 or type(rest[1]) is int:
                 return
+    elif name == "osd-overlay":
+        # ButterEye's one small status line (osd.py): its own id, ASS text or removal
+        from buttereye.core.mpvctl.osd import OVERLAY_ID
+
+        if (
+            len(rest) == 5
+            and type(rest[0]) is int
+            and rest[0] == OVERLAY_ID
+            and rest[1] in ("ass-events", "none")
+            and isinstance(rest[2], str)
+            and type(rest[3]) is int
+            and type(rest[4]) is int
+        ):
+            return
     elif name in ("client_name", "get_version"):
         if not rest:
             return

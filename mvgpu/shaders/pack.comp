@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+// float plane in [0, 1] -> packed 8- or 16-bit samples; one invocation per
+// 32-bit output word, so no two invocations write the same word.
+#version 450
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Planes { float planes[]; };
+layout(std430, binding = 1) writeonly buffer Raw { uint raw[]; };
+layout(push_constant) uniform P {
+    uint count;     // samples in this plane
+    uint raw_off;   // byte offset of the plane (a multiple of 4)
+    uint in_off;    // float offset of the plane
+    uint bytes;     // 1 or 2
+    float maxv;     // 2^bits - 1
+} p;
+void main() {
+    uint wi = gl_GlobalInvocationID.x;
+    uint per = 4u / p.bytes;
+    uint first = wi * per;
+    if (first >= p.count) return;
+    uint word = 0u;
+    for (uint k = 0u; k < per; ++k) {
+        uint i = first + k;
+        if (i >= p.count) break;
+        uint v = uint(clamp(planes[p.in_off + i], 0.0, 1.0) * p.maxv + 0.5);
+        word |= v << (k * 8u * p.bytes);
+    }
+    raw[(p.raw_off >> 2) + wi] = word;
+}

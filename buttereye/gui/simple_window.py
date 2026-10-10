@@ -18,8 +18,10 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
+import signal
 from collections.abc import Callable, Sequence
 from fractions import Fraction
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
@@ -98,6 +100,7 @@ from buttereye.gui.convert_dialog import (
     ConvertDialog,
     JobRow,
     SaveChooser,
+    job_words,
     open_folder,
 )
 from buttereye.gui.quit_dialog import quit_needs, run_close_flow
@@ -123,6 +126,8 @@ SIMPLE_NAME = "ButterEye"
 MODEL_BEST = "rife-v4.26_ensembleFalse"
 MODEL_LIGHT = "rife-v4.22_lite_ensembleFalse"
 #: The background speed test when there is no bench history: 1080p film rate.
+#: closed or crashed players kept as rows (their log can still be copied)
+CLOSED_KEPT = 3
 FIRST_BENCH = BenchRequest(1920, 1080, Fraction(24000, 1001))
 
 SMOOTH_KEY = "simple/smooth"
@@ -401,6 +406,42 @@ def health_words(health: Health) -> str:
     return texts[health]
 
 
+def closed_words(snap: SessionSnapshot) -> tuple[BadgeKind, str, str]:
+    """Badge kind, badge word and reason line for a video whose player is gone."""
+    code = snap.exit_code
+    if code is None:
+        return (
+            "blocking",
+            _t("Lost touch"),
+            _t("ButterEye lost touch with this player; it may have frozen or been killed. "
+               "Copy log has its last messages."),
+        )  # fmt: skip
+    if code == 0:
+        return (
+            "info",
+            _t("Closed"),
+            _t("mpv was closed. Copy log has what happened while it played."),
+        )
+    if code < 0:
+        try:
+            sig = signal.Signals(-code).name
+        except ValueError:
+            sig = str(-code)
+        return (
+            "blocking",
+            _t("mpv crashed"),
+            _t("mpv crashed (stopped by {signal}). Copy log has its last messages, "
+               "which usually say why.").format(signal=sig),
+        )  # fmt: skip
+    return (
+        "degraded",
+        _t("Closed with an error"),
+        _t("mpv quit with an error (exit code {code}). Copy log has its last messages.").format(
+            code=code
+        ),
+    )
+
+
 def row_view(snap: SessionSnapshot, note: str | None = None) -> RowView:
     """Plain-language row for ``snap``; ``note`` is the latest event text for it."""
     src = snap.source
@@ -526,6 +567,10 @@ class SessionRow(QFrame):
         self.hdr_button.setObjectName("hdrSmoothing")
         self.hdr_button.setAutoDefault(False)
         self.hdr_button.hide()
+        self.dismiss_button = QPushButton(_t("Dismiss"), self)
+        self.dismiss_button.setObjectName("dismissClosed")
+        self.dismiss_button.setAutoDefault(False)
+        self.dismiss_button.hide()
         self.log_button = QPushButton(_t("Copy log"), self)
         self.log_button.setObjectName("copyLog")
         self.log_button.setAutoDefault(False)
@@ -536,9 +581,28 @@ class SessionRow(QFrame):
         buttons.addWidget(self.copy_button)
         buttons.addWidget(self.hdr_button)
         buttons.addStretch(1)
+        buttons.addWidget(self.dismiss_button)
         buttons.addWidget(self.log_button)
         lay.addLayout(buttons)
         self.update_snapshot(snap)
+
+    def show_closed(self, snap: SessionSnapshot) -> None:
+        """mpv closed, crashed or stopped answering: keep the row with the reason,
+        Copy log and Dismiss (the log stays available after mpv is gone)."""
+        self.snap = snap
+        kind, word, why = closed_words(snap)
+        self.badge.set_state(kind, word)
+        self.detail.setText(self.detail.text())  # keep the last settings line
+        self.notice.setText(why)
+        self.notice.show()
+        for b in (self.pause_button, self.let_go_button, self.force_button, self.copy_button,
+                  self.hdr_button):  # fmt: skip
+            b.hide()
+        self.dismiss_button.show()
+        self.dismiss_button.setAccessibleName(
+            _t("Dismiss {title} from the list").format(title=snap.title)
+        )
+        self.setAccessibleName(" — ".join(p for p in (snap.title, word, why) if p))
 
     def update_snapshot(self, snap: SessionSnapshot, note: str | None = None) -> None:
         self.snap = snap
@@ -643,6 +707,8 @@ class SimpleWindow(QMainWindow):
         self._in_close_flow = False
         self._sessions: dict[SessionId, SessionSnapshot] = {}
         self._rows: dict[SessionId, SessionRow] = {}
+        #: rows of players that closed or crashed, newest last (CLOSED_KEPT at most)
+        self._closed_rows: dict[SessionId, SessionRow] = {}
         self._notes: dict[SessionId, str] = {}
         self._needs_apply: set[SessionId] = set()
         self._saving = False
@@ -659,6 +725,7 @@ class SimpleWindow(QMainWindow):
         self._deband = False  # general.deband (§15.2)
         self._hdr: Literal["skip", "passthrough"] = "skip"  # simple profile hdr (F7)
         self._full_size = False  # general.full_size: never smaller to keep up
+        self._keep_logs = True  # general.keep_logs: per-file logs to copy (opt-out)
         self._jobs: dict[JobId, RenderJobState] = {}
         self._job_rows: dict[JobId, JobRow] = {}
         self._convert_visible = False
@@ -912,6 +979,15 @@ class SimpleWindow(QMainWindow):
         self.status_badge = StatusBadge("busy", "", bottom)
         self.status_badge.setObjectName("statusText")
         bl.addWidget(self.status_badge, 1)
+        self.logs_button = QPushButton(self.tr("More &logs"), bottom)
+        self.logs_button.setObjectName("moreLogs")
+        self.logs_button.setFlat(True)
+        self.logs_button.setAutoDefault(False)
+        self.logs_button.setAccessibleDescription(
+            self.tr("Logs of videos that played or closed recently, and of copies")
+        )
+        self.logs_button.clicked.connect(self.more_logs)
+        bl.addWidget(self.logs_button, 0)
         self.details_button = QPushButton(self.tr("&Details ▸"), bottom)
         self.details_button.setObjectName("detailsButton")
         self.details_button.setAccessibleName(self.tr("Details"))
@@ -1105,6 +1181,7 @@ class SimpleWindow(QMainWindow):
         self._fill_picture()
         self._full_size = cfg.general.full_size
         self._fill_resolution()
+        self._set_keep_logs(cfg.general.keep_logs)
         prof = find_simple(cfg)
         if prof is None:
             return
@@ -1749,6 +1826,7 @@ class SimpleWindow(QMainWindow):
             row.remove_button.clicked.connect(lambda: self.forget_job(jid))
             row.show_button.clicked.connect(lambda: self.show_job(jid))
             row.log_button.clicked.connect(lambda: self.copy_job_log(jid))
+            row.log_button.setVisible(self._keep_logs)
             self._job_rows[job.id] = row
             self.jobs_box.addWidget(row)
             self.copies.show()
@@ -1768,9 +1846,10 @@ class SimpleWindow(QMainWindow):
         return self._job_rows
 
     # ------------------------------------------------------------------ logs
-    def copy_session_log(self, sid: SessionId) -> None:
-        snap = self._sessions.get(sid)
-        name = snap.title if snap is not None else str(sid)
+    def copy_session_log(self, sid: SessionId, title: str | None = None) -> None:
+        closed = self._closed_rows.get(sid)
+        snap = self._sessions.get(sid) or (closed.snap if closed is not None else None)
+        name = snap.title if snap is not None else (title or str(sid))
         self.bridge.call(
             lambda core: core.session_log(sid),
             owner=self,
@@ -1836,7 +1915,17 @@ class SimpleWindow(QMainWindow):
 
     def _upsert(self, snap: SessionSnapshot) -> None:
         if snap.ended:
-            self._remove(snap.sid)
+            # Let go (ButterEye stopped managing a player that keeps playing): the row
+            # goes. mpv gone or unreachable: the row stays, closed, with its log.
+            # closed rows: only a crash, an error or a lost player (a normal close is in
+            # More logs), and only when logs are kept
+            abnormal = (snap.exit_code is not None and snap.exit_code != 0) or (
+                snap.exit_code is None and snap.health is Health.CONNECTION_LOST
+            )
+            if abnormal and self._keep_logs and snap.sid in self._rows:
+                self._close_row(snap)
+            else:
+                self._remove(snap.sid)
             return
         self._sessions[snap.sid] = snap
         hz = snap.display_fps or (snap.source.display_hz if snap.source is not None else None)
@@ -1854,13 +1943,98 @@ class SimpleWindow(QMainWindow):
             row.copy_button.clicked.connect(lambda: self.save_copy(sid))
             row.log_button.clicked.connect(lambda: self.copy_session_log(sid))
             row.hdr_button.clicked.connect(lambda: self.toggle_hdr(sid))
+            row.log_button.setVisible(self._keep_logs)
             self._rows[snap.sid] = row
             self.rows_box.addWidget(row)
-            self.playing.show()
+            self._sync_playing_heading()
             self._fit_height()
             self.setTabOrder(self.smooth_combo, row.pause_button)
         row.update_snapshot(snap, self._notes.get(snap.sid))
         row.copy_button.setVisible(self._convert_visible and snap.source is not None)
+
+    def _close_row(self, snap: SessionSnapshot) -> None:
+        row = self._rows.pop(snap.sid)
+        self._sessions.pop(snap.sid, None)
+        self._notes.pop(snap.sid, None)
+        self._needs_apply.discard(snap.sid)
+        row.show_closed(snap)
+        sid = snap.sid
+        row.dismiss_button.clicked.connect(lambda: self.dismiss_closed(sid))
+        self._closed_rows[sid] = row
+        while len(self._closed_rows) > CLOSED_KEPT:
+            self.dismiss_closed(next(iter(self._closed_rows)))
+        self._sync_playing_heading()
+        kind, word, _why = closed_words(snap)
+        if kind != "info":
+            self.set_status(
+                "degraded", self.tr("{name}: {what}.").format(name=snap.title, what=word)
+            )
+
+    def dismiss_closed(self, sid: SessionId) -> None:
+        row = self._closed_rows.pop(sid, None)
+        if row is None:
+            return
+        focus = QApplication.focusWidget()
+        had_focus = focus is not None and (focus is row or row.isAncestorOf(focus))
+        self.rows_box.removeWidget(row)
+        row.hide()
+        row.deleteLater()
+        if had_focus:
+            self.open_button.setFocus(Qt.FocusReason.OtherFocusReason)
+        self._sync_playing_heading()
+
+    def _set_keep_logs(self, on: bool) -> None:
+        self._keep_logs = on
+        self.logs_button.setVisible(on)
+        for row in (*self._rows.values(), *self._closed_rows.values()):
+            row.log_button.setVisible(on)
+        for jrow in self._job_rows.values():
+            jrow.log_button.setVisible(on)
+        if not on:
+            for sid in list(self._closed_rows):
+                self.dismiss_closed(sid)
+
+    def more_logs(self) -> None:
+        """Every log still available: playing, recently closed, copies."""
+        self.bridge.call(
+            lambda core: core.recent_sessions(), owner=self, ok=self._show_logs, err=self._quiet
+        )
+
+    def _show_logs(self, ended: tuple[SessionSnapshot, ...]) -> None:
+        from buttereye.gui.logs_dialog import LogEntry, LogsDialog
+
+        entries = [
+            LogEntry(snap.title, self.tr("Playing"), partial(self.copy_session_log, snap.sid))
+            for snap in self.live_sessions
+        ]
+        for snap in ended:
+            if snap.sid in self._sessions:
+                continue
+            gone = snap.exit_code is not None or snap.health is Health.CONNECTION_LOST
+            word = closed_words(snap)[1] if gone else self.tr("Let go")
+            entries.append(
+                LogEntry(snap.title, word, partial(self.copy_session_log, snap.sid, snap.title))
+            )
+        entries += [
+            LogEntry(job.spec.output.name, job_words(job), partial(self.copy_job_log, job.id))
+            for job in self._jobs.values()
+        ]
+        dlg = LogsDialog(entries, self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.logs_dialog = dlg
+        dlg.open()
+
+    def _sync_playing_heading(self) -> None:
+        self.playing.setVisible(bool(self._rows or self._closed_rows))
+        self.playing_heading.setText(
+            self.tr("Now playing")
+            if self._rows or not self._closed_rows
+            else self.tr("Recently closed")
+        )
+
+    @property
+    def closed_rows(self) -> dict[SessionId, SessionRow]:
+        return dict(self._closed_rows)
 
     def _remove(self, sid: SessionId) -> None:
         self._sessions.pop(sid, None)
@@ -1875,7 +2049,7 @@ class SimpleWindow(QMainWindow):
             row.deleteLater()
             if had_focus:
                 self.open_button.setFocus(Qt.FocusReason.OtherFocusReason)
-        self.playing.setVisible(bool(self._rows))
+        self._sync_playing_heading()
 
     def _note(self, sid: SessionId, text: str) -> None:
         self._notes[sid] = text
@@ -1889,7 +2063,8 @@ class SimpleWindow(QMainWindow):
         if isinstance(ev, SessionAdded | SessionChanged):
             self._upsert(ev.snapshot)
         elif isinstance(ev, SessionEnded):
-            self._remove(ev.sid)
+            if ev.sid not in self._closed_rows:  # a closed row stays until dismissed
+                self._remove(ev.sid)
         elif isinstance(ev, HealthChanged):
             self._note(ev.sid, render(ev.reason))
         elif isinstance(ev, Notice):

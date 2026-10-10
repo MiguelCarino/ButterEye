@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+// Packed 8- or 16-bit samples (tightly packed rows) -> float plane in [0, 1].
+#version 450
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Raw { uint raw[]; };
+layout(std430, binding = 1) writeonly buffer Planes { float planes[]; };
+layout(push_constant) uniform P {
+    uint count;      // samples in this plane
+    uint raw_off;    // byte offset of the plane in raw
+    uint out_off;    // float offset of the plane in planes
+    uint bytes;      // 1 or 2 per sample
+    float scale;     // 1 / (2^bits - 1)
+} p;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= p.count) return;
+    uint byte_pos = p.raw_off + i * p.bytes;
+    uint word = raw[byte_pos >> 2];
+    uint shift = (byte_pos & 3u) * 8u;
+    uint v = p.bytes == 1u ? (word >> shift) & 0xffu : (word >> shift) & 0xffffu;
+    planes[p.out_off + i] = float(v) * p.scale;
+}

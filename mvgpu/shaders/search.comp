@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+// Symmetric block search centred on the in-between frame (spike M0(r)).
+// One workgroup per 8x8 block, one invocation per candidate half-vector u:
+// block p matches A(p - u) with C(p + u). The coarsest level searches +-radius
+// around (0, 0); finer levels refine +-1 around the doubled vectors of the parent
+// block and its 4 neighbours.
+#version 450
+layout(local_size_x_id = 0) in;   // specialization: a power of two >= candidates
+layout(constant_id = 0) const uint WG = 512;
+layout(std430, binding = 0) readonly buffer PyrA { float pa[]; };
+layout(std430, binding = 1) readonly buffer PyrC { float pc[]; };
+layout(std430, binding = 2) readonly buffer Parent { ivec2 parent[]; };
+layout(std430, binding = 3) writeonly buffer Out { ivec2 vout[]; };
+// bs: block size; pscale: 2 when the parent is the next coarser level, 1 when it
+// is the same level with larger blocks (the 4x4 refinement of the 8x8 vectors)
+layout(push_constant) uniform P { uint off; int w, h, bw, bh, pw, ph, radius, npred, bs, pscale; } p;
+shared float best[WG];
+shared ivec2 bestv[WG];
+float px_a(int x, int y) { x = clamp(x, 0, p.w - 1); y = clamp(y, 0, p.h - 1); return pa[p.off + uint(y * p.w + x)]; }
+float px_c(int x, int y) { x = clamp(x, 0, p.w - 1); y = clamp(y, 0, p.h - 1); return pc[p.off + uint(y * p.w + x)]; }
+void main() {
+    int bx = int(gl_WorkGroupID.x), by = int(gl_WorkGroupID.y);
+    uint k = gl_LocalInvocationID.x;
+    int win = 2 * p.radius + 1, per = win * win;
+    float s = 3.4e38;
+    ivec2 u = ivec2(0);
+    if (int(k) < p.npred * per) {
+        int pi = int(k) / per, r = int(k) % per;
+        ivec2 base = ivec2(0);
+        if (p.npred > 1) {
+            const ivec2 nb[5] = ivec2[5](ivec2(0, 0), ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
+            int qx = clamp(bx / 2 + nb[pi].x, 0, p.pw - 1), qy = clamp(by / 2 + nb[pi].y, 0, p.ph - 1);
+            base = p.pscale * parent[qy * p.pw + qx];
+        }
+        u = base + ivec2(r % win - p.radius, r / win - p.radius);
+        s = 0.0;
+        int x0 = bx * p.bs, y0 = by * p.bs;
+        for (int j = 0; j < p.bs; ++j)
+            for (int i = 0; i < p.bs; ++i)
+                s += abs(px_a(x0 + i - u.x, y0 + j - u.y) - px_c(x0 + i + u.x, y0 + j + u.y));
+        s += 0.002 * float(p.bs * p.bs) / 64.0 * float(abs(u.x) + abs(u.y));  // short vectors win ties (flat areas)
+    }
+    best[k] = s;
+    bestv[k] = u;
+    barrier();
+    for (uint stride = WG / 2u; stride > 0u; stride >>= 1u) {
+        if (k < stride && best[k + stride] < best[k]) {
+            best[k] = best[k + stride];
+            bestv[k] = bestv[k + stride];
+        }
+        barrier();
+    }
+    if (k == 0u) vout[by * p.bw + bx] = bestv[0];
+}

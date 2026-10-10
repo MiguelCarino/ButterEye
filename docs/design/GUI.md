@@ -442,6 +442,9 @@ class GeneralSettings:
     upscaling: Literal["standard", "sharper"] = "standard"  # SCOPE §15.2
     deband: bool = False  # SCOPE §15.2
     full_size: bool = False  # never smaller to keep up (GUI.md §12)
+    osd_seconds: float = 1.0  # mpv OSD: seconds, 0 = off, -1 = always (§12.1.5)
+    osd_items: tuple[str, ...] = ("rates", "engine")
+    keep_logs: bool = True  # per-file logs to copy; off = opted out
 
 
 @dataclass(frozen=True, slots=True)
@@ -679,6 +682,9 @@ class SessionSnapshot:
     smooth_size: tuple[int, int] | None = None
     flow_scale: float = 1.0
     mv_block: bool = False
+    #: how mpv ended (once ``ended``): its exit code, negative = killed by that
+    #: signal (a crash); None while it runs or when ButterEye only let it go
+    exit_code: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1183,6 +1189,7 @@ class ButterEye:
     async def remove_orphan_filter(self, cid: CandidateId) -> None: ...
     async def sessions(self) -> tuple[SessionSnapshot, ...]: ...
     async def session_log(self, sid: SessionId) -> str: ...              # per-file log to copy (§12.1.1)
+    async def recent_sessions(self) -> tuple[SessionSnapshot, ...]: ...  # ended players, newest first (More logs)
 
     # bench (F14)                                                                 Feature.BENCH
     def bench(self, req: BenchRequest) -> Operation[BenchResult]: ...
@@ -1948,7 +1955,13 @@ The row of an HDR10 video (`source.hdr_class` HDR10) shows **Smooth HDR** while 
 
 ### 12.1.1 Copy log (2026-10-10)
 
-Every Now playing and Saving copies row has **Copy log** (accessible name "Copy the log for {file}"). It puts on the clipboard what ButterEye logged about that file (the core keeps the latest 400 lines per session and per job in memory, `core/filelog.py`, records tagged by `filelog.for_item`) followed by the last 200 lines of that file's own tool log (`mpv-<sid>.log`, or vspipe and ffmpeg's `render-<job>.log`), under a header with the version, file, engine and state. Core API: `session_log(sid)`, `job_log(job)`. The status line says "Log for {file} copied." A row disappears when its mpv closes, and its log button with it.
+Every Now playing and Saving copies row has **Copy log** (accessible name "Copy the log for {file}"). It puts on the clipboard what ButterEye logged about that file (the core keeps the latest 400 lines per session and per job in memory, `core/filelog.py`, records tagged by `filelog.for_item`) followed by the last 200 lines of that file's own tool log (`mpv-<sid>.log`, or vspipe and ffmpeg's `render-<job>.log`), under a header with the version, file, engine and state. Core API: `session_log(sid)`, `job_log(job)`. The status line says "Log for {file} copied." When mpv closes, crashes or stops answering, the row stays as a closed row (badge Closed / Closed with an error / mpv crashed / Lost touch, the reason with the exit code or signal, Copy log and Dismiss; the newest `CLOSED_KEPT` = 3 stay; the heading reads "Recently closed" when only those remain). The core keeps the last 8 ended sessions' final snapshots (`recent_session`) so `session_log` still has the header; the log line "mpv crashed: it was stopped by SIGSEGV (signal 11)." is written when mpv exits. Let go removes the row (mpv keeps playing).
+
+### 12.1.5 mpv on-screen line, Settings tab, logs (2026-10-10)
+
+- **On-screen line** (`core/mpvctl/osd.py`): when what smoothing does changes (it starts, the engine, rate or size changes, or the video isn't smoothed and why), the session draws one small top-left line in mpv through `osd-overlay` (its own layer, overlay id `osd.OVERLAY_ID`, the only one the IPC allowlist lets through): a gold "ButterEye" then, per `[general] osd_items`, the rates ("24 → 60 fps"), CPU/GPU and the method ("GPU · RIFE v4.26 TensorRT"), the size ("full 3840×2160" / "at 1920×1080 · half-res motion") and frame health. `osd_seconds` (default 1): seconds it stays, 0 = off, −1 = always (it updates in place). The text is built from the session's state only (never a file name), and `{`/`}` are escaped.
+- **Details → Settings** (`gui/settings_panel.py`, before About): "On-screen info in mpv" (Show for: Off / 1 / 3 / 5 / 10 seconds / Always; which details) and "Logs" (Keep logs I can copy). Each change saves at once; a conflicting save reloads and puts the choice on top.
+- **Logs**: rows of playing videos and copies have Copy log; a player that crashed, quit with an error or was lost keeps a closed row (a normal close doesn't); **More logs** in the status line opens "Recent logs": playing, the last 8 ended players (`recent_sessions()`, normal closes and Let go included) and copies, each with Copy log. With `keep_logs = false` (opted out) there are no log buttons and no closed rows, the core keeps no log lines, and each mpv and copy log file is deleted when it ends.
 
 ### 12.1.2 Resolution (2026-10-10)
 

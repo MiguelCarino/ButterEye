@@ -96,6 +96,19 @@ class DetailsDialog(QDialog):
             scroll.setAccessibleName(title)
             self.tabs.addTab(scroll, title)
         self._simplify_bench()
+        # Settings (GUI.md §12.1.5): its own panel, before About
+        from buttereye.gui.settings_panel import SettingsPanel
+
+        self.settings_panel = SettingsPanel(bridge, self.tabs)
+        settings_scroll = QScrollArea(self.tabs)
+        settings_scroll.setObjectName("details.settings")
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        settings_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        settings_scroll.setWidget(self.settings_panel)
+        settings_title = self.tr("Settings")
+        settings_scroll.setAccessibleName(settings_title)
+        self.tabs.insertTab(len(TABS) - 1, settings_scroll, settings_title)
 
         self.status_label = QLabel(self)
         self.status_label.setObjectName("detailsStatus")
@@ -147,20 +160,31 @@ class DetailsDialog(QDialog):
         return tuple(pid for pid, _ in TABS)
 
     def current_page_id(self) -> str:
+        ids = self.tab_ids()
         i = self.tabs.currentIndex()
-        return TABS[i][0] if 0 <= i < len(TABS) else ""
+        return ids[i] if 0 <= i < len(ids) else ""
+
+    def tab_ids(self) -> list[str]:
+        """Tab ids in display order (Settings sits before About)."""
+        ids = [pid for pid, _ in TABS]
+        ids.insert(len(ids) - 1, "settings")
+        return ids
 
     def go(self, page_id: str) -> None:
-        for i, (pid, _) in enumerate(TABS):
+        for i, pid in enumerate(self.tab_ids()):
             if pid == page_id:
                 self.tabs.setCurrentIndex(i)
                 return
         _log.info("details: no tab %r", page_id)
 
     def _on_tab(self, index: int) -> None:
-        if not 0 <= index < len(TABS):
+        ids = self.tab_ids()
+        if not 0 <= index < len(ids):
             return
-        pid = TABS[index][0]
+        pid = ids[index]
+        if pid == "settings":
+            self.settings_panel.refresh()
+            return
         if pid in self._shown:
             return
         self._shown.add(pid)

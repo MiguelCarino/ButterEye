@@ -10,6 +10,7 @@ opt-in the same video plays unsmoothed. mpv runs with ``--vo=null --ao=null``.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import os
 import shutil
@@ -115,3 +116,24 @@ async def test_hdr10_colour_survives_smoothing(live_env: Live, clip_hdr10: Path)
     assert src["max-cll"] == 1000 and src["max-luma"] == 1000
     assert {k: out.get(k) for k in COLOUR_KEYS} == {k: src.get(k) for k in COLOUR_KEYS}
     assert out["pixelformat"] in ("p010", "yuv420p10")  # still 10-bit
+
+
+async def test_osd_line_is_shown_in_real_mpv(live_env: Live, clip_hdr10: Path) -> None:
+    """GUI.md §12.1.5: when smoothing starts, the session puts its small line up
+    through mpv's osd-overlay (mpv accepts the command; the line names the engine)."""
+    from buttereye.core.mpvctl import osd
+
+    env = live_env
+    sid = await env.play(clip_hdr10, "mvhdr")
+    await env.wait(sid, lambda x: x.filter is FilterState.ACTIVE, timeout=30)
+    s = env.s(sid)
+    for _ in range(50):
+        if s.osd_shown:
+            break
+        await asyncio.sleep(0.1)
+    assert s.osd_shown and any("MVTools" in str(p) for p in s.osd_shown), s.osd_shown
+    # mpv itself takes the exact command ButterEye sends (and the removal)
+    await s.ipc.command(
+        "osd-overlay", osd.OVERLAY_ID, "ass-events", osd.ass(["test"]), 0, osd.RES_Y
+    )
+    await s.ipc.command("osd-overlay", osd.OVERLAY_ID, "none", "", 0, 0)

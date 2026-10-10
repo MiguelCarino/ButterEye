@@ -33,6 +33,9 @@ from buttereye.core.types import (
 
 #: Preferred multipliers are 2-5x (§5.6); above this, divide the display rate.
 MAX_MULTIPLIER = Fraction(5)
+#: "Match your display" tries the display rate itself up to this multiplier
+#: (24 fps on a 180 Hz display is 7.5x)
+DISPLAY_MULTIPLIER = Fraction(8)
 
 #: Auto counts a target as "doubling" from 1.98x (24.0031 → 48 still doubles).
 AUTO_DOUBLING_TOLERANCE = Fraction(99, 100)
@@ -220,8 +223,9 @@ def choose_target(
     benchmark (None) only the multiplier cap applies; the health detector then
     reports drops (§4.11 step-down).
 
-    * ``DISPLAY`` (efficient): the lowest refresh/k that at least doubles the
-      source (180 Hz: 23.976 → 60; 144 Hz → 48).
+    * ``DISPLAY`` ("Match your display"): the display rate itself (180 Hz → 180)
+      when it fits and is at most ``DISPLAY_MULTIPLIER`` × the source; else 60 fps
+      (owner decision 2026-10-10); else the rules below (2×, then refresh/k).
     * ``DISPLAY_MAX`` (max smoothness): the highest such refresh/k
       (180 Hz: 23.976 → 90).
 
@@ -249,6 +253,12 @@ def choose_target(
         return TargetChoice(None, None)  # pending: no display rate yet
     if display <= src:
         return TargetChoice(None, BypassReason.ALREADY_AT_RATE)
+    if kind is TargetKind.DISPLAY:
+        if display / src <= DISPLAY_MULTIPLIER and fits(display):
+            return TargetChoice(display, None)
+        sixty = Fraction(60)
+        if src < sixty < display and fits(sixty):
+            return TargetChoice(sixty, None)
     # refresh/k above the source and within the multiplier cap, highest first;
     # every candidate is costed on its own (24 → 30 needs as many inferences as
     # 24 → 48), so the scan never stops at the first rate that is too high

@@ -269,6 +269,10 @@ class Rule:
     profile: str  # profile id
 
 
+#: what the mpv OSD can show (GeneralSettings.osd_items), in display order
+OSD_ITEMS: tuple[str, ...] = ("rates", "engine", "size", "health")
+
+
 @dataclass(frozen=True, slots=True)
 class GeneralSettings:
     backend_override: BackendId | None = None
@@ -286,6 +290,13 @@ class GeneralSettings:
     #: never smooth live at a smaller size to keep up; smooth at the video's own
     #: size even if frames may drop (the user's choice over the speed test)
     full_size: bool = False
+    #: mpv on-screen info when smoothing starts or changes (GUI.md §12.1.5):
+    #: seconds shown, 0 = off, -1 = always; and which details
+    osd_seconds: float = 1.0
+    osd_items: tuple[str, ...] = ("rates", "engine")
+    #: per-file logs to copy (Copy log, closed rows, More logs); off = opted out:
+    #: no log buttons, and each mpv log is deleted when the video closes
+    keep_logs: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,6 +534,9 @@ class SessionSnapshot:
     smooth_size: tuple[int, int] | None = None
     flow_scale: float = 1.0
     mv_block: bool = False
+    #: how mpv ended (once ``ended``): its exit code, negative = killed by that
+    #: signal (a crash); None while it runs or when ButterEye only let it go
+    exit_code: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -740,6 +754,7 @@ class CommandHint:
 from buttereye.core.errors import ButterEyeError, ErrorCode  # noqa: E402
 
 __all__ = [
+    "OSD_ITEMS",
     "OpId",
     "SessionId",
     "JobId",

@@ -616,6 +616,10 @@ class FakeCore(ButterEye):
         self._maybe_fail("sessions")
         return tuple(self._sessions.values())
 
+    async def recent_sessions(self) -> tuple[SessionSnapshot, ...]:
+        self._rec("recent_sessions")
+        return tuple(reversed([s for s in self._sessions.values() if s.ended]))
+
     async def session_log(self, sid: SessionId) -> str:
         self._rec("session_log", sid)
         self._maybe_fail("session_log")

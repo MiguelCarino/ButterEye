@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+// Per-pixel vector selection at time t (luma resolution): among the half-vectors
+// of the 3x3 blocks around the pixel, the one under which the two warped frames
+// agree best over a small cross of pixels, with a small penalty for blocks
+// further away. Bilinear blending of block vectors mixes a moving object's
+// vector with the background's at its edge and ghosts both; choosing keeps the
+// edge on one vector.
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, binding = 0) readonly buffer A { float a[]; };
+layout(std430, binding = 1) readonly buffer C { float c[]; };
+layout(std430, binding = 2) readonly buffer V { ivec2 vec[]; };
+layout(std430, binding = 3) writeonly buffer F { vec4 field[]; };  // (u.x, u.y, mismatch, 0)
+layout(push_constant) uniform P { int w, h, bw, bh; float t, lambda; int smooth_vec, bs; } p;
+float bil(bool from_a, vec2 q) {
+    q = clamp(q, vec2(0.0), vec2(p.w - 1.001, p.h - 1.001));
+    ivec2 i = ivec2(q); vec2 f = q - vec2(i);
+    uint r0 = uint(i.y * p.w + i.x), r1 = r0 + uint(p.w);
+    if (from_a) return mix(mix(a[r0], a[r0 + 1u], f.x), mix(a[r1], a[r1 + 1u], f.x), f.y);
+    return mix(mix(c[r0], c[r0 + 1u], f.x), mix(c[r1], c[r1 + 1u], f.x), f.y);
+}
+void main() {
+    int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+    if (x >= p.w || y >= p.h) return;
+    vec2 here = vec2(x, y);
+    if (p.smooth_vec != 0) {  // the old behaviour: vectors interpolated between blocks
+        vec2 g = (here + 0.5) / float(p.bs) - 0.5;
+        ivec2 g0 = ivec2(floor(g)); vec2 fr = g - vec2(g0);
+        vec2 u = vec2(0.0);
+        for (int j = 0; j < 2; ++j)
+            for (int i = 0; i < 2; ++i) {
+                ivec2 b = clamp(g0 + ivec2(i, j), ivec2(0), ivec2(p.bw - 1, p.bh - 1));
+                u += (i == 1 ? fr.x : 1.0 - fr.x) * (j == 1 ? fr.y : 1.0 - fr.y) * vec2(vec[b.y * p.bw + b.x]);
+            }
+        field[y * p.w + x] = vec4(u, 0.0, 0.0);
+        return;
+    }
+    ivec2 b0 = ivec2(x, y) / p.bs;
+    const ivec2 cross5[5] = ivec2[5](ivec2(0, 0), ivec2(-2, 0), ivec2(2, 0), ivec2(0, -2), ivec2(0, 2));
+    float best = 3.4e38, best_err = 0.0;
+    vec2 bestv = vec2(0.0);
+    for (int j = -1; j <= 1; ++j)
+        for (int i = -1; i <= 1; ++i) {
+            ivec2 b = clamp(b0 + ivec2(i, j), ivec2(0), ivec2(p.bw - 1, p.bh - 1));
+            vec2 v = vec2(vec[b.y * p.bw + b.x]);
+            float e = 0.0;
+            for (int k = 0; k < 5; ++k) {
+                vec2 q = here + vec2(cross5[k]);
+                e += abs(bil(true, q - 2.0 * p.t * v) - bil(false, q + 2.0 * (1.0 - p.t) * v));
+            }
+            // prefer the pixel's own block and its nearest neighbours
+            vec2 d = (vec2(b) * float(p.bs) + 0.5 * float(p.bs - 1) - here) / 8.0;
+            float err = e / 5.0;  // mean |A - C| over the cross under this vector
+            e += p.lambda * dot(d, d);
+            if (e < best) { best = e; bestv = v; best_err = err; }
+        }
+    field[y * p.w + x] = vec4(bestv, best_err, 0.0);
+}

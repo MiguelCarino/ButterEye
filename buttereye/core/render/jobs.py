@@ -922,6 +922,10 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
         _emit(ctx, job)
     finally:
         manifest.remove()
+        cfg_now = _config(ctx)
+        if cfg_now is not None and not cfg_now.general.keep_logs:  # opted out of logs
+            with contextlib.suppress(OSError):
+                log_path.unlink()
         with contextlib.suppress(OSError):
             script.unlink()
 

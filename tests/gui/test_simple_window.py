@@ -403,6 +403,94 @@ def test_buttons_are_big_enough_and_dead_ones_hidden(make_simple: Make, qtbot: A
     assert row.notice.text().startswith("Not smoothed: the speed test says")
 
 
+def test_closed_player_keeps_its_row_and_log(make_simple: Make, qtbot: Any) -> None:
+    win = make_simple("live_active")
+    sid = SessionId("s1")
+    qtbot.waitUntil(lambda: sid in win.rows)
+    snap = win.live_sessions[0]
+    crashed = dataclasses.replace(snap, ended=True, exit_code=-11)
+    in_core(qtbot, win.bridge, lambda c: c.fake_set_session(crashed))
+    qtbot.waitUntil(lambda: sid in win.closed_rows, timeout=5000)
+    row = win.closed_rows[sid]
+    assert sid not in win.rows and win.live_sessions == ()
+    assert row.badge.text() == "mpv crashed"
+    assert row.notice.text().startswith("mpv crashed (stopped by SIGSEGV).")
+    assert row.pause_button.isHidden() and row.let_go_button.isHidden()
+    assert not row.log_button.isHidden() and not row.dismiss_button.isHidden()
+    clip = QApplication.clipboard()
+    clip.clear()
+    row.log_button.click()
+    qtbot.waitUntil(lambda: "Session: s1" in clip.text(), timeout=5000)
+    row.dismiss_button.click()
+    qtbot.waitUntil(lambda: sid not in win.closed_rows, timeout=5000)
+    assert not win.playing.isVisible()
+
+
+def test_let_go_removes_the_row(make_simple: Make, qtbot: Any) -> None:
+    win = make_simple("live_active")
+    sid = SessionId("s1")
+    qtbot.waitUntil(lambda: sid in win.rows)
+    let_go = dataclasses.replace(win.live_sessions[0], ended=True, exit_code=None)
+    in_core(qtbot, win.bridge, lambda c: c.fake_set_session(let_go))
+    qtbot.waitUntil(lambda: sid not in win.rows, timeout=5000)
+    assert sid not in win.closed_rows
+
+
+def test_only_the_last_closed_rows_stay() -> None:
+    assert sw.CLOSED_KEPT == 3
+    snap = sc.session(1)
+    assert sw.closed_words(dataclasses.replace(snap, ended=True, exit_code=0))[1] == "Closed"
+    assert sw.closed_words(dataclasses.replace(snap, ended=True, exit_code=2))[1] == (
+        "Closed with an error"
+    )
+
+
+def test_normal_close_leaves_no_row_but_more_logs_has_it(make_simple: Make, qtbot: Any) -> None:
+    win = make_simple("live_active")
+    sid = SessionId("s1")
+    qtbot.waitUntil(lambda: sid in win.rows)
+    closed = dataclasses.replace(win.live_sessions[0], ended=True, exit_code=0)
+    in_core(qtbot, win.bridge, lambda c: c.fake_set_session(closed))
+    qtbot.waitUntil(lambda: sid not in win.rows, timeout=5000)
+    assert sid not in win.closed_rows  # a normal close needs no row
+    win.logs_button.click()
+    qtbot.waitUntil(lambda: getattr(win, "logs_dialog", None) is not None, timeout=5000)
+    dlg = win.logs_dialog
+    assert [b.accessibleName() for b in dlg.buttons] == ["Copy the log for film.mkv"]
+    clip = QApplication.clipboard()
+    clip.clear()
+    dlg.buttons[0].click()
+    qtbot.waitUntil(lambda: "Session: s1" in clip.text(), timeout=5000)
+    dlg.reject()
+
+
+def test_settings_panel_saves_osd_and_logs(make_simple: Make, qtbot: Any) -> None:
+    from buttereye.gui.settings_panel import SettingsPanel
+
+    win = make_simple("live_active")
+    sid = SessionId("s1")
+    qtbot.waitUntil(lambda: sid in win.rows)
+    panel = SettingsPanel(win.bridge)
+    qtbot.addWidget(panel)
+    qtbot.waitUntil(lambda: panel.load is not None, timeout=5000)
+    assert panel.duration.currentData() == 1.0 and panel.keep_logs.isChecked()
+    before = len(calls(win, "save_config"))
+    panel.duration.setCurrentIndex(panel.duration.findData(-1.0))  # Always
+    qtbot.waitUntil(lambda: len(calls(win, "save_config")) > before, timeout=5000)
+    assert saved(win).general.osd_seconds == -1.0
+    n = len(calls(win, "save_config"))
+    panel.items["size"].setChecked(True)
+    qtbot.waitUntil(lambda: len(calls(win, "save_config")) > n, timeout=5000)
+    assert saved(win).general.osd_items == ("rates", "engine", "size")
+    n = len(calls(win, "save_config"))
+    panel.keep_logs.setChecked(False)  # opt out of logs
+    qtbot.waitUntil(lambda: len(calls(win, "save_config")) > n, timeout=5000)
+    assert saved(win).general.keep_logs is False
+    # the window follows: no log buttons, no More logs
+    qtbot.waitUntil(lambda: win.logs_button.isHidden(), timeout=5000)
+    assert win.rows[sid].log_button.isHidden()
+
+
 def test_row_pause_and_let_go(make_simple: Make, qtbot: Any) -> None:
     win = make_simple("live_active")
     sid = SessionId("s1")
@@ -575,15 +663,18 @@ def test_live_unavailable_disables_playing(make_simple: Make, qtbot: Any) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_details_dialog_has_four_tabs(make_simple: Make, qtbot: Any) -> None:
+def test_details_dialog_tabs(make_simple: Make, qtbot: Any) -> None:
     win = make_simple("all_ready")
     win.details_button.click()
     dlg = win.details
     assert isinstance(dlg, DetailsDialog)
     qtbot.waitUntil(dlg.isVisible)
-    assert dlg.tabs.count() == 4
-    assert [dlg.tabs.tabText(i) for i in range(4)] == ["System", "Speed test", "Storage", "About"]
+    assert [dlg.tabs.tabText(i) for i in range(dlg.tabs.count())] == [
+        "System", "Speed test", "Storage", "Settings", "About",
+    ]  # fmt: skip
     assert dlg.page_ids() == tuple(pid for pid, _ in TABS)
+    dlg.go("settings")
+    assert dlg.current_page_id() == "settings"
     bench = dlg.pages["bench"]
     assert not bench.apply_button.isVisibleTo(dlg)  # type: ignore[attr-defined]
     dlg.go("about")

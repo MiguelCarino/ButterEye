@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The ButterEye contributors
+option('glslang', type: 'string', value: 'glslang', description: 'GLSL to SPIR-V compiler')
+option('plugindir', type: 'string', value: 'lib64/buttereye/vapoursynth',
+       description: 'where the plugin is installed (ButterEye loads it by path)')

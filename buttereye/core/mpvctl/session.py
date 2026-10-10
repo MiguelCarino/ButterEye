@@ -54,7 +54,7 @@ from buttereye.core.events import (
     SessionEnded,
 )
 from buttereye.core.i18n import render
-from buttereye.core.mpvctl import decide, launcher, shaders
+from buttereye.core.mpvctl import decide, launcher, osd, shaders
 from buttereye.core.mpvctl.health import (
     HealthDetector,
     Thresholds,
@@ -70,6 +70,7 @@ from buttereye.core.mpvctl.ipc import (
     LABEL,
     OBSERVABLE,
     VF_LABEL,
+    CommandRefused,
     IpcClosed,
     MpvError,
     MpvIpc,
@@ -240,10 +241,17 @@ class Registry:
     def __init__(self) -> None:
         self.options = LiveOptions()
         self.sessions: dict[SessionId, _Session] = {}
+        #: the last few ended sessions' final snapshots, newest last, so their
+        #: log can still be copied after mpv closed (or crashed)
+        self.recent: dict[SessionId, SessionSnapshot] = {}
 
 
 def registry(ctx: ProviderContext) -> Registry:
     return ctx.state(REGISTRY_KEY, Registry)
+
+
+#: ended sessions whose final snapshot is kept for their log
+RECENT_KEPT = 8
 
 
 def _new_sid() -> SessionId:
@@ -366,6 +374,10 @@ class _Session:
         self.title = file.name
         self.log = filelog.for_item(_log, filelog.session_key(sid))
         self.flow_scale = 1.0  # TensorRT RIFE flow resolution chosen by apply (M0(q))
+        self.exit_code: int | None = None  # mpv's, once it has exited
+        # the on-screen line (osd.py): what it last showed, and its hide timer
+        self.osd_shown: tuple[object, ...] = ()
+        self.osd_task: asyncio.Task[None] | None = None
         # what the running filter does, for the snapshot (reset when it is off)
         self.run_size: tuple[int, int] | None = None
         self.run_flow = 1.0
@@ -510,6 +522,7 @@ class _Session:
             smooth_size=self.run_size,
             flow_scale=self.run_flow,
             mv_block=self.run_block,
+            exit_code=self.exit_code,
         )
 
     def _key(self, s: SessionSnapshot) -> tuple[object, ...]:
@@ -530,10 +543,45 @@ class _Session:
             # a pending counter-only update must not arrive after this transition
             self.ctx.forget_coalesced(self.sid)
             self.emit(SessionChanged(snap))
+            self.update_osd(snap)
         elif counters != self._last_counters:
             self._last_counters = counters
             self.ctx.emit_coalesced(self.sid, SessionChanged(snap), min_interval_s=0.25)
         return snap
+
+    def keep_logs(self) -> bool:
+        try:
+            return self.ctx.config().general.keep_logs
+        except ButterEyeError:
+            return True
+
+    def update_osd(self, snap: SessionSnapshot) -> None:
+        """Show the small mpv line when what smoothing does changed, for the
+        configured time (GUI.md §12.1.5); "always" keeps it up and updates it."""
+        try:
+            general = self.ctx.config().general
+        except ButterEyeError:
+            return
+        seconds, items = general.osd_seconds, general.osd_items
+        sig = osd.signature(snap, items)
+        if seconds == 0 or snap.ended or not sig or sig == self.osd_shown:
+            return
+        self.osd_shown = sig
+        if self.osd_task is not None:
+            self.osd_task.cancel()
+        text = osd.ass(osd.parts(snap, items))
+
+        async def show() -> None:
+            with contextlib.suppress(IpcClosed, MpvError, TimeoutError, CommandRefused):
+                await self.ipc.command(
+                    "osd-overlay", osd.OVERLAY_ID, "ass-events", text, 0, osd.RES_Y
+                )
+                if seconds > 0:
+                    await asyncio.sleep(seconds)
+                    await self.ipc.command("osd-overlay", osd.OVERLAY_ID, "none", "", 0, 0)
+                    self.osd_shown = ()  # the same state may be shown again later
+
+        self.osd_task = self.ctx.spawn(show(), name=f"osd-{self.sid}")
 
     def mark_published(self, snap: SessionSnapshot) -> None:
         self._last_key = self._key(snap)
@@ -1905,6 +1953,12 @@ class _Session:
         if returncode is not None:
             # mpv is gone: its socket and script are leftovers (discover would re-probe them)
             launcher.remove_runtime_files(self.socket.parent, self.sid)
+            self.exit_code = returncode
+            words = filelog.exit_words(returncode)
+            if returncode == 0:
+                self.log.info("%s: %s", self.title, words)
+            else:
+                self.log.warning("%s: %s", self.title, words)
         if returncode is None:
             self.health, self.health_code = Health.CONNECTION_LOST, ErrorCode.IPC_LOST
             self.emit(
@@ -1939,6 +1993,12 @@ class _Session:
         reg = registry(self.ctx)
         if reg.sessions.get(self.sid) is self:
             del reg.sessions[self.sid]
+        reg.recent[self.sid] = snap
+        while len(reg.recent) > RECENT_KEPT:
+            del reg.recent[next(iter(reg.recent))]
+        if not self.keep_logs():  # opted out of logs: mpv's goes with the video
+            with contextlib.suppress(OSError):
+                self.log_path.unlink()
 
 
 # ---------------------------------------------------------------------------
@@ -2047,6 +2107,20 @@ async def play(
 async def sessions(ctx: ProviderContext) -> tuple[SessionSnapshot, ...]:
     """Live players only; an ended session was announced by ``SessionEnded``."""
     return tuple(s.snapshot() for s in registry(ctx).sessions.values() if not s.ended)
+
+
+async def recent_sessions(ctx: ProviderContext) -> tuple[SessionSnapshot, ...]:
+    """Recently ended sessions, newest first."""
+    return tuple(reversed(registry(ctx).recent.values()))
+
+
+async def recent_session(ctx: ProviderContext, sid: SessionId) -> SessionSnapshot | None:
+    """A live session's snapshot, or the final one of a recently ended session."""
+    reg = registry(ctx)
+    live = reg.sessions.get(sid)
+    if live is not None:
+        return live.snapshot()
+    return reg.recent.get(sid)
 
 
 async def set_interpolation(

@@ -65,6 +65,7 @@ from typing import Literal
 from buttereye.core.errors import ErrorCode
 from buttereye.core.profiles import defaults
 from buttereye.core.types import (
+    OSD_ITEMS,
     BackendId,
     Config,
     ConfigIssue,
@@ -732,6 +733,27 @@ class _Reader:
             full_size=self.get(
                 t, "full_size", sec, "general.full_size", _bool, "true or false", False
             ),
+            osd_seconds=self.get(
+                t,
+                "osd_seconds",
+                sec,
+                "general.osd_seconds",
+                _osd_seconds,
+                "a number of seconds (0 = off, -1 = always)",
+                1.0,
+            ),
+            osd_items=self.get(
+                t,
+                "osd_items",
+                sec,
+                "general.osd_items",
+                _osd_items,
+                "a list of: " + ", ".join(OSD_ITEMS),
+                ("rates", "engine"),
+            ),
+            keep_logs=self.get(
+                t, "keep_logs", sec, "general.keep_logs", _bool, "true or false", True
+            ),
         )
 
     def render(self, t: Mapping[str, object] | None) -> RenderDefaults:
@@ -953,6 +975,17 @@ def _upscaling(v: object) -> Literal["standard", "sharper"] | None:
     return None
 
 
+def _osd_seconds(v: object) -> float | None:
+    f = _float(v)
+    return f if f is not None and (f == -1 or 0 <= f <= 3600) else None
+
+
+def _osd_items(v: object) -> tuple[str, ...] | None:
+    if not isinstance(v, list) or not all(isinstance(x, str) and x in OSD_ITEMS for x in v):
+        return None
+    return tuple(x for x in OSD_ITEMS if x in v)  # known order, no duplicates
+
+
 def _int(v: object) -> int | None:
     return v if isinstance(v, int) and not isinstance(v, bool) else None
 
@@ -1095,6 +1128,12 @@ def to_document(cfg: Config) -> dict[str, object]:
         general["deband"] = True
     if g.full_size:
         general["full_size"] = True
+    if g.osd_seconds != 1.0:
+        general["osd_seconds"] = g.osd_seconds
+    if tuple(g.osd_items) != ("rates", "engine"):
+        general["osd_items"] = list(g.osd_items)
+    if not g.keep_logs:
+        general["keep_logs"] = False
     _merge(general, general_unknown)
     if general:
         doc["general"] = general

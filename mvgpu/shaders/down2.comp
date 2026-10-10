@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+// One pyramid step: 2x2 box average (src and dst live in the same buffer).
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, binding = 0) buffer Pyr { float pyr[]; };
+layout(push_constant) uniform P { uint src_off, dst_off; int sw, sh, dw, dh; } p;
+void main() {
+    int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+    if (x >= p.dw || y >= p.dh) return;
+    int x0 = min(2 * x, p.sw - 1), x1 = min(2 * x + 1, p.sw - 1);
+    int y0 = min(2 * y, p.sh - 1), y1 = min(2 * y + 1, p.sh - 1);
+    pyr[p.dst_off + uint(y * p.dw + x)] = 0.25 * (pyr[p.src_off + uint(y0 * p.sw + x0)]
+        + pyr[p.src_off + uint(y0 * p.sw + x1)] + pyr[p.src_off + uint(y1 * p.sw + x0)]
+        + pyr[p.src_off + uint(y1 * p.sw + x1)]);
+}

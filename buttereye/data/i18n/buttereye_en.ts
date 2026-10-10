@@ -1322,6 +1322,11 @@
     </message>
     <message>
         <location filename="buttereye/gui/details_dialog.py"/>
+        <source>Settings</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/details_dialog.py"/>
         <source>Speed test</source>
         <translation type="unfinished"></translation>
     </message>
@@ -1677,6 +1682,34 @@
         <location filename="buttereye/gui/dialogs/include_line.py"/>
         <source>This line makes ButterEye's mpv profile available in the mpv you start yourself: start mpv with --profile=buttereye to use it. It does not smooth video on its own; smooth motion in an mpv you start yourself needs attaching, which isn't in this build yet. Use Open and Play for smooth motion.
 ButterEye never changes mpv.conf unless you ask it to.</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>LogsDialog</name>
+    <message>
+        <location filename="buttereye/gui/logs_dialog.py"/>
+        <source>Copy a log to paste it in a report. ButterEye keeps the most recent ones.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/logs_dialog.py"/>
+        <source>Copy log</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/logs_dialog.py"/>
+        <source>Copy the log for {title}</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/logs_dialog.py"/>
+        <source>No logs yet.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/logs_dialog.py"/>
+        <source>Recent logs</source>
         <translation type="unfinished"></translation>
     </message>
 </context>
@@ -4338,6 +4371,79 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
 </context>
 <context>
+    <name>SettingsPanel</name>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>1 second</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>A small line at the top left of mpv when smoothing starts or changes.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Always</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>CPU or GPU, and the method</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Dropped frames</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Frame rates (24 → 60 fps)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Keep logs I can copy</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Logs</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Off</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>On-screen info in mpv</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Show &amp;for</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>The size it smooths at</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>What happened with each video and copy, for Copy log and More logs. Off: no log buttons, and each mpv log is deleted when the video closes.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>{n} seconds</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
     <name>SetupWizard</name>
     <message>
         <location filename="buttereye/gui/dialogs/setup_wizard.py"/>
@@ -4787,6 +4893,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>ButterEye lost touch with this player; it may have frozen or been killed. Copy log has its last messages.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>ButterEye's engine is not responding.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4813,6 +4924,16 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>Choose a video to convert</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Closed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Closed with an error</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4868,6 +4989,16 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>Details</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Dismiss</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Dismiss {title} from the list</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4957,6 +5088,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Logs of videos that played or closed recently, and of copies</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Lost touch</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4998,6 +5134,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>Measuring your computer (about a minute)…</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>More &amp;logs</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5097,6 +5238,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Playing</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Plays at the highest rate your display allows, up to 5× the video. Smoother, but costs more power.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -5133,6 +5279,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>Ready. The speed test didn't finish; see Details.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Recently closed</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5342,7 +5493,27 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>mpv crashed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>mpv crashed (stopped by {signal}). Copy log has its last messages, which usually say why.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>mpv keeps playing; ButterEye stops managing it.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>mpv quit with an error (exit code {code}). Copy log has its last messages.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>mpv was closed. Copy log has what happened while it played.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5353,6 +5524,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>{choice} (not available here)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>{name}: {what}.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

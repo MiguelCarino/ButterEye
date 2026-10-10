@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import time
 from collections import OrderedDict, deque
-from collections.abc import Iterable, MutableMapping
+from collections.abc import Callable, Iterable, MutableMapping
 from pathlib import Path
 from typing import Any
 
@@ -54,15 +55,23 @@ def for_item(logger: logging.Logger, key: str) -> ItemLogger:
 class FileLogBook(logging.Handler):
     """The latest log lines per item, in memory (never written anywhere)."""
 
-    def __init__(self) -> None:
+    def __init__(self, enabled: Callable[[], bool] = lambda: True) -> None:
         super().__init__(logging.INFO)
         self._lines: OrderedDict[str, deque[str]] = OrderedDict()
+        #: False when the user opted out of logs (GeneralSettings.keep_logs)
+        self.enabled = enabled
         self.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 
     def emit(self, record: logging.LogRecord) -> None:
         key = getattr(record, ITEM_ATTR, None)
         if not isinstance(key, str):
             return
+        try:
+            if not self.enabled():
+                self._lines.clear()
+                return
+        except Exception:  # the setting can't be read: keep the line
+            pass
         try:
             line = self.format(record)
         except Exception:  # a broken record must never break the caller
@@ -100,6 +109,20 @@ def tail(
     return [ln for ln in out if ln.strip()][-lines:]
 
 
+def exit_words(code: int) -> str:
+    """How mpv ended, in words: normally, with an error code, or killed by a
+    signal (a crash; asyncio reports a signal as a negative exit code)."""
+    if code == 0:
+        return "mpv closed normally (exit code 0)."
+    if code < 0:
+        try:
+            name = signal.Signals(-code).name
+        except ValueError:
+            name = f"signal {-code}"
+        return f"mpv crashed: it was stopped by {name} (signal {-code})."
+    return f"mpv quit with an error (exit code {code})."
+
+
 def compose(
     *,
     version: str,
@@ -126,6 +149,7 @@ __all__ = [
     "FileLogBook",
     "ItemLogger",
     "compose",
+    "exit_words",
     "for_item",
     "job_key",
     "session_key",

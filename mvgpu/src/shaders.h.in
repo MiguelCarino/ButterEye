@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPIR-V of the compute shaders, generated at build time by glslang --vn.
+#pragma once
+#include <cstdint>
+#include "unpack.h"
+#include "down2.h"
+#include "search.h"
+#include "median.h"
+#include "select.h"
+#include "render.h"
+#include "pack.h"

@@ -155,6 +155,10 @@ uses it (4–5× the Vulkan engine on the same GPU) unless you turn it off; ther
 switch to flip. At 4K, when it falls just short, it estimates motion at half resolution
 (spike M0(q)) before it would smooth a smaller picture.
 
+**On-screen info**: when smoothing starts or changes, mpv shows one small line for a second
+(rates, CPU or GPU and the method). Details → Settings sets how long (or off, or always)
+and what it shows, and whether ButterEye keeps logs you can copy (Copy log, More logs).
+
 **Resolution**: when this computer can't smooth a video at its own size live, ButterEye
 smooths a smaller picture and mpv scales it back up (*Lower if needed*, the default).
 *Always full size* never does: it smooths at the video's own size even if some frames

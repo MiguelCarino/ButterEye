@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+// 3x3 component median of a block vector field (removes stray matches).
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, binding = 0) readonly buffer Src { ivec2 src[]; };
+layout(std430, binding = 1) writeonly buffer Dst { ivec2 dst[]; };
+layout(push_constant) uniform P { int bw, bh; } p;
+int med9(int v[9]) {
+    for (int i = 0; i < 5; ++i)
+        for (int j = i + 1; j < 9; ++j)
+            if (v[j] < v[i]) { int t = v[i]; v[i] = v[j]; v[j] = t; }
+    return v[4];
+}
+void main() {
+    int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+    if (x >= p.bw || y >= p.bh) return;
+    int vx[9], vy[9];
+    int n = 0;
+    for (int j = -1; j <= 1; ++j)
+        for (int i = -1; i <= 1; ++i) {
+            ivec2 v = src[clamp(y + j, 0, p.bh - 1) * p.bw + clamp(x + i, 0, p.bw - 1)];
+            vx[n] = v.x; vy[n] = v.y; ++n;
+        }
+    dst[y * p.bw + x] = ivec2(med9(vx), med9(vy));
+}

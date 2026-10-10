@@ -238,9 +238,10 @@ NTSC = Fraction(24000, 1001)
 @pytest.mark.parametrize(
     ("src", "hz", "expected"),
     [
-        (NTSC, 119.88, Fraction(60000, 1001)),  # the lowest refresh/k that doubles
-        (NTSC, 180.0, Fraction(60)),  # refresh/3 (2.5x), not refresh/2 (3.75x)
-        (Fraction(24), 144.0, Fraction(48)),  # 144/3, an exact 2x
+        (NTSC, 119.88, Fraction(120000, 1001)),  # the display rate itself
+        (NTSC, 180.0, Fraction(180)),  # 7.5x: within the 8x limit for the display rate
+        (Fraction(24), 144.0, Fraction(144)),
+        (Fraction(15), 144.0, Fraction(60)),  # 9.6x is over 8x: 60 fps instead
         (NTSC, 60.0, Fraction(60)),  # 2.5x
         (Fraction(50), 60.0, Fraction(60)),  # no refresh/k doubles: the highest one
     ],

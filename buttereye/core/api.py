@@ -132,6 +132,8 @@ REPORT_BUNDLE = _ref("doctor.report", "bundle")
 INCLUDE_ADD = _ref("mpvctl.include", "add_include")
 LIVE_PLAY = _ref("mpvctl.session", "play")
 LIVE_SESSIONS = _ref("mpvctl.session", "sessions")
+LIVE_RECENT = _ref("mpvctl.session", "recent_session")
+LIVE_RECENT_ALL = _ref("mpvctl.session", "recent_sessions")
 LIVE_SET_INTERP = _ref("mpvctl.session", "set_interpolation")
 LIVE_DETACH = _ref("mpvctl.session", "detach")
 LIVE_APPLY = _ref("mpvctl.session", "apply_profile")
@@ -288,7 +290,7 @@ class ButterEye:
         self._closing = False
         self._shutdown: ShutdownReport | None = None
         # per-file logs the user can copy (session and job lines, in memory)
-        self._file_logs = _filelog.FileLogBook()
+        self._file_logs = _filelog.FileLogBook(lambda: self._current_config().general.keep_logs)
         core_logger = logging.getLogger("buttereye.core")
         core_logger.addHandler(self._file_logs)
         if core_logger.getEffectiveLevel() > logging.INFO:
@@ -640,15 +642,19 @@ class ButterEye:
         return tuple(await fn(self._ctx))
 
     # ---- per-file logs ----
+    async def recent_sessions(self) -> tuple[SessionSnapshot, ...]:
+        """Players that ended recently (closed, crashed, let go), newest first, so
+        their logs can still be copied (More logs)."""
+        fn = _caps.resolve(LIVE_RECENT_ALL)
+        return tuple(await fn(self._ctx)) if fn is not None else ()
+
     async def session_log(self, sid: SessionId) -> str:
         """What ButterEye did with one playing video, plus the end of mpv's log for
         it, as text for the clipboard (also after the session ended)."""
         snap: SessionSnapshot | None = None
-        if _caps.implemented((LIVE_SESSIONS,)):
-            try:
-                snap = next((x for x in await self.sessions() if x.sid == sid), None)
-            except ButterEyeError:
-                snap = None
+        recent = _caps.resolve(LIVE_RECENT)
+        if recent is not None:  # live, or recently ended (mpv closed or crashed)
+            snap = cast(SessionSnapshot | None, await recent(self._ctx, sid))
         facts: list[tuple[str, str]] = [("Session", str(sid))]
         if snap is not None:
             bypass = f" ({snap.bypass.value})" if snap.bypass else ""
@@ -658,7 +664,9 @@ class ButterEye:
                 ("Smoothing", snap.filter.value + bypass),
                 ("Engine", snap.backend.value if snap.backend is not None else ""),
                 ("Health", snap.health.value + code),
-            ]
+                ("Ended", _filelog.exit_words(snap.exit_code) if snap.exit_code is not None
+                 else ("yes" if snap.ended else "")),
+            ]  # fmt: skip
         path = self._paths.logs_dir / f"mpv-{sid}.log"
         return _filelog.compose(
             version=_VERSION,

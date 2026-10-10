@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+// Motion-compensated in-between frame for one plane at time t (spike M0(r)):
+// the per-pixel half-vectors u (luma pixels, chosen by select.comp); out = (1-t) A(x - 2t u) + t C(x + 2(1-t) u), bilinear. Chroma
+// planes pass sub = 2 (4:2:0): positions and vectors are halved.
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, binding = 0) readonly buffer A { float a[]; };
+layout(std430, binding = 1) readonly buffer C { float c[]; };
+layout(std430, binding = 2) readonly buffer F { vec4 field[]; };  // per luma pixel (select.comp)
+layout(std430, binding = 3) writeonly buffer Out { float o[]; };
+layout(push_constant) uniform P { uint off; int w, h, lw, lh, sub; float t, lo, hi; } p;
+float bil_a(vec2 q) {
+    q = clamp(q, vec2(0.0), vec2(p.w - 1.001, p.h - 1.001));
+    ivec2 i = ivec2(q); vec2 f = q - vec2(i);
+    uint r0 = p.off + uint(i.y * p.w + i.x), r1 = r0 + uint(p.w);
+    return mix(mix(a[r0], a[r0 + 1u], f.x), mix(a[r1], a[r1 + 1u], f.x), f.y);
+}
+float bil_c(vec2 q) {
+    q = clamp(q, vec2(0.0), vec2(p.w - 1.001, p.h - 1.001));
+    ivec2 i = ivec2(q); vec2 f = q - vec2(i);
+    uint r0 = p.off + uint(i.y * p.w + i.x), r1 = r0 + uint(p.w);
+    return mix(mix(c[r0], c[r0 + 1u], f.x), mix(c[r1], c[r1 + 1u], f.x), f.y);
+}
+void main() {
+    int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+    if (x >= p.w || y >= p.h) return;
+    // the luma field at this sample (chroma: the 2x2 luma pixels it covers)
+    vec2 u = vec2(0.0);
+    float mismatch = 0.0;
+    for (int j = 0; j < p.sub; ++j)
+        for (int i = 0; i < p.sub; ++i) {
+            ivec2 l = min(ivec2(x * p.sub + i, y * p.sub + j), ivec2(p.lw - 1, p.lh - 1));
+            vec4 fv = field[l.y * p.lw + l.x];
+            u += fv.xy;
+            mismatch = max(mismatch, fv.z);
+        }
+    u /= float(p.sub * p.sub * p.sub);
+    vec2 here = vec2(x, y);
+    float sa = bil_a(here - 2.0 * p.t * u), sc = bil_c(here + 2.0 * (1.0 - p.t) * u);
+    float blend = (1.0 - p.t) * sa + p.t * sc;
+    // where even the best vector leaves the frames disagreeing (occlusion: the
+    // content is only in one of them), averaging them draws a ghost: take the
+    // frame nearer in time instead, with a smooth ramp in between
+    float one = p.t <= 0.5 ? sa : sc;
+    o[p.off + uint(y * p.w + x)] = mix(blend, one, smoothstep(p.lo, p.hi, mismatch));
+}

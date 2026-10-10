@@ -387,7 +387,10 @@ def test_display_180hz_respects_the_cap(src: Fraction) -> None:
         slow = decide.choose_target(src, 180.0, kind, sustainable_fps=30.0)
         assert slow.target is None and slow.bypass is BypassReason.NO_REALTIME
     uncapped = decide.choose_target(src, 180.0, TargetKind.DISPLAY)
-    assert uncapped.target == 60  # the lowest refresh/k that doubles (k=3)
+    assert uncapped.target == 180  # "Match your display": the display rate itself
+    # can't keep up with 180 but with 60: 60 fps is the backup (owner, 2026-10-10)
+    backup = decide.choose_target(src, 180.0, TargetKind.DISPLAY, sustainable_fps=125.0)
+    assert backup.target == 60
     smoothest = decide.choose_target(src, 180.0, TargetKind.DISPLAY_MAX)
     assert smoothest.target == 90  # k=2: 7.5x at k=1 is over the 5x limit
     fast = decide.choose_target(src, 180.0, TargetKind.DISPLAY_MAX, sustainable_fps=130.0)
@@ -1017,3 +1020,37 @@ async def test_full_size_never_smooths_smaller(
     assert snap.notice == decide.full_size_notice()
     assert s.ipc.sizes() == [None]  # type: ignore[attr-defined]
     assert snap.smooth_size is None
+
+
+async def test_crashed_mpv_keeps_its_log_and_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mpv killed by SIGSEGV: the snapshot says so, the log line is written, and
+    the ended session can still be found for Copy log (it left the registry)."""
+    import logging
+
+    from buttereye.core import filelog
+    from buttereye.core.mpvctl import launcher
+
+    monkeypatch.setattr(launcher, "remove_runtime_files", lambda *a: None)
+    book = filelog.FileLogBook()
+    core_logger = logging.getLogger("buttereye.core")
+    core_logger.addHandler(book)
+    old_level = core_logger.level
+    core_logger.setLevel(logging.INFO)
+    try:
+        ctx = FakeCtx(_paths(tmp_path), _config(_simple()))
+        s = _session(ctx, tmp_path)
+        live.registry(ctx).sessions[s.sid] = s
+        s.proc.returncode = -11  # type: ignore[attr-defined]
+        await s.ended_by_mpv()
+        snap = await live.recent_session(ctx, s.sid)  # type: ignore[arg-type]
+        assert snap is not None and snap.ended and snap.exit_code == -11
+        assert s.sid not in live.registry(ctx).sessions
+        lines = book.lines(filelog.session_key("s1"))
+        assert lines[-1].endswith("film.mkv: mpv crashed: it was stopped by SIGSEGV (signal 11).")
+        assert filelog.exit_words(0) == "mpv closed normally (exit code 0)."
+        assert filelog.exit_words(3) == "mpv quit with an error (exit code 3)."
+    finally:
+        core_logger.removeHandler(book)
+        core_logger.setLevel(old_level)
