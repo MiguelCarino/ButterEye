@@ -400,6 +400,8 @@ class _Session:
         self.trt_waiting: trt.EngineKey | None = None
         #: the bundled shader this session added to mpv (§15.2), or None
         self.shader: Path | None = None
+        #: mpv's deband value before ButterEye turned it on (§15.2), or None
+        self.deband_restore: bool | None = None
         self.trt_built = False
         self.failure: list[str] = []
         self.device_lost = False
@@ -934,9 +936,28 @@ class _Session:
         except (IpcClosed, MpvError, TimeoutError) as exc:
             _log.warning("%s: could not change the upscaling shader: %s", self.title, exc)
 
+    async def sync_deband(self, cfg: Config | None) -> None:
+        """Turn mpv's own debanding on for ``general.deband`` and back to its
+        previous value when it is turned off (§15.2). A deband=yes from the
+        user's mpv.conf is never turned off."""
+        want = bool(cfg.general.deband) if cfg is not None else False
+        try:
+            if want and self.deband_restore is None:
+                current = await self.ipc.get("deband")
+                if current is not True:
+                    await self.ipc.command("set_property", "deband", True)
+                    self.deband_restore = bool(current)
+            elif not want and self.deband_restore is not None:
+                await self.ipc.command("set_property", "deband", self.deband_restore)
+                self.deband_restore = None
+        except (IpcClosed, MpvError, TimeoutError) as exc:
+            _log.warning("%s: could not change debanding: %s", self.title, exc)
+
     async def apply(self, *, raise_on_fail: bool) -> None:
         """Decide (§4.11, §5.6) and add/replace/remove the filter; verify a new gen."""
-        await self.sync_shader(self.config()[0])
+        cfg_now = self.config()[0]
+        await self.sync_shader(cfg_now)
+        await self.sync_deband(cfg_now)
         props = self.props
         vp = props.get("video-params")
         loaded = self.file_loaded_at is not None

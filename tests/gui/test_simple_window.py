@@ -624,26 +624,41 @@ def test_details_system_tab_offers_the_tensorrt_opt_in(make_simple: Make, qtbot:
 # ---------------------------------------------------------------------------
 
 
-def test_upscaling_choice_saves_general_setting(make_simple: Make, qtbot: Any) -> None:
+def test_picture_choice_saves_upscaling_and_deband(make_simple: Make, qtbot: Any) -> None:
     win = make_simple("all_ready")
-    combo = win.upscale_combo
-    assert [combo.itemData(i) for i in range(combo.count())] == ["standard", "sharper"]
-    assert win.upscaling() == "standard"
+    combo = win.picture_combo
+    assert [combo.itemData(i) for i in range(combo.count())] == [
+        "standard", "sharper", "deband", "sharper-deband",
+    ]  # fmt: skip
+    assert win.picture() == "standard"
     pick(combo, "sharper")
     qtbot.waitUntil(lambda: saved(win).general.upscaling == "sharper", timeout=5000)
+    assert saved(win).general.deband is False
+    pick(combo, "sharper-deband")
+    qtbot.waitUntil(lambda: saved(win).general.deband is True, timeout=5000)
+    assert saved(win).general.upscaling == "sharper"
+    pick(combo, "deband")
+    qtbot.waitUntil(lambda: saved(win).general.upscaling == "standard", timeout=5000)
+    assert saved(win).general.deband is True
     assert sw.is_simple(saved(win))
-    # the label is a buddy with a mnemonic, like the other choices
     label = next(w for w in win.findChildren(QLabel) if w.buddy() is combo)
-    assert label.text() == "&Upscaling"
+    assert label.text() == "&Picture"
 
 
-def test_upscaling_choice_follows_the_config(make_simple: Make, qtbot: Any) -> None:
+def test_picture_choice_follows_the_config(make_simple: Make, qtbot: Any) -> None:
     base = sc.get("all_ready")
     cfg = base.config_load.config
-    sharp = dataclasses.replace(cfg, general=dataclasses.replace(cfg.general, upscaling="sharper"))
-    scen = dataclasses.replace(base, name="sharp", config_load=sc.config_load(sharp))
+    general = dataclasses.replace(cfg.general, upscaling="sharper", deband=True)
+    scen = dataclasses.replace(
+        base, name="sharp", config_load=sc.config_load(dataclasses.replace(cfg, general=general))
+    )
     win = make_simple(scen)
-    assert win.upscale_combo.currentData() == "sharper"
+    assert win.picture_combo.currentData() == "sharper-deband"
+
+
+def test_picture_keys_round_trip() -> None:
+    for key in sw.PICTURE_CHOICES:
+        assert sw.picture_key(*sw.picture_settings(key)) == key
 
 
 # ---------------------------------------------------------------------------

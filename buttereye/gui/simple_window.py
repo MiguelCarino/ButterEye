@@ -147,6 +147,21 @@ def _t(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+#: Picture choices (§15.2): key -> label; stored as general.upscaling + general.deband
+PICTURE_CHOICES: tuple[str, ...] = ("standard", "sharper", "deband", "sharper-deband")
+
+
+def picture_key(upscaling: str, deband: bool) -> str:
+    if upscaling == "sharper":
+        return "sharper-deband" if deband else "sharper"
+    return "deband" if deband else "standard"
+
+
+def picture_settings(key: str) -> tuple[str, bool]:
+    """``(general.upscaling, general.deband)`` for a Picture choice."""
+    return ("sharper" if key.startswith("sharper") else "standard", key.endswith("deband"))
+
+
 def target_for(key: str) -> Target:
     if key == "fps60":
         return Target(TargetKind.FPS, Fraction(60))
@@ -522,6 +537,7 @@ class SimpleWindow(QMainWindow):
         self._smooth_key = DEFAULT_SMOOTHNESS
         self._target_key = DEFAULT_TARGET
         self._upscaling = "standard"  # general.upscaling (§15.2)
+        self._deband = False  # general.deband (§15.2)
         self._jobs: dict[JobId, RenderJobState] = {}
         self._job_rows: dict[JobId, JobRow] = {}
         self._convert_visible = False
@@ -690,19 +706,20 @@ class SimpleWindow(QMainWindow):
         grid.addWidget(self.smooth_combo, 2, 1)
         self.smooth_combo.currentIndexChanged.connect(lambda _i: self._on_choice_changed())
 
-        self.upscale_combo = QComboBox(body)
-        self.upscale_combo.setObjectName("upscalingCombo")
-        self._fill_upscaling()
-        ulabel, _ = a11y.labelled(
-            self.tr("&Upscaling"),
-            self.upscale_combo,
+        self.picture_combo = QComboBox(body)
+        self.picture_combo.setObjectName("pictureCombo")
+        self._fill_picture()
+        plabel, _ = a11y.labelled(
+            self.tr("&Picture"),
+            self.picture_combo,
             description=self.tr(
-                "Sharper adds crisper edges when the video is smaller than the window."
+                "Sharper adds crisper edges when the video is smaller than the window; "
+                "less banding smooths steps in gradients."
             ),
         )
-        grid.addWidget(ulabel, 3, 0)
-        grid.addWidget(self.upscale_combo, 3, 1)
-        self.upscale_combo.currentIndexChanged.connect(lambda _i: self._on_choice_changed())
+        grid.addWidget(plabel, 3, 0)
+        grid.addWidget(self.picture_combo, 3, 1)
+        self.picture_combo.currentIndexChanged.connect(lambda _i: self._on_choice_changed())
         lay.addLayout(grid)
 
         # now playing
@@ -763,7 +780,7 @@ class SimpleWindow(QMainWindow):
         self.setTabOrder(self.convert_button, self.smooth_switch)
         self.setTabOrder(self.smooth_switch, self.target_combo)
         self.setTabOrder(self.target_combo, self.smooth_combo)
-        self.setTabOrder(self.smooth_combo, self.upscale_combo)
+        self.setTabOrder(self.smooth_combo, self.picture_combo)
 
     def _zone(self, parent: QWidget, text: str, name: str, chooser: FileChooser | None) -> DropZone:
         unit = self.fontMetrics().height()
@@ -885,25 +902,31 @@ class SimpleWindow(QMainWindow):
         finally:
             self._updating = False
 
-    def _fill_upscaling(self) -> None:
-        combo = self.upscale_combo
+    def _fill_picture(self) -> None:
+        combo = self.picture_combo
         self._updating = True
         try:
             combo.clear()
             combo.addItem(self.tr("Standard"), "standard")
             combo.addItem(self.tr("Sharper"), "sharper")
+            combo.addItem(self.tr("Less banding"), "deband")
+            combo.addItem(self.tr("Sharper, less banding"), "sharper-deband")
             combo.setItemData(
                 1,
                 self.tr("FSRCNNX shader; costs a little GPU time when the video is upscaled."),
                 Qt.ItemDataRole.ToolTipRole,
             )
-            combo.setCurrentIndex(max(combo.findData(self._upscaling), 0))
+            combo.setCurrentIndex(max(combo.findData(self.picture()), 0))
         finally:
             self._updating = False
 
     # ------------------------------------------------------------------ choices
     def upscaling(self) -> str:
         return self._upscaling
+
+    def picture(self) -> str:
+        """The Picture choice for the current upscaling and deband settings."""
+        return picture_key(self._upscaling, self._deband)
 
     def smoothness(self) -> str:
         return self._smooth_key
@@ -916,7 +939,8 @@ class SimpleWindow(QMainWindow):
 
     def _show_config_choices(self, cfg: Config) -> None:
         self._upscaling = cfg.general.upscaling
-        self._fill_upscaling()
+        self._deband = cfg.general.deband
+        self._fill_picture()
         prof = find_simple(cfg)
         if prof is None:
             return
@@ -930,7 +954,9 @@ class SimpleWindow(QMainWindow):
             return
         self._target_key = str(self.target_combo.currentData() or DEFAULT_TARGET)
         self._smooth_key = str(self.smooth_combo.currentData() or DEFAULT_SMOOTHNESS)
-        self._upscaling = str(self.upscale_combo.currentData() or "standard")
+        self._upscaling, self._deband = picture_settings(
+            str(self.picture_combo.currentData() or "standard")
+        )
         self.persist()
 
     def _on_smooth_toggled(self, on: bool) -> None:
@@ -1338,7 +1364,8 @@ class SimpleWindow(QMainWindow):
             "sharper" if self._upscaling == "sharper" else "standard"
         )
         cfg = dataclasses.replace(
-            cfg, general=dataclasses.replace(cfg.general, upscaling=upscaling)
+            cfg,
+            general=dataclasses.replace(cfg.general, upscaling=upscaling, deband=self._deband),
         )
         rev = load.revision
         self.bridge.call(

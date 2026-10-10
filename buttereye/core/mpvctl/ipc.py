@@ -76,10 +76,13 @@ READABLE: frozenset[str] = OBSERVABLE | frozenset(
         "video-sync",
         "watch-later-options",
         "glsl-shaders",
+        "deband",
     }
 )
 #: Properties ButterEye may set (the attach settings of §4.3; restored on detach).
-WRITABLE: frozenset[str] = frozenset({"hwdec", "hr-seek-framedrop", "interpolation"})
+WRITABLE: frozenset[str] = frozenset(
+    {"hwdec", "hr-seek-framedrop", "interpolation", "deband"}  # deband: §15.2
+)
 LOG_LEVELS: frozenset[str] = frozenset({"no", "fatal", "error", "warn", "info"})
 
 

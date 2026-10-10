@@ -4707,17 +4707,17 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>&amp;Picture</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>&amp;Smooth motion</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>&amp;Target</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>&amp;Upscaling</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4878,6 +4878,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>Interlaced video plays without smoothing.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Less banding</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5052,7 +5057,12 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>Sharper adds crisper edges when the video is smaller than the window.</source>
+        <source>Sharper adds crisper edges when the video is smaller than the window; less banding smooths steps in gradients.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Sharper, less banding</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

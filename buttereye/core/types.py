@@ -278,6 +278,8 @@ class GeneralSettings:
     #: display upscaling (§15.2, spike M0(o)): mpv's own scaler, or the bundled
     #: FSRCNNX shader on top of it ("sharper")
     upscaling: Literal["standard", "sharper"] = "standard"
+    #: mpv's own debanding (libplacebo, ~0 GPU cost) switched on by ButterEye (§15.2)
+    deband: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,7 +11,8 @@ Schema v1 layout (keys are the ``types.py`` field names)::
     schema_version = 1
     rules = []                      # only when there are no rules (absent = shipped rules)
 
-    [general]                       # backend_override, gpu, language, trt_experimental, upscaling
+    [general]                       # backend_override, gpu, language, trt_experimental,
+                                    # upscaling, deband
     [render]                        # container = "mkv", audio = "copy"
     [render.encoder_by_vendor]      # vendor = "encoder"
     [[profiles]]                    # id, name, backend, model, scale, target,
@@ -26,7 +27,7 @@ Schema v1 layout (keys are the ``types.py`` field names)::
   when it differs from the shipped one (or carries unknown keys), so "Reset to
   default" removes the entry and shipped updates keep reaching the user.
 - ``None`` values are omitted (TOML has no null), as are ``trt_experimental = false``
-  and ``upscaling = "standard"``.
+  ``upscaling = "standard"`` and ``deband = false``.
   Exception: a built-in override whose optional engine field is ``None`` while
   the shipped value is not writes an explicit "automatic" marker, because an
   absent key on a built-in means "the shipped value": ``model = ""``,
@@ -727,6 +728,7 @@ class _Reader:
                 '"standard" or "sharper"',
                 "standard",
             ),
+            deband=self.get(t, "deband", sec, "general.deband", _bool, "true or false", False),
         )
 
     def render(self, t: Mapping[str, object] | None) -> RenderDefaults:
@@ -1086,6 +1088,8 @@ def to_document(cfg: Config) -> dict[str, object]:
         general["trt_experimental"] = True
     if g.upscaling != "standard":
         general["upscaling"] = g.upscaling
+    if g.deband:
+        general["deband"] = True
     _merge(general, general_unknown)
     if general:
         doc["general"] = general

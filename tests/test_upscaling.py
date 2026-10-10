@@ -110,3 +110,59 @@ def test_licences_list_the_bundled_shader() -> None:
     row = rows["FSRCNNX x2 8-0-4-1 shader"]
     assert row.spdx == "LGPL-3.0-or-later" and row.conveyed and row.detected
     assert {p.name for p in row.text_files} == {"LGPL-3.0.txt", "GPL-3.0.txt"}
+
+
+# ---------------------------------------------------------------------------
+# deband (mpv's own, §15.2)
+# ---------------------------------------------------------------------------
+
+
+def test_deband_config_round_trip() -> None:
+    base = sc.default_config()
+    assert base.general.deband is False and "deband" not in schema.dumps_config(base)
+    on = dataclasses.replace(base, general=dataclasses.replace(base.general, deband=True))
+    text = schema.dumps_config(on)
+    assert "deband = true" in text
+    assert schema.parse_text(text).config.general.deband is True
+
+
+def test_ipc_allows_setting_deband_only_to_a_bool() -> None:
+    ipc.check_command(["set_property", "deband", True])
+    ipc.check_command(["get_property", "deband"])
+    with pytest.raises(ipc.CommandRefused):
+        ipc.check_command(["set_property", "deband", 3])
+
+
+class _DebandIpc:
+    def __init__(self, value: bool) -> None:
+        self.value, self.commands = value, []
+
+    async def get(self, prop: str, *, timeout_s: float = 5.0) -> object:
+        return self.value
+
+    async def command(self, *args: object, timeout_s: float = 5.0) -> None:
+        self.commands.append(args)
+        if args[:2] == ("set_property", "deband"):
+            self.value = bool(args[2])
+
+
+async def test_session_turns_deband_on_and_restores_it(tmp_path: Path) -> None:
+    cfg = _config(_simple())
+    s = _session(FakeCtx(_paths(tmp_path), cfg), tmp_path)
+    s.ipc = _DebandIpc(False)  # type: ignore[assignment]
+    on = dataclasses.replace(cfg, general=dataclasses.replace(cfg.general, deband=True))
+    await s.sync_deband(on)
+    await s.sync_deband(on)  # no change
+    assert s.ipc.value is True and len(s.ipc.commands) == 1  # type: ignore[attr-defined]
+    await s.sync_deband(cfg)
+    assert s.ipc.value is False  # type: ignore[attr-defined]
+
+
+async def test_users_own_deband_is_never_turned_off(tmp_path: Path) -> None:
+    cfg = _config(_simple())
+    s = _session(FakeCtx(_paths(tmp_path), cfg), tmp_path)
+    s.ipc = _DebandIpc(True)  # deband=yes from the user's mpv.conf  # type: ignore[assignment]
+    on = dataclasses.replace(cfg, general=dataclasses.replace(cfg.general, deband=True))
+    await s.sync_deband(on)
+    await s.sync_deband(cfg)
+    assert s.ipc.value is True and s.ipc.commands == []  # type: ignore[attr-defined]

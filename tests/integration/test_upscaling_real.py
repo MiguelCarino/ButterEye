@@ -105,3 +105,18 @@ async def test_shader_appended_toggled_and_user_shader_kept(env: Live, tmp_path:
         await s.sync_shader(base)
         await s.sync_shader(base)  # unchanged: nothing more is added
     assert await current() == [user, SHADER]
+
+
+async def test_deband_on_and_back_off_in_real_mpv(env: Live, tmp_path: Path) -> None:
+    clip = _make_clip(tmp_path / "db.mkv", rate=24, seconds=30)
+    sid = await env.play(clip, None)
+    s = env.s(sid)
+    base = STATE["cfg"]
+    on = dataclasses.replace(base, general=dataclasses.replace(base.general, deband=True))
+    assert await s.ipc.get("deband") is False  # mpv's default
+    async with s.lock:
+        await s.sync_deband(on)
+    assert await s.ipc.get("deband") is True
+    async with s.lock:
+        await s.sync_deband(base)
+    assert await s.ipc.get("deband") is False

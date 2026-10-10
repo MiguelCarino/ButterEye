@@ -139,10 +139,12 @@ file. There are four choices:
 - **Smoothness** — *Auto (recommended)*, *Best quality — GPU*, *Lighter — GPU* or
   *CPU only*. Auto uses the GPU when the speed test shows it can keep up, and the CPU
   otherwise. The GPU choices are hidden when RIFE can't run on this computer.
-- **Upscaling** — *Standard* (mpv's own scaler) or *Sharper*: adds the bundled
-  FSRCNNX shader (LGPL-3.0), which draws crisper edges when the video is smaller than
-  the window (+0.5 to +1.25 dB over Lanczos in spike M0(o), ~1.7 ms of GPU per 4K
-  frame). Shaders from your own `mpv.conf` stay as they are.
+- **Picture** — *Standard*, *Sharper*, *Less banding* or *Sharper, less banding*.
+  *Sharper* adds the bundled FSRCNNX shader (LGPL-3.0), which draws crisper edges when
+  the video is smaller than the window (+0.5 to +1.25 dB over Lanczos in spike M0(o),
+  ~1.7 ms of GPU per 4K frame); *less banding* turns on mpv's own debanding (no
+  measurable GPU cost). Shaders and a `deband=yes` from your own `mpv.conf` stay as they
+  are.
 
 To keep CPU and GPU load down, live CPU smoothing (MVTools) searches at full-pixel
 precision (`pel=1`) from 720p up, switches to its faster block mode when it can't
