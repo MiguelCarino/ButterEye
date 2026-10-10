@@ -11,7 +11,7 @@ Schema v1 layout (keys are the ``types.py`` field names)::
     schema_version = 1
     rules = []                      # only when there are no rules (absent = shipped rules)
 
-    [general]                       # backend_override, gpu, language, trt_experimental
+    [general]                       # backend_override, gpu, language, trt_experimental, upscaling
     [render]                        # container = "mkv", audio = "copy"
     [render.encoder_by_vendor]      # vendor = "encoder"
     [[profiles]]                    # id, name, backend, model, scale, target,
@@ -25,7 +25,8 @@ Schema v1 layout (keys are the ``types.py`` field names)::
   built-in id overrides that built-in in place; on save a built-in is written only
   when it differs from the shipped one (or carries unknown keys), so "Reset to
   default" removes the entry and shipped updates keep reaching the user.
-- ``None`` values are omitted (TOML has no null), as are ``trt_experimental = false``.
+- ``None`` values are omitted (TOML has no null), as are ``trt_experimental = false``
+  and ``upscaling = "standard"``.
   Exception: a built-in override whose optional engine field is ``None`` while
   the shipped value is not writes an explicit "automatic" marker, because an
   absent key on a built-in means "the shipped value": ``model = ""``,
@@ -717,6 +718,15 @@ class _Reader:
                 "true or false",
                 False,
             ),
+            upscaling=self.get(
+                t,
+                "upscaling",
+                sec,
+                "general.upscaling",
+                _upscaling,
+                '"standard" or "sharper"',
+                "standard",
+            ),
         )
 
     def render(self, t: Mapping[str, object] | None) -> RenderDefaults:
@@ -930,6 +940,14 @@ def _bool(v: object) -> bool | None:
     return v if isinstance(v, bool) else None
 
 
+def _upscaling(v: object) -> Literal["standard", "sharper"] | None:
+    if v == "standard":
+        return "standard"
+    if v == "sharper":
+        return "sharper"
+    return None
+
+
 def _int(v: object) -> int | None:
     return v if isinstance(v, int) and not isinstance(v, bool) else None
 
@@ -1066,6 +1084,8 @@ def to_document(cfg: Config) -> dict[str, object]:
         general["language"] = g.language
     if g.trt_experimental:
         general["trt_experimental"] = True
+    if g.upscaling != "standard":
+        general["upscaling"] = g.upscaling
     _merge(general, general_unknown)
     if general:
         doc["general"] = general

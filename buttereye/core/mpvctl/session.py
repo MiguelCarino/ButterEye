@@ -54,7 +54,7 @@ from buttereye.core.events import (
     SessionEnded,
 )
 from buttereye.core.i18n import render
-from buttereye.core.mpvctl import decide, launcher
+from buttereye.core.mpvctl import decide, launcher, shaders
 from buttereye.core.mpvctl.health import (
     HealthDetector,
     Thresholds,
@@ -398,6 +398,8 @@ class _Session:
         self.toggle_requested = False
         #: TensorRT engine this session fell back from while it is being built
         self.trt_waiting: trt.EngineKey | None = None
+        #: the bundled shader this session added to mpv (§15.2), or None
+        self.shader: Path | None = None
         self.trt_built = False
         self.failure: list[str] = []
         self.device_lost = False
@@ -912,8 +914,29 @@ class _Session:
 
         ctx.spawn(run(), name=f"trt-build-{key.folder_name()}")
 
+    async def sync_shader(self, cfg: Config | None) -> None:
+        """Add or remove the bundled upscaling shader to match ``general.upscaling``
+        (§15.2). Only ButterEye's own shader is touched; the user's stay."""
+        want = shaders.shader_for(cfg.general.upscaling if cfg is not None else "standard")
+        if want == self.shader:
+            return
+        try:
+            if self.shader is not None:
+                await self.ipc.command("change-list", "glsl-shaders", "remove", str(self.shader))
+                self.shader = None
+            if want is not None:
+                # never twice: mpv may already list it (added at launch, or by a
+                # sync that raced this one)
+                listed = await self.ipc.get("glsl-shaders")
+                if not (isinstance(listed, list) and str(want) in map(str, listed)):
+                    await self.ipc.command("change-list", "glsl-shaders", "append", str(want))
+                self.shader = want
+        except (IpcClosed, MpvError, TimeoutError) as exc:
+            _log.warning("%s: could not change the upscaling shader: %s", self.title, exc)
+
     async def apply(self, *, raise_on_fail: bool) -> None:
         """Decide (§4.11, §5.6) and add/replace/remove the filter; verify a new gen."""
+        await self.sync_shader(self.config()[0])
         props = self.props
         vp = props.get("video-params")
         loaded = self.file_loaded_at is not None
@@ -1873,8 +1896,18 @@ async def play(
     socket = runtime / f"mpv-{sid}.sock"
     script = runtime / f"mpv-{sid}.vpy"
     log_path = paths.logs_dir / f"mpv-{sid}.log"
+    try:
+        upscaling = ctx.config().general.upscaling
+    except ButterEyeError:
+        upscaling = "standard"
+    shader = shaders.shader_for(upscaling)
     argv = launcher.build_argv(
-        opts.mpv, include=paths.mpv_include, socket=socket, file=file, extra=opts.extra_args
+        opts.mpv,
+        include=paths.mpv_include,
+        socket=socket,
+        file=file,
+        extra=opts.extra_args,
+        shaders=(shader,) if shader is not None else (),
     )
     launcher.prune_logs(paths.logs_dir, runtime)
     proc = await launcher.spawn_mpv(argv, log_path, env=opts.env)
@@ -1885,6 +1918,7 @@ async def play(
             ctx, opts, sid=sid, file=file, proc=proc, ipc=ipc, socket=socket,
             log_path=log_path, script_path=script, profile_request=profile_id,
         )  # fmt: skip
+        session.shader = shader  # added at launch
         ipc.add_handler(session.on_event)
         ipc.start(lambda coro, name: ctx.spawn(coro, name=f"mpvctl-{sid}-ipc"))
         await ipc.command("client_name")

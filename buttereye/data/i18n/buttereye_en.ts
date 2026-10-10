@@ -4717,6 +4717,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>&amp;Upscaling</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>60 fps</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4838,6 +4843,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>Drop a video here to save a smooth copy</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>FSRCNNX shader; costs a little GPU time when the video is upscaled.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5037,6 +5047,16 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Sharper</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Sharper adds crisper edges when the video is smaller than the window.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Show details about this problem</source>
         <translation type="unfinished"></translation>
     </message>
@@ -5103,6 +5123,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>Some frames are being dropped.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Standard</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

@@ -21,7 +21,7 @@ import re
 from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import shiboken6
 from PySide6.QtCore import QCoreApplication, QSettings, QSize, Qt
@@ -110,7 +110,7 @@ _log = logging.getLogger(__name__)
 
 APP_NAME = "ButterEye"
 APP_ICON = ICON_DIR / "buttereye.svg"
-DEFAULT_SIZE = QSize(540, 540)
+DEFAULT_SIZE = QSize(540, 600)
 MINIMUM_SIZE = QSize(360, 420)
 SCREEN_FRACTION = 0.9
 
@@ -520,6 +520,7 @@ class SimpleWindow(QMainWindow):
         self._updating = False
         self._smooth_key = DEFAULT_SMOOTHNESS
         self._target_key = DEFAULT_TARGET
+        self._upscaling = "standard"  # general.upscaling (§15.2)
         self._jobs: dict[JobId, RenderJobState] = {}
         self._job_rows: dict[JobId, JobRow] = {}
         self._convert_visible = False
@@ -687,6 +688,20 @@ class SimpleWindow(QMainWindow):
         grid.addWidget(slabel, 2, 0)
         grid.addWidget(self.smooth_combo, 2, 1)
         self.smooth_combo.currentIndexChanged.connect(lambda _i: self._on_choice_changed())
+
+        self.upscale_combo = QComboBox(body)
+        self.upscale_combo.setObjectName("upscalingCombo")
+        self._fill_upscaling()
+        ulabel, _ = a11y.labelled(
+            self.tr("&Upscaling"),
+            self.upscale_combo,
+            description=self.tr(
+                "Sharper adds crisper edges when the video is smaller than the window."
+            ),
+        )
+        grid.addWidget(ulabel, 3, 0)
+        grid.addWidget(self.upscale_combo, 3, 1)
+        self.upscale_combo.currentIndexChanged.connect(lambda _i: self._on_choice_changed())
         lay.addLayout(grid)
 
         # now playing
@@ -747,6 +762,7 @@ class SimpleWindow(QMainWindow):
         self.setTabOrder(self.convert_button, self.smooth_switch)
         self.setTabOrder(self.smooth_switch, self.target_combo)
         self.setTabOrder(self.target_combo, self.smooth_combo)
+        self.setTabOrder(self.smooth_combo, self.upscale_combo)
 
     def _zone(self, parent: QWidget, text: str, name: str, chooser: FileChooser | None) -> DropZone:
         unit = self.fontMetrics().height()
@@ -868,7 +884,26 @@ class SimpleWindow(QMainWindow):
         finally:
             self._updating = False
 
+    def _fill_upscaling(self) -> None:
+        combo = self.upscale_combo
+        self._updating = True
+        try:
+            combo.clear()
+            combo.addItem(self.tr("Standard"), "standard")
+            combo.addItem(self.tr("Sharper"), "sharper")
+            combo.setItemData(
+                1,
+                self.tr("FSRCNNX shader; costs a little GPU time when the video is upscaled."),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+            combo.setCurrentIndex(max(combo.findData(self._upscaling), 0))
+        finally:
+            self._updating = False
+
     # ------------------------------------------------------------------ choices
+    def upscaling(self) -> str:
+        return self._upscaling
+
     def smoothness(self) -> str:
         return self._smooth_key
 
@@ -879,6 +914,8 @@ class SimpleWindow(QMainWindow):
         return simple_profile(self.smoothness(), self.target(), trt=self._trt_on)
 
     def _show_config_choices(self, cfg: Config) -> None:
+        self._upscaling = cfg.general.upscaling
+        self._fill_upscaling()
         prof = find_simple(cfg)
         if prof is None:
             return
@@ -892,6 +929,7 @@ class SimpleWindow(QMainWindow):
             return
         self._target_key = str(self.target_combo.currentData() or DEFAULT_TARGET)
         self._smooth_key = str(self.smooth_combo.currentData() or DEFAULT_SMOOTHNESS)
+        self._upscaling = str(self.upscale_combo.currentData() or "standard")
         self.persist()
 
     def _on_smooth_toggled(self, on: bool) -> None:
@@ -1286,6 +1324,12 @@ class SimpleWindow(QMainWindow):
             return
         self._saving = True
         cfg = simple_config(load.config, self.profile())
+        upscaling: Literal["standard", "sharper"] = (
+            "sharper" if self._upscaling == "sharper" else "standard"
+        )
+        cfg = dataclasses.replace(
+            cfg, general=dataclasses.replace(cfg.general, upscaling=upscaling)
+        )
         rev = load.revision
         self.bridge.call(
             lambda core: core.save_config(cfg, expected_revision=rev),

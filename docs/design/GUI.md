@@ -439,6 +439,7 @@ class GeneralSettings:
     gpu: str | None = None  # Vulkan device UUID
     language: str | None = None
     trt_experimental: bool = False  # §5.2 opt-in
+    upscaling: Literal["standard", "sharper"] = "standard"  # SCOPE §15.2
 
 
 @dataclass(frozen=True, slots=True)
@@ -1908,6 +1909,7 @@ Owner feedback: the multi-page window "looks like a clone of existing proprietar
 │ Smooth motion   (●  ) On          │
 │ Target          ( Double (2×) ▾ ) │
 │ Smoothness      ( Auto (rec.) ▾ ) │
+│ Upscaling       ( Standard    ▾ ) │
 │ Now playing                       │
 │  movie.mkv               ✓ Smooth │
 │  24 → 48 fps · GPU smoothing      │

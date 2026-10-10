@@ -132,7 +132,7 @@ Runtime tools the core talks to: `mpv` (≥ 0.41 with the VapourSynth filter), `
 ButterEye opens one small window with two drop zones. Drop a video on the left one
 (or press **Open video…**, Ctrl+O) and it plays in mpv with smooth motion; drop one on
 the right (or press **Convert a video…**, Ctrl+Shift+O) to save a smooth copy as a new
-file. There are three choices:
+file. There are four choices:
 
 - **Smooth motion** — on or off. Off: new videos play normally, and videos already
   playing turn smoothing off.
@@ -141,6 +141,10 @@ file. There are three choices:
 - **Smoothness** — *Auto (recommended)*, *Best quality — GPU*, *Lighter — GPU* or
   *CPU only*. Auto uses the GPU when the speed test shows it can keep up, and the CPU
   otherwise. The GPU choices are hidden when RIFE can't run on this computer.
+- **Upscaling** — *Standard* (mpv's own scaler) or *Sharper*: adds the bundled
+  FSRCNNX shader (LGPL-3.0), which draws crisper edges when the video is smaller than
+  the window (+0.5 to +1.25 dB over Lanczos in spike M0(o), ~1.7 ms of GPU per 4K
+  frame). Shaders from your own `mpv.conf` stay as they are.
 
 To keep CPU and GPU load down, live CPU smoothing (MVTools) searches at full-pixel
 precision (`pel=1`) from 720p up, and converted files use the lighter software encoder

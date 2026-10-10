@@ -49,6 +49,7 @@ NO_WARRANTY = M(
 
 _SRC_ROOT = Path(__file__).resolve().parents[2]  # source tree / sdist root
 _DOC_DIRS = (Path("/usr/share/licenses/buttereye"), Path("/usr/share/doc/buttereye"))
+_SHADERS = Path(__file__).resolve().parents[1] / "data" / "shaders"  # bundled mpv shaders
 
 
 def _shipped(rel: str, extra_roots: Sequence[Path] = ()) -> tuple[Path, bool]:
@@ -117,6 +118,9 @@ class Component:
     #: always listed, even when not installed (else only when detected)
     always: bool = True
     spdx_from_rpm: bool = False
+    #: shipped inside ButterEye itself: its licence texts, and the version shown
+    bundled_files: tuple[Path, ...] = ()
+    bundled_version: str | None = None
 
 
 def _has(*words: str) -> Callable[[Path], bool]:
@@ -169,6 +173,15 @@ COMPONENTS: tuple[Component, ...] = (
         True,
         min_texts=1,
         always=False,
+    ),
+    Component(
+        "FSRCNNX x2 8-0-4-1 shader",
+        None,
+        "LGPL-3.0-or-later",
+        REL_LOADED,
+        True,
+        bundled_files=(_SHADERS / "LGPL-3.0.txt", _SHADERS / "GPL-3.0.txt"),
+        bundled_version="1.1 (bundled; Upscaling: Sharper)",
     ),
     Component(
         "PySide6 / Qt",
@@ -244,6 +257,21 @@ def build_third_party(
     """Pure over the rpm query result (plus licence-file existence)."""
     out: list[ComponentLicence] = []
     for c in COMPONENTS:
+        if c.bundled_files:
+            texts = tuple(p for p in c.bundled_files if p.is_file())
+            out.append(
+                ComponentLicence(
+                    name=c.name,
+                    version=c.bundled_version,
+                    spdx=c.spdx,
+                    relation=c.relation,
+                    conveyed=c.conveyed,
+                    detected=bool(texts),
+                    text_files=texts,
+                    finding=None,
+                )
+            )
+            continue
         info = db.get(c.package) if c.package else None
         if c.name == "FFmpeg":
             info = ffmpeg_owner or db.get("ffmpeg") or db.get("ffmpeg-free")

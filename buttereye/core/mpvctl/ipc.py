@@ -75,6 +75,7 @@ READABLE: frozenset[str] = OBSERVABLE | frozenset(
         "interpolation",
         "video-sync",
         "watch-later-options",
+        "glsl-shaders",
     }
 )
 #: Properties ButterEye may set (the attach settings of §4.3; restored on detach).
@@ -99,6 +100,12 @@ class IpcClosed(ConnectionError):
     """The IPC connection ended (mpv quit or the socket broke)."""
 
 
+def _shader_paths() -> frozenset[str]:
+    from buttereye.core.mpvctl.shaders import ALLOWED
+
+    return ALLOWED
+
+
 def _strs(args: Sequence[object]) -> bool:
     return all(isinstance(a, str) for a in args)
 
@@ -119,6 +126,16 @@ def check_command(args: Sequence[object]) -> None:
             return
     elif name == "set_property":
         if len(rest) == 2 and rest[0] in WRITABLE and isinstance(rest[1], (str, bool)):
+            return
+    elif name == "change-list":
+        # only ButterEye's bundled shaders, by exact path (shaders.ALLOWED)
+        if (
+            len(rest) == 3
+            and rest[0] == "glsl-shaders"
+            and rest[1] in ("append", "remove")
+            and isinstance(rest[2], str)
+            and rest[2] in _shader_paths()
+        ):
             return
     elif name == "request_log_messages":
         if len(rest) == 1 and rest[0] in LOG_LEVELS:

@@ -102,6 +102,7 @@ def build_argv(
     socket: Path,
     file: Path,
     extra: Sequence[str] = (),
+    shaders: Sequence[Path] = (),
 ) -> list[str]:
     """The mpv command line. No ``--vf``: the filter is added over IPC (§4.2 step 2).
 
@@ -118,6 +119,8 @@ def build_argv(
         f"--hwdec={HWDEC}",
         "--video-sync=display-resample",
         "--term-status-msg=",
+        # appended, so shaders from the user's mpv.conf stay (§15.2)
+        *(f"--glsl-shaders-append={os.fspath(p)}" for p in shaders),
         *extra,
         "--",
         os.fspath(file),

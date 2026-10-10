@@ -275,6 +275,9 @@ class GeneralSettings:
     gpu: str | None = None  # Vulkan device UUID
     language: str | None = None
     trt_experimental: bool = False  # §5.2 opt-in
+    #: display upscaling (§15.2, spike M0(o)): mpv's own scaler, or the bundled
+    #: FSRCNNX shader on top of it ("sharper")
+    upscaling: Literal["standard", "sharper"] = "standard"
 
 
 @dataclass(frozen=True, slots=True)
