@@ -1,0 +1,42 @@
+[
+ {
+  "host": "mpv",
+  "stage": "trt",
+  "size": "2160",
+  "model": "v4_26",
+  "gpu_thread": 4,
+  "layers": true,
+  "target": "2x",
+  "variant": "fp16-h",
+  "out_fps": 48.77,
+  "src_fps": 24.39,
+  "interp_fps": 24.39,
+  "sm_pct": 58.75,
+  "mem_pct": 49.25,
+  "rx_mbs": 1447.75,
+  "tx_mbs": 692.75,
+  "wall_s": 4.7,
+  "error": null,
+  "filter_time": []
+ },
+ {
+  "host": "mpv",
+  "stage": "trt",
+  "size": "1080",
+  "model": "v4_26",
+  "gpu_thread": 2,
+  "layers": true,
+  "target": "60",
+  "variant": "fp16-h",
+  "out_fps": 101.32,
+  "src_fps": 40.49,
+  "interp_fps": 101.32,
+  "sm_pct": 89.66666666666667,
+  "mem_pct": 82.66666666666667,
+  "rx_mbs": 3138.0,
+  "tx_mbs": 1515.8333333333333,
+  "wall_s": 6.93,
+  "error": null,
+  "filter_time": []
+ }
+]

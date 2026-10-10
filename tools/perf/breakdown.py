@@ -62,6 +62,16 @@ MEM_MAX_MIB = 8192  # hard cap for this tool and everything it starts
 #: VapourSynth frame cache per vspipe/mpv in MB (VS default: 4096) and vspipe
 #: concurrent frame requests (as mpv's concurrent-frames for RIFE); --cache-mb, --requests
 LIMITS = {"cache_mb": 1024, "requests": 8}
+#: vs-mlrt TensorRT path (--trt): vstrt from contrib/build-vstrt.sh, vs-mlrt's ONNX
+#: models and its Python deps (onnx, onnxconverter-common) for vspipe's Python
+DEV = Path.home() / ".cache/buttereye-dev/p2"
+VSTRT_DIR = Path.home() / ".local/share/buttereye/plugins/vstrt/v16.3.test1"
+TRT = {
+    "vstrt_dir": VSTRT_DIR,
+    "vspy_dir": DEV / "vspy",
+    "onnx_models": DEV / "models",
+    "engine_dir": DEV / "engines",
+}
 LAYERS_OFF = {"VK_LOADER_LAYERS_DISABLE": "~implicit~"}
 VSPIPE_DONE = re.compile(r"Output (\d+) frames in ([\d.]+) seconds \(([\d.]+) fps\)")
 
@@ -75,6 +85,7 @@ class Run:
     gpu_thread: int | None
     layers: bool
     target: str
+    variant: str | None = None  # TensorRT: "fp16-h" (fp16, RGBH frames), "fp16-s", "fp32-s"
     out_fps: float | None = None
     src_fps: float | None = None  # source frames per second through the stage
     interp_fps: float | None = None  # new (interpolated) frames per second
@@ -160,7 +171,20 @@ def user_data(run: Run, frames: int, width: int, height: int) -> str:
         "matrix": "709",
         "cache_mb": LIMITS["cache_mb"],
     }
-    if run.model is not None:
+    if run.stage.startswith("trt"):
+        precision, io = (run.variant or "fp16-h").split("-")
+        data.update(
+            perf_dir=str(HERE),
+            vstrt_dir=str(TRT["vstrt_dir"]),
+            vspy_dir=str(TRT["vspy_dir"]),
+            onnx_models=str(TRT["onnx_models"]),
+            engine_dir=str(TRT["engine_dir"]),
+            trt_model=run.model,
+            fp16=precision == "fp16",
+            half_io=io == "h",
+            streams=run.gpu_thread or 1,
+        )
+    elif run.model is not None:
         data["model_path"] = str(MODEL_DIR / run.model)
         data["gpu_thread"] = run.gpu_thread or 4
     return json.dumps(data, separators=(",", ":"))
@@ -298,7 +322,34 @@ def last_lines(text: str, n: int = 4) -> str:
     return " | ".join(lines[-n:]) or "no output"
 
 
+def plan_trt(args: argparse.Namespace) -> list[Run]:
+    """TensorRT rows only: streams, precision and frame format, then mpv."""
+    sizes = ["1080"] if args.quick else args.sizes
+    model = args.trt_models[0]
+    runs: list[Run] = []
+
+    def add(host: str, stage: str, size: str, m: str, streams: int, variant: str) -> None:
+        runs.append(Run(host, stage, size, m, streams, True, args.target, variant))
+
+    for size in sizes:
+        for streams in (1, 2, 4):
+            add("vspipe", "trt", size, model, streams, "fp16-h")
+        add("vspipe", "trt", size, model, 2, "fp16-s")
+        add("vspipe", "trt", size, model, 2, "fp32-s")
+        add("vspipe", "trt-rgb", size, model, 2, "fp16-h")
+    for m in args.trt_models[1:]:
+        add("vspipe", "trt", sizes[0], m, 2, "fp16-h")
+    if not args.quick and args.target != "60":
+        runs.append(Run("vspipe", "trt", sizes[0], model, 2, True, "60", "fp16-h"))
+    if args.mpv:
+        for size in sizes:
+            add("mpv", "trt", size, model, 2, "fp16-h")
+    return runs
+
+
 def plan(args: argparse.Namespace) -> list[Run]:
+    if args.trt:
+        return plan_trt(args)
     sizes = ["1080"] if args.quick else args.sizes
     models = args.models
     best = models[0]
@@ -333,7 +384,7 @@ def plan(args: argparse.Namespace) -> list[Run]:
 
 def table(runs: list[Run]) -> str:
     head = (
-        "| host | stage | size | model | gpu_thread | layers | target | out fps | src fps "
+        "| host | stage | size | model | gpu_thread/streams | layers | target | out fps | src fps "
         "| new fps | SM % | rx MB/s | tx MB/s |"
     )
     rows = [head, "|" + "---|" * 13]
@@ -343,6 +394,8 @@ def table(runs: list[Run]) -> str:
 
     for r in runs:
         model = (r.model or "—").replace("_ensembleFalse", "")
+        if r.variant:
+            model = f"{model} {r.variant}"
         if r.error:
             rows.append(
                 f"| {r.host} | {r.stage} | {r.size} | {model} | {r.gpu_thread or '—'} "
@@ -362,6 +415,17 @@ def preflight(args: argparse.Namespace) -> list[str]:
     problems = []
     if shutil.which("vspipe") is None:
         problems.append("vspipe is not installed (sudo dnf install vapoursynth-tools)")
+    if args.trt:
+        if not (TRT["vstrt_dir"] / "libvstrt.so").exists():
+            problems.append(f"{TRT['vstrt_dir']}/libvstrt.so is missing (contrib/build-vstrt.sh)")
+        if shutil.which("trtexec") is None:
+            problems.append("trtexec is missing (libnvinfer-bin, docs/spikes/m0k.md)")
+        if not (TRT["onnx_models"] / "rife_v2").is_dir():
+            problems.append(f"vs-mlrt RIFE models missing in {TRT['onnx_models']}/rife_v2")
+        TRT["engine_dir"].mkdir(parents=True, exist_ok=True)
+        if args.mpv and shutil.which("mpv") is None:
+            problems.append("mpv is not installed")
+        return problems
     for name in ("librife.so", "mvtools.so"):
         if not (PLUGIN_DIR / name).exists():
             problems.append(f"{PLUGIN_DIR / name} is missing (install the buttereye-vs-* RPMs)")
@@ -397,6 +461,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--frames", type=int, default=240, help="source frames per run at 1080p")
     ap.add_argument("--quick", action="store_true", help="1080p only, no 60 fps run")
     ap.add_argument("--mpv", action="store_true", help="also time stages inside mpv")
+    ap.add_argument(
+        "--trt",
+        action="store_true",
+        help="TensorRT rows only (vs-mlrt vstrt; see contrib/build-vstrt.sh)",
+    )
+    ap.add_argument(
+        "--trt-models",
+        type=lambda s: s.split(","),
+        default=["v4_26", "v4_22_lite"],
+        help="vsmlrt.RIFEModel names; the first is used for every TensorRT row",
+    )
     ap.add_argument(
         "--filter-time",
         action="store_true",
@@ -456,7 +531,7 @@ def main(argv: list[str] | None = None) -> int:
         frames = max(48, int(args.frames * (1920 * 1080) / (w * h)))
         label = (
             f"[{i}/{len(runs)}] {run.host} {run.stage} {run.size}p "
-            f"{run.model or ''} t={run.gpu_thread or '-'} "
+            f"{run.model or ''} {run.variant or ''} t={run.gpu_thread or '-'} "
             f"layers={'on' if run.layers else 'off'} {run.target}"
         )
         print(label, file=sys.stderr, flush=True)

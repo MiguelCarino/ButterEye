@@ -88,7 +88,7 @@ fi
 # ------------------------------------------------------------ fetch
 mkdir -p "$(dirname "$WORK")"
 if [[ ! -d "$WORK/.git" ]]; then
-    git clone --quiet --depth 1 --branch "$TAG" https://github.com/AmusementClub/vs-mlrt.git "$WORK"
+    git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$TAG" https://github.com/AmusementClub/vs-mlrt.git "$WORK"
     git -C "$WORK" fetch --quiet --tags --depth 1 origin "refs/tags/$TAG:refs/tags/$TAG"
 fi
 

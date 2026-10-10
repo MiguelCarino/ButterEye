@@ -15,8 +15,12 @@
 #   rife-rgb   RIFE on a source made in RGBS, RGBS out: no per-frame colour
 #              conversion, so it is RIFE plus transfers alone
 #   mvtools    the live MVTools path of template.vpy
+#   trt        RIFE through vs-mlrt's vstrt (TensorRT), with YUV <-> RGBS/RGBH
+#              conversion and source pass-through, as a live TensorRT path would
+#   trt-rgb    the same without per-frame conversion (source made in RGBS/RGBH)
 import json
 import os
+import sys
 from fractions import Fraction
 
 import vapoursynth as vs
@@ -81,8 +85,16 @@ def rife(rgb):
                           fps_den=target.denominator, gpu_thread=int(cfg.get('gpu_thread', 4)))
 
 
-def to_rgb(clip):
-    return core.resize.Bicubic(clip, format=vs.RGBS, matrix_in_s=matrix)
+def to_rgb(clip, fmt=vs.RGBS):
+    return core.resize.Bicubic(clip, format=fmt, matrix_in_s=matrix)
+
+
+def trt(rgb):
+    # vs-mlrt's own RIFE wrapper through vstrt (tools/perf/trt_common.py)
+    sys.path.insert(0, cfg['perf_dir'])
+    import trt_common
+
+    return trt_common.rife(core, rgb, cfg, target / src_rate)
 
 
 def to_yuv(rgb, like):
@@ -112,6 +124,15 @@ elif stage == 'rife-rgb':
     if 'video_in' in globals():
         raise vs.Error('rife-rgb is a vspipe-only stage')
     out = rife(source(vs.RGBS))
+elif stage in ('trt', 'trt-rgb'):
+    rgb_fmt = vs.RGBH if cfg['half_io'] else vs.RGBS
+    if stage == 'trt':
+        clip = source()
+        out = passthrough(clip, to_yuv(trt(to_rgb(clip, rgb_fmt)), clip))
+    else:
+        if 'video_in' in globals():
+            raise vs.Error('trt-rgb is a vspipe-only stage')
+        out = trt(source(rgb_fmt))
 elif stage == 'mvtools':
     load('mv', 'mvtools.so')
     clip = source()
