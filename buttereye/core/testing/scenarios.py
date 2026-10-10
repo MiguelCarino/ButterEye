@@ -448,18 +448,12 @@ def caps_devbox_now() -> Mapping[Feature, CapState]:
         Feature.MODEL_DOWNLOADS, Reason.NOTHING_LISTED, None
     )
     states[Feature.TRT] = unavailable_state(Feature.TRT, Reason.OPT_IN_REQUIRED, None)
-    states[Feature.HDR_PASSTHROUGH] = unavailable_state(
-        Feature.HDR_PASSTHROUGH, Reason.SPIKE_PENDING, None
-    )
     return MappingProxyType(states)
 
 
 def caps_all_ready() -> Mapping[Feature, CapState]:
     states = {f: CapState(True) for f in Feature}
     states[Feature.TRT] = unavailable_state(Feature.TRT, Reason.OPT_IN_REQUIRED, None)
-    states[Feature.HDR_PASSTHROUGH] = unavailable_state(
-        Feature.HDR_PASSTHROUGH, Reason.SPIKE_PENDING, None
-    )
     return MappingProxyType(states)
 
 

@@ -667,6 +667,7 @@ async def test_session_4k_smooths_at_a_smaller_size(
     assert snap.backend is BackendId.RIFE_NCNN and snap.target_fps == 48
     assert snap.notice == decide.smaller_size_notice(720)
     assert s.ipc.sizes() == [(1280, 720)]  # type: ignore[attr-defined]
+    assert snap.smooth_size == (1280, 720) and snap.flow_scale == 1.0  # the row says so
     # uhd is decided at the size RIFE really runs at
     assert '"uhd":false' in str(s.ipc.commands[-1][2])  # type: ignore[attr-defined]
 
@@ -950,3 +951,69 @@ async def test_step_down_skips_lite_only_when_the_bench_says_so(
         _m("rife-v4.22-lite", 60.0, model="rife-v4.22_lite_ensembleFalse"),
     ))  # fmt: skip
     assert await s.lite_no_faster(cfg.profiles) is False  # lite clearly faster: keep it
+
+
+async def test_hdr_bypass_is_in_the_files_log(tmp_path: Path) -> None:
+    """The early bypass (HDR, interlaced, unsupported) says why, once, in the log
+    the user copies from the row."""
+    import logging
+
+    from buttereye.core import filelog
+
+    book = filelog.FileLogBook()
+    core_logger = logging.getLogger("buttereye.core")
+    core_logger.addHandler(book)
+    old_level = core_logger.level
+    core_logger.setLevel(logging.INFO)
+    try:
+        s = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
+        _load(s, fps=24.0, w=3840, h=1616)
+        s.props["video-params"] = {**s.props["video-params"], "gamma": "pq"}
+        await s.apply(raise_on_fail=False)
+        await s.apply(raise_on_fail=False)
+        assert s.snapshot().bypass is BypassReason.HDR_SKIP
+        lines = book.lines(filelog.session_key("s1"))
+        assert len(lines) == 1, lines
+        assert lines[0].endswith(
+            "film.mkv: 3840 × 1616 at 24 fps (hdr10) plays unsmoothed: hdr_skip"
+        )
+    finally:
+        core_logger.removeHandler(book)
+        core_logger.setLevel(old_level)
+
+
+async def test_hdr10_smoothed_when_opted_in(
+    tmp_path: Path, bench_history: list[BenchResult]
+) -> None:
+    """F7: hdr = "passthrough" smooths PQ video, with the experimental notice."""
+    bench_history.append(_devbox())
+    profile = dataclasses.replace(_simple(), hdr="passthrough")
+    s = _session(FakeCtx(_paths(tmp_path), _config(profile)), tmp_path)
+    _load(s, fps=24.0)
+    s.props["video-params"] = {
+        **s.props["video-params"], "gamma": "pq", "colormatrix": "bt.2020-ncl"
+    }  # fmt: skip
+    await s.apply(raise_on_fail=False)
+    snap = s.snapshot()
+    assert snap.filter is not FilterState.BYPASSED and snap.bypass is None
+    assert s.ipc.added() == ["rife-ncnn"]  # type: ignore[attr-defined]
+    assert snap.notice is not None and snap.notice.key == "HDR smoothing is experimental."
+
+
+async def test_full_size_never_smooths_smaller(
+    tmp_path: Path, bench_history: list[BenchResult]
+) -> None:
+    """[general] full_size: the 4K video above is smoothed at 4K, uncapped, with a
+    notice that frames may drop, instead of at 720p."""
+    bench_history.append(_devbox())
+    cfg = _config(_simple())
+    cfg = dataclasses.replace(cfg, general=dataclasses.replace(cfg.general, full_size=True))
+    s = _session(FakeCtx(_paths(tmp_path), cfg), tmp_path)
+    _load(s, fps=24.0, w=3840, h=2160)
+    await s.apply(raise_on_fail=False)
+    snap = s.snapshot()
+    assert snap.filter is not FilterState.BYPASSED
+    assert snap.backend is BackendId.RIFE_NCNN and snap.target_fps == 48
+    assert snap.notice == decide.full_size_notice()
+    assert s.ipc.sizes() == [None]  # type: ignore[attr-defined]
+    assert snap.smooth_size is None

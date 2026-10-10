@@ -12,7 +12,7 @@ Schema v1 layout (keys are the ``types.py`` field names)::
     rules = []                      # only when there are no rules (absent = shipped rules)
 
     [general]                       # backend_override, gpu, language, trt_experimental,
-                                    # upscaling, deband
+                                    # upscaling, deband, full_size
     [render]                        # container = "mkv", audio = "copy"
     [render.encoder_by_vendor]      # vendor = "encoder"
     [[profiles]]                    # id, name, backend, model, scale, target,
@@ -27,7 +27,7 @@ Schema v1 layout (keys are the ``types.py`` field names)::
   when it differs from the shipped one (or carries unknown keys), so "Reset to
   default" removes the entry and shipped updates keep reaching the user.
 - ``None`` values are omitted (TOML has no null), as are ``trt_experimental = false``
-  ``upscaling = "standard"`` and ``deband = false``.
+  ``upscaling = "standard"``, ``deband = false`` and ``full_size = false``.
   Exception: a built-in override whose optional engine field is ``None`` while
   the shipped value is not writes an explicit "automatic" marker, because an
   absent key on a built-in means "the shipped value": ``model = ""``,
@@ -717,7 +717,7 @@ class _Reader:
                 "general.trt_experimental",
                 _bool,
                 "true or false",
-                False,
+                None,
             ),
             upscaling=self.get(
                 t,
@@ -729,6 +729,9 @@ class _Reader:
                 "standard",
             ),
             deband=self.get(t, "deband", sec, "general.deband", _bool, "true or false", False),
+            full_size=self.get(
+                t, "full_size", sec, "general.full_size", _bool, "true or false", False
+            ),
         )
 
     def render(self, t: Mapping[str, object] | None) -> RenderDefaults:
@@ -1084,12 +1087,14 @@ def to_document(cfg: Config) -> dict[str, object]:
         general["gpu"] = g.gpu
     if g.language is not None:
         general["language"] = g.language
-    if g.trt_experimental:
-        general["trt_experimental"] = True
+    if g.trt_experimental is not None:  # unset = use TensorRT when it is set up
+        general["trt_experimental"] = g.trt_experimental
     if g.upscaling != "standard":
         general["upscaling"] = g.upscaling
     if g.deband:
         general["deband"] = True
+    if g.full_size:
+        general["full_size"] = True
     _merge(general, general_unknown)
     if general:
         doc["general"] = general

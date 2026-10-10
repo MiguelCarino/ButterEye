@@ -228,8 +228,13 @@ def compute(
         states[feature] = st
 
     # TRT: opt-in first (§5.2), then the TRT findings, then the implementation.
+    # Unset counts as in (setting TensorRT up is the opt-in); without vstrt the
+    # doctor's TensorRT findings make it unavailable.
     trt_static = states[Feature.TRT]
-    if cfg is None or not cfg.general.trt_experimental:
+    trt_setting = cfg.general.trt_experimental if cfg is not None else False
+    # unset: only once a doctor report has checked TensorRT here (vstrt found)
+    unchecked = trt_setting is None and (report is None or not report.trt_included)
+    if trt_setting is False or unchecked:
         states[Feature.TRT] = unavailable_state(Feature.TRT, Reason.OPT_IN_REQUIRED, None)
     else:
         trt_findings = (
@@ -247,9 +252,7 @@ def compute(
         else:
             states[Feature.TRT] = trt_static
 
-    states[Feature.HDR_PASSTHROUGH] = unavailable_state(
-        Feature.HDR_PASSTHROUGH, Reason.SPIKE_PENDING, None
-    )
+    # HDR_PASSTHROUGH: spike M0(d) passed for PQ (2026-10-10); available as built
 
     if report is not None:
         # RENDER: ffms2 missing -> MISSING_DEPENDENCY even once implemented.

@@ -51,6 +51,7 @@ def convert_model(
 def setup(core: Any, cfg: dict[str, Any]) -> tuple[Any, Any]:
     """``(vsmlrt module, TRT backend)`` from ``cfg``, with vstrt loaded first and
     the Cast-safe fp16 conversion in place."""
+    sys.dont_write_bytecode = True  # never write __pycache__ next to vsmlrt.py
     # vsmlrt looks for a loaded plugin at import time, so load vstrt first
     if not hasattr(core, "trt"):
         core.std.LoadPlugin(os.path.join(cfg["vstrt_dir"], "libvstrt.so"))

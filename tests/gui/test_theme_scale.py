@@ -60,7 +60,18 @@ def test_install_is_idempotent_and_uses_fusion(qapp: QApplication) -> None:
     assert base is not None and base.name().lower() == "fusion"
 
 
+def test_brand_is_dark_whatever_the_desktop_scheme(controller: theme.ThemeController) -> None:
+    assert controller.brand
+    for scheme in (Qt.ColorScheme.Light, Qt.ColorScheme.Dark):
+        controller.apply_scheme(scheme)
+        pal = QApplication.palette()
+        assert pal.color(QPalette.ColorRole.Window) == theme.token("bg")
+        assert pal.color(QPalette.ColorRole.Highlight) == theme.token("accent")
+        assert pal.color(QPalette.ColorRole.HighlightedText) == theme.token("bg")
+
+
 def test_scheme_switch_repaints(controller: theme.ThemeController, qtbot: Any) -> None:
+    controller.set_brand(False)  # without the brand the palette follows the desktop
     probe = Probe()
     qtbot.addWidget(probe)
     probe.show()
@@ -81,6 +92,7 @@ def test_scheme_switch_repaints(controller: theme.ThemeController, qtbot: Any) -
 
     QApplication.styleHints().colorSchemeChanged.emit(Qt.ColorScheme.Light)
     qtbot.waitUntil(lambda: not theme.is_dark(QApplication.palette()), timeout=2000)
+    controller.set_brand(True)
 
 
 def test_dark_palette_keeps_text_contrast() -> None:
@@ -198,10 +210,16 @@ _ENABLED = (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive)
 
 
 def _schemes(controller: theme.ThemeController) -> Iterator[Qt.ColorScheme]:
-    for scheme in (Qt.ColorScheme.Light, Qt.ColorScheme.Dark):
-        controller.apply_scheme(scheme)
-        assert theme.is_dark(QApplication.palette()) is (scheme == Qt.ColorScheme.Dark)
-        yield scheme
+    """Both desktop schemes, with the Carino brand (dark whatever the desktop says)
+    and without it (the palette follows the scheme)."""
+    for brand in (True, False):
+        controller.set_brand(brand)
+        for scheme in (Qt.ColorScheme.Light, Qt.ColorScheme.Dark):
+            controller.apply_scheme(scheme)
+            dark = brand or scheme == Qt.ColorScheme.Dark
+            assert theme.is_dark(QApplication.palette()) is dark
+            yield scheme
+    controller.set_brand(True)
 
 
 def test_applied_palettes_meet_contrast_minimums(controller: theme.ThemeController) -> None:

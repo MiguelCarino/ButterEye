@@ -82,9 +82,12 @@ def test_mvtools_with_scale_or_model_rejected() -> None:
     assert fields(with_profile(p)) == [f("model"), f("scale")]
 
 
-def test_trt_needs_opt_in() -> None:
+def test_trt_allowed_unless_turned_off() -> None:
+    """§5.2 (2026-10-10): unset = on when set up; only an explicit false refuses."""
     p = profile(backend=BackendId.RIFE_TRT, model="rife_v4.6", scale=0.5)
-    assert fields(with_profile(p)) == [f("backend")]
+    assert fields(with_profile(p)) == []
+    off = with_profile(p, general=GeneralSettings(trt_experimental=False))
+    assert fields(off) == [f("backend")]
     on = with_profile(p, general=GeneralSettings(trt_experimental=True))
     assert fields(on) == []
 
@@ -206,6 +209,7 @@ def test_general_fields() -> None:
             backend_override=BackendId.RIFE_TRT,
             gpu=" ",
             language="not a tag",
+            trt_experimental=False,  # TensorRT turned off: the override is refused
         ),
     )
     assert fields(cfg) == ["general.backend_override", "general.gpu", "general.language"]

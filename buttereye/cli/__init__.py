@@ -320,6 +320,8 @@ async def cmd_render(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
     )
     events = core.subscribe()
     job = await core.render_enqueue(spec)
+    for w in probe.warnings:
+        out.line(out.badge(w.severity.value, render(w.title)))
     out.line(f"Saving a smooth copy: {output} ({encoder}). Ctrl+C cancels.")
     try:
         async for ev in events:

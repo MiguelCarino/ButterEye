@@ -68,13 +68,19 @@ def test_real_doctor_through_the_bridge(real_window: Any, qtbot: Any) -> None:
     assert not errors, errors
     report = reports[0]
     codes = {f.code for f in report.findings}
-    assert ErrorCode.FFMS2_MISSING in codes  # ffms2 is not installed on the dev box
+    # doctor reports ffms2 exactly when its library is absent on this machine
+    ffms2 = Path("/usr/lib64/libffms2.so.5").exists()
+    assert (ErrorCode.FFMS2_MISSING in codes) == (not ffms2)
     assert report.duration_s < 10.0
     caps = win.bridge.capabilities
     assert caps is not None
-    qtbot.waitUntil(
-        lambda: win.bridge.capabilities.states[Feature.RENDER].available is False, timeout=2000
-    )
+    if not ffms2:
+        qtbot.waitUntil(
+            lambda: win.bridge.capabilities.states[Feature.RENDER].available is False, timeout=2000
+        )
+    else:
+        qtbot.wait(500)
+        assert win.bridge.capabilities.states[Feature.RENDER].code is not ErrorCode.FFMS2_MISSING
 
 
 @pytest.mark.parametrize("page_id", ["system", "storage", "about"])

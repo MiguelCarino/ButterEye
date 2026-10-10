@@ -29,6 +29,7 @@ from buttereye.core.api import (
     BypassReason,
     ErrorCode,
     FilterState,
+    HdrClass,
     Health,
     HealthChanged,
     Msg,
@@ -140,19 +141,37 @@ def test_text_helpers() -> None:
 def test_row_view_plain_words() -> None:
     active = sc.session(1)
     v = sw.row_view(active)
-    assert (v.kind, v.word, v.rates, v.engine) == ("ok", "Smooth", "24 → 120 fps", "GPU smoothing")
-    cpu = dataclasses.replace(active, backend=BackendId.MVTOOLS, model=None)
-    assert sw.row_view(cpu).engine == "CPU smoothing"
+    assert (v.kind, v.word, v.rates) == ("ok", "Smooth", "24 → 120 fps")
+    assert v.engine == "RIFE v4.26 on the GPU with Vulkan, full size 1920 × 1080"
+    cpu = dataclasses.replace(active, backend=BackendId.MVTOOLS, model=None, mv_block=True)
+    assert sw.row_view(cpu).engine == "MVTools on the CPU, fast block mode, full size 1920 × 1080"
+    assert active.source is not None
+    trt = dataclasses.replace(
+        active,
+        backend=BackendId.RIFE_TRT,
+        model="rife-v4.22_lite_ensembleFalse",
+        flow_scale=0.5,
+        smooth_size=(1280, 720),
+        source=dataclasses.replace(active.source, hdr_class=HdrClass.HDR10),
+    )
+    assert sw.row_view(trt).engine == (
+        "RIFE v4.22 lite on the GPU with TensorRT, motion estimated at half resolution, "
+        "smoothed at 1280 × 720, scaled up, HDR10"
+    )
     off = sc.session(2, filter=FilterState.OFF)
     v = sw.row_view(off)
     assert (v.kind, v.word, v.paused, v.rates) == ("off", "Paused", True, "24 fps")
+    assert (
+        v.engine == ""
+        and v.notice == "Smoothing is paused for this video. Resume turns it back on."
+    )
     for snap in sc.get("live_bypassed_each").sessions:
         v = sw.row_view(snap)
         assert v.word and v.kind
         assert not CODE.search(" ".join((v.word, v.rates, v.engine, v.notice)))
     stalled = sc.session(3, filter=FilterState.ROLLED_BACK, health=Health.STALLED)
     v = sw.row_view(stalled)
-    assert v.word == "Playing normally" and v.notice and v.kind == "degraded"
+    assert v.word == "Not smoothed" and v.notice and v.kind == "degraded"
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +261,8 @@ def test_switch_drives_set_interpolation(make_simple: Make, qtbot: Any) -> None:
     assert win.settings.value(sw.SMOOTH_KEY) in (False, "false")
     qtbot.waitUntil(lambda: win.rows[SessionId("s1")].view.paused)
     row = win.rows[SessionId("s1")]
-    assert row.pause_button.text() == "Resume smoothing"
+    assert row.pause_button.text() == "Resume"
+    assert row.pause_button.accessibleName().startswith("Resume smoothing for ")
     win.smooth_switch.setChecked(True)
     qtbot.waitUntil(lambda: calls(win, "set_interpolation")[-1].args == (SessionId("s1"), True))
     assert win.smooth_switch.accessibleName() == "Smooth motion"
@@ -275,6 +295,112 @@ def test_open_button_and_ctrl_o_use_the_chooser(make_simple: Make, qtbot: Any) -
     qtbot.waitUntil(lambda: len(calls(win, "play")) == 2)
     assert len(chosen) == 2
     assert win.act_open.shortcut().toString() == "Ctrl+O"
+
+
+def _copy_and_job(win: Any, qtbot: Any) -> Any:
+    from buttereye.core.types import RenderJobSpec
+
+    qtbot.waitUntil(lambda: SessionId("s1") in win.rows)
+    spec = RenderJobSpec(Path("/videos/a.mkv"), Path("/videos/a.smooth.mkv"), "simple", "libx265")
+    win.bridge.call(lambda core: core.render_enqueue(spec), owner=win, ok=lambda _j: None)
+    qtbot.waitUntil(lambda: bool(win.job_rows), timeout=5000)
+    return next(iter(win.job_rows.values()))
+
+
+def test_copy_log_per_file(make_simple: Make, qtbot: Any) -> None:
+    win = make_simple("live_active")
+    job_row = _copy_and_job(win, qtbot)
+    clip = QApplication.clipboard()
+    clip.clear()
+    row = win.rows[SessionId("s1")]
+    assert row.log_button.accessibleName() == "Copy the log for film.mkv"
+    row.log_button.click()
+    qtbot.waitUntil(lambda: "Session: s1" in clip.text(), timeout=5000)
+    assert clip.text().startswith("ButterEye ") and "log for film.mkv" in clip.text()
+    assert win.status_text() == "Log for film.mkv copied."
+    assert job_row.log_button.accessibleName() == "Copy the log for a.smooth.mkv"
+    job_row.log_button.click()
+    qtbot.waitUntil(lambda: "log for a.smooth.mkv" in clip.text(), timeout=5000)
+    assert [c.args[0] for c in calls(win, "job_log")] == [job_row.job.id]
+
+
+def test_busy_window_fits_without_squashing(make_simple: Make, qtbot: Any) -> None:
+    win = make_simple("live_active")
+    _copy_and_job(win, qtbot)
+    qtbot.wait(100)
+    # a playing video and a copy: the window grew to its content, nothing squashed
+    qtbot.waitUntil(lambda: win.height() >= win.sizeHint().height(), timeout=5000)
+    assert win.minimumSize().width() >= win.minimumSizeHint().width()
+    win.resize(win.width(), win.minimumSize().height())
+    snap = win.live_sessions[0]
+    # more rows grow the window instead of squashing them (three videos and a copy
+    # fit the 800 px test screen; the window never scrolls)
+    for i in (2, 3):
+        extra = dataclasses.replace(snap, sid=SessionId(f"s{i}"), title=f"film{i}.mkv")
+        in_core(qtbot, win.bridge, lambda c, e=extra: c.fake_set_session(e))
+    qtbot.waitUntil(lambda: len(win.rows) == 3, timeout=5000)
+    qtbot.waitUntil(lambda: win.height() >= win.minimumSizeHint().height(), timeout=5000)
+
+
+def test_hdr_row_turns_hdr_smoothing_on_and_off(make_simple: Make, qtbot: Any) -> None:
+    from buttereye.core.types import BypassReason, FilterState, HdrClass
+
+    win = make_simple("live_active")
+    sid = SessionId("s1")
+    qtbot.waitUntil(lambda: sid in win.rows)
+    row = win.rows[sid]
+    assert row.hdr_button.isHidden()  # SDR video: no HDR choice
+    snap = win.live_sessions[0]
+    assert snap.source is not None
+    hdr_src = dataclasses.replace(snap.source, hdr_class=HdrClass.HDR10)
+    skipped = dataclasses.replace(
+        snap, source=hdr_src, filter=FilterState.BYPASSED, bypass=BypassReason.HDR_SKIP
+    )
+    in_core(qtbot, win.bridge, lambda c: c.fake_set_session(skipped))
+    qtbot.waitUntil(lambda: not row.hdr_button.isHidden(), timeout=5000)
+    assert row.hdr_button.text() == "Smooth HDR"
+    assert row.hdr_button.accessibleName() == "Smooth HDR videos (experimental)"
+    before = len(calls(win, "save_config"))
+    row.hdr_button.click()
+    qtbot.waitUntil(lambda: len(calls(win, "save_config")) > before, timeout=5000)
+    prof = sw.find_simple(saved(win))
+    assert prof is not None and prof.hdr == "passthrough"
+    assert win.status_text() == "HDR videos will be smoothed (experimental)."
+    smoothed = dataclasses.replace(skipped, filter=FilterState.ACTIVE, bypass=None)
+    in_core(qtbot, win.bridge, lambda c: c.fake_set_session(smoothed))
+    qtbot.waitUntil(lambda: row.hdr_button.text() == "Play HDR as is", timeout=5000)
+    n = len(calls(win, "save_config"))
+    row.hdr_button.click()
+    qtbot.waitUntil(lambda: len(calls(win, "save_config")) > n, timeout=5000)
+    prof = sw.find_simple(saved(win))
+    assert prof is not None and prof.hdr == "skip"
+
+
+def test_buttons_are_big_enough_and_dead_ones_hidden(make_simple: Make, qtbot: Any) -> None:
+    from PySide6.QtGui import QFont
+    from PySide6.QtWidgets import QPushButton
+
+    from buttereye.gui import theme
+
+    theme.install(QApplication.instance())  # type: ignore[arg-type]
+    win = make_simple("live_active")
+    sid = SessionId("s1")
+    qtbot.waitUntil(lambda: sid in win.rows)
+    row = win.rows[sid]
+    line = row.fontMetrics().height()
+    for b in row.findChildren(QPushButton):
+        if b.isVisibleTo(row):
+            # WCAG 2.5.8 asks for 24 px; ButterEye's buttons are ~2 lines tall
+            assert b.height() >= max(24, round(line * theme.BUTTON_MIN_LINES) - 1), b.text()
+            assert b.font().capitalization() == QFont.Capitalization.MixedCase, b.text()
+    snap = win.live_sessions[0]
+    skipped = dataclasses.replace(
+        snap, filter=FilterState.BYPASSED, bypass=BypassReason.NO_REALTIME
+    )
+    in_core(qtbot, win.bridge, lambda c: c.fake_set_session(skipped))
+    qtbot.waitUntil(lambda: row.pause_button.isHidden(), timeout=5000)
+    assert row.badge.text() == "Not smoothed"
+    assert row.notice.text().startswith("Not smoothed: the speed test says")
 
 
 def test_row_pause_and_let_go(make_simple: Make, qtbot: Any) -> None:
@@ -324,7 +450,7 @@ def test_rows_follow_events_with_plain_notices(make_simple: Make, qtbot: Any) ->
     )
     in_core(qtbot, win.bridge, lambda c: c.fake_set_session(snap))
     row = win.rows[sid]
-    qtbot.waitUntil(lambda: row.notice.isVisible() and "CPU smoothing" in row.detail.text())
+    qtbot.waitUntil(lambda: row.notice.isVisible() and "MVTools on the CPU" in row.detail.text())
     assert row.notice.text() == notice.key
     note = Notice(Msg("Something went sideways (BE-4001)"), ErrorCode.INTERNAL, sid=sid)
     in_core(qtbot, win.bridge, lambda c: c.fake_emit(note))
@@ -339,7 +465,7 @@ def test_gpu_fault_row_has_no_codes(make_simple: Make, qtbot: Any) -> None:
     sid = SessionId("s1")
     qtbot.waitUntil(lambda: sid in win.rows and win.rows[sid].notice.isVisible())
     row = win.rows[sid]
-    assert row.badge.text() == "Playing normally"
+    assert row.badge.text() == "Not smoothed"
     assert row.badge.kind() == "degraded"
     for text in texts(win):
         assert not CODE.search(text), text
@@ -423,6 +549,19 @@ def test_no_bench_when_history_exists(make_simple: Make, qtbot: Any) -> None:
     qtbot.waitUntil(lambda: bool(calls(win, "bench_history")))
     qtbot.wait(100)
     assert calls(win, "bench") == []
+
+
+def test_new_graphics_card_is_measured_again(make_simple: Make, qtbot: Any) -> None:
+    base = sc.get("all_ready")
+    assert base.bench_history, "all_ready has results for its GPU"
+    old_card = tuple(
+        dataclasses.replace(r, gpu_uuid="00000000-old-card") for r in base.bench_history
+    )
+    win = make_simple(
+        dataclasses.replace(base, name="new_gpu", bench_history=old_card), auto_bench=True
+    )
+    qtbot.waitUntil(lambda: bool(calls(win, "bench")), timeout=5000)
+    assert calls(win, "bench")[0].args[0] == sw.FIRST_BENCH
 
 
 def test_live_unavailable_disables_playing(make_simple: Make, qtbot: Any) -> None:
@@ -654,6 +793,19 @@ def test_picture_choice_follows_the_config(make_simple: Make, qtbot: Any) -> Non
     )
     win = make_simple(scen)
     assert win.picture_combo.currentData() == "sharper-deband"
+
+
+def test_resolution_choice_saves_full_size(make_simple: Make, qtbot: Any) -> None:
+    win = make_simple("all_ready")
+    combo = win.resolution_combo
+    assert [combo.itemData(i) for i in range(combo.count())] == ["auto", "full"]
+    assert combo.currentData() == "auto"
+    before = len(calls(win, "save_config"))
+    pick(combo, "full")
+    qtbot.waitUntil(lambda: len(calls(win, "save_config")) > before, timeout=5000)
+    assert saved(win).general.full_size is True
+    label = next(w for w in win.findChildren(QLabel) if w.buddy() is combo)
+    assert label.text() == "&Resolution"
 
 
 def test_picture_keys_round_trip() -> None:

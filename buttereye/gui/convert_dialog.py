@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -47,7 +48,7 @@ from buttereye.core.api import (
     TargetKind,
     render,
 )
-from buttereye.gui import a11y
+from buttereye.gui import a11y, theme
 from buttereye.gui.bridge import CoreBridge
 
 SIMPLE_ID = "simple"
@@ -561,24 +562,32 @@ class JobRow(QFrame):
         super().__init__(parent)
         self.setObjectName(f"job.{job.id}")
         self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setProperty(theme.CARD_PROPERTY, True)
         unit = self.fontMetrics().height()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(unit * 3 // 4, unit // 2, unit * 3 // 4, unit // 2)
         lay.setSpacing(unit // 3)
+        # name and progress words on one line, the bar under them
+        top = QHBoxLayout()
+        top.setSpacing(unit // 2)
         self.title = QLabel(job.spec.output.name, self)
         self.title.setTextFormat(Qt.TextFormat.PlainText)
+        self.title.setToolTip(job.spec.output.name)
+        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         f = self.title.font()
         f.setBold(True)
         self.title.setFont(f)
-        lay.addWidget(self.title)
+        top.addWidget(self.title, 1)
+        self.status = QLabel(self)
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
+        self.status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        top.addWidget(self.status, 0)
+        lay.addLayout(top)
         self.bar = QProgressBar(self)
         self.bar.setTextVisible(False)
         self.bar.setRange(0, 100)
+        self.bar.setMaximumHeight(max(4, unit // 3))
         lay.addWidget(self.bar)
-        self.status = QLabel(self)
-        self.status.setTextFormat(Qt.TextFormat.PlainText)
-        self.status.setWordWrap(True)
-        lay.addWidget(self.status)
         buttons = QHBoxLayout()
         self.cancel_button = QPushButton(_t("Cancel"), self)
         self.cancel_button.setAutoDefault(False)
@@ -586,9 +595,14 @@ class JobRow(QFrame):
         self.show_button.setAutoDefault(False)
         self.remove_button = QPushButton(_t("Remove"), self)
         self.remove_button.setAutoDefault(False)
+        self.log_button = QPushButton(_t("Copy log"), self)
+        self.log_button.setObjectName("copyLog")
+        self.log_button.setAutoDefault(False)
+        self.log_button.setToolTip(_t("Copy what happened with this copy, to paste in a report."))
         for b in (self.cancel_button, self.show_button, self.remove_button):
             buttons.addWidget(b)
         buttons.addStretch(1)
+        buttons.addWidget(self.log_button)
         lay.addLayout(buttons)
         self.job = job
         self._pct = 0
@@ -614,6 +628,7 @@ class JobRow(QFrame):
         self.cancel_button.setAccessibleName(_t("Cancel saving {name}").format(name=name))
         self.show_button.setAccessibleName(_t("Show {name} in its folder").format(name=name))
         self.remove_button.setAccessibleName(_t("Remove {name} from the list").format(name=name))
+        self.log_button.setAccessibleName(_t("Copy the log for {name}").format(name=name))
         self.setAccessibleName(f"{name} — {self.status.text()}")
 
 

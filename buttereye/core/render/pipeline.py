@@ -19,7 +19,13 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-from buttereye.core.render.probe import TEN_BIT_ENCODERS, SourceInfo
+from buttereye.core.render.probe import (
+    TEN_BIT_ENCODERS,
+    SourceInfo,
+    renders_as_hdr10,
+    svtav1_hdr_params,
+    x265_hdr_params,
+)
 
 _FRAME_RE = re.compile(r"Frame:\s*(\d+)/(\d+)(?:\s*\(([\d.]+)\s*fps\))?")
 
@@ -79,7 +85,14 @@ def encode_argv(
         if value:
             argv += [f"-{key}", value]
     argv += ["-c:v", encoder, *_ENCODER_ARGS.get(encoder, ())]
-    if src.bits > 8 and encoder in TEN_BIT_ENCODERS:
+    hdr10 = renders_as_hdr10(src)
+    if hdr10 and encoder == "libx265":
+        argv += ["-x265-params", x265_hdr_params(src.hdr)]
+    elif hdr10 and encoder == "libsvtav1":
+        params = svtav1_hdr_params(src.hdr)
+        if params:
+            argv += ["-svtav1-params", params]
+    if (src.bits > 8 or hdr10) and encoder in TEN_BIT_ENCODERS:
         argv += ["-pix_fmt", _TEN_BIT_PIX.get(encoder, "yuv420p10le")]
         if encoder == "hevc_nvenc":
             argv += ["-profile:v", "main10"]
@@ -92,13 +105,55 @@ def encode_argv(
 
 
 def mkvmerge_argv(
-    mkvmerge: str, video: Path, source: Path, out: Path, *, start_s: float
+    mkvmerge: str,
+    video: Path,
+    source: Path,
+    out: Path,
+    *,
+    start_s: float,
+    src: SourceInfo | None = None,
 ) -> list[str]:
-    """``mkvmerge -o out [--sync 0:ms] video -D source`` (§7.2)."""
+    """``mkvmerge -o out [--sync 0:ms] [colour] video -D source`` (§7.2); an HDR10
+    copy also gets container-level colour and mastering metadata (§7.4)."""
     argv = [mkvmerge, "--quiet", "-o", os.fspath(out)]
     if start_s:
         argv += ["--sync", f"0:{round(start_s * 1000)}"]
+    if src is not None and renders_as_hdr10(src):
+        argv += hdr10_colour_args(src)
     argv += [os.fspath(video), "-D", os.fspath(source)]
+    return argv
+
+
+#: ffprobe colour names → ISO/IEC 23091-4 code points (what Matroska stores)
+_PRIMARIES = {"bt709": 1, "bt470bg": 5, "smpte170m": 6, "bt2020": 9, "smpte432": 12}
+_TRANSFER = {"bt709": 1, "smpte170m": 6, "smpte2084": 16, "arib-std-b67": 18}
+_MATRIX = {"bt709": 1, "bt470bg": 5, "smpte170m": 6, "bt2020nc": 9, "bt2020c": 10}
+
+
+def _num(v: Fraction) -> str:
+    return f"{float(v):.5f}".rstrip("0").rstrip(".")
+
+
+def hdr10_colour_args(src: SourceInfo) -> list[str]:
+    """mkvmerge options for track 0 of the encoded video: PQ, BT.2020 (or what the
+    source says), limited range, mastering display and content light level."""
+    c = src.color
+    argv = [
+        "--colour-matrix-coefficients", f"0:{_MATRIX.get(c.get('colorspace', ''), 9)}",
+        "--colour-transfer-characteristics", "0:16",
+        "--colour-primaries", f"0:{_PRIMARIES.get(c.get('color_primaries', ''), 9)}",
+        "--colour-range", "0:2" if c.get("color_range") == "pc" else "0:1",
+    ]  # fmt: skip
+    if src.hdr.max_cll or src.hdr.max_fall:
+        argv += ["--max-content-light", f"0:{src.hdr.max_cll}"]
+        argv += ["--max-frame-light", f"0:{src.hdr.max_fall}"]
+    m = src.hdr.mastering
+    if m is not None:
+        xy = ",".join(_num(v) for p in (m.red, m.green, m.blue) for v in p)
+        argv += ["--chromaticity-coordinates", f"0:{xy}"]
+        argv += ["--white-colour-coordinates", f"0:{_num(m.white[0])},{_num(m.white[1])}"]
+        argv += ["--max-luminance", f"0:{_num(m.max_luminance)}"]
+        argv += ["--min-luminance", f"0:{_num(m.min_luminance)}"]
     return argv
 
 
@@ -154,6 +209,7 @@ __all__ = [
     "vspipe_argv",
     "encode_argv",
     "mkvmerge_argv",
+    "hdr10_colour_args",
     "ffmpeg_remux_argv",
     "low_priority",
     "target_frames",

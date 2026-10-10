@@ -198,13 +198,19 @@ class EngineKey:
     height: int
     fp16: bool = True
     half_io: bool = True
+    #: RIFE's optical flow at this x the resolution (spike M0(q)); 1.0 = full
+    flow_scale: float = 1.0
 
     def folder_name(self) -> str:
         entry = model_entry(self.model)
         short = entry[0] if entry else "model"
         prec = ("fp16" if self.fp16 else "fp32") + ("-h" if self.half_io else "")
-        digest = hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode()).hexdigest()[:12]
-        return f"{short}-{self.width}x{self.height}-{prec}-{digest}"
+        fields = asdict(self)
+        if self.flow_scale == 1.0:
+            del fields["flow_scale"]  # engines built before M0(q) keep their folders
+        digest = hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()[:12]
+        flow = "" if self.flow_scale == 1.0 else f"-flow{self.flow_scale:g}"
+        return f"{short}-{self.width}x{self.height}-{prec}{flow}-{digest}"
 
 
 def engine_dir(paths: Paths, key: EngineKey) -> Path:
@@ -230,6 +236,8 @@ def script_settings(
         "engine_dir": os.fspath(folder),
         "trtexec": os.fspath(install.trtexec),
         "model": entry[0],
+        "onnx": entry[1],
+        "flow_scale": key.flow_scale,
         "fp16": key.fp16,
         "half_io": key.half_io,
         "streams": int(streams),

@@ -107,9 +107,39 @@ def test_hdr_classes(video: dict[str, Any], expected: HdrClass) -> None:
     assert rp.hdr_class(video) is expected
 
 
-def test_refusals_in_the_sdr_first_build() -> None:
+#: the first frame of a real 2160p HDR10 WEB-DL (P3-D65 mastering, 1000 nits,
+#: content light level unknown), as ffprobe -show_frames prints it
+_HDR10_FRAME: dict[str, Any] = {
+    "media_type": "video",
+    "side_data_list": [
+        {
+            "side_data_type": "Mastering display metadata",
+            "red_x": "35400/50000", "red_y": "14600/50000",
+            "green_x": "8500/50000", "green_y": "39850/50000",
+            "blue_x": "6550/50000", "blue_y": "2300/50000",
+            "white_point_x": "15635/50000", "white_point_y": "16450/50000",
+            "min_luminance": "500/10000", "max_luminance": "10000000/10000",
+        },
+        {"side_data_type": "Content light level metadata", "max_content": 0, "max_average": 0},
+    ],
+}  # fmt: skip
+_PQ = {"color_transfer": "smpte2084", "color_primaries": "bt2020", "color_space": "bt2020nc"}
+
+
+def _hdr10(frame: dict[str, Any] | None = _HDR10_FRAME, **video: Any) -> rp.SourceInfo:
+    info = rp.source_info(_ffprobe(**{**_PQ, **video}), frame)
+    assert info is not None
+    return info
+
+
+def _dv(profile: int, base: int) -> rp.SourceInfo:
+    record = {"side_data_type": "DOVI configuration record", "dv_profile": profile,
+              "dv_bl_signal_compatibility_id": base}  # fmt: skip
+    return _hdr10(side_data_list=[record])
+
+
+def test_refusals() -> None:
     sdr = rp.source_info(_ffprobe())
-    hdr10 = rp.source_info(_ffprobe(color_transfer="smpte2084"))
     hlg = rp.source_info(_ffprobe(color_transfer="arib-std-b67"))
     dec = frozenset({"hevc", "h264"})
     assert jobs.refusal_for(sdr, dec, True) is None
@@ -120,11 +150,97 @@ def test_refusals_in_the_sdr_first_build() -> None:
     nodec = jobs.refusal_for(sdr, frozenset({"h264"}), True)
     assert nodec is not None and nodec.code is ErrorCode.CODEC_NOT_DECODABLE
     assert nodec.title.params == {"codec": "hevc"}
-    for info in (hdr10, hlg):
-        r = jobs.refusal_for(info, dec, True)
-        assert r is not None and r.code is ErrorCode.HDR_CLASS_REFUSED
+    r = jobs.refusal_for(hlg, dec, True)
+    assert r is not None and r.code is ErrorCode.HDR_CLASS_REFUSED
     r = jobs.refusal_for(None, dec, True)
     assert r is not None and r.code is ErrorCode.CODEC_NOT_DECODABLE
+
+
+def test_hdr10_and_its_relatives_are_converted() -> None:
+    dec = frozenset({"hevc"})
+    plus = {"side_data_type": "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}
+    hdr10plus = _hdr10({"media_type": "video", "side_data_list": [plus]})
+    assert hdr10plus.hdr_class is HdrClass.HDR10PLUS  # found in the frame, not the stream
+    for info in (_hdr10(), hdr10plus, _dv(8, 1), _dv(7, 6)):
+        assert rp.renders_as_hdr10(info), info.hdr_class
+        assert jobs.refusal_for(info, dec, True) is None
+    p5 = jobs.refusal_for(_dv(5, 0), dec, True)
+    assert p5 is not None and p5.code is ErrorCode.HDR_CLASS_REFUSED and "5" in p5.title.key
+    sdr_base = jobs.refusal_for(_dv(8, 2), dec, True)  # DV over an SDR base layer
+    assert sdr_base is not None and sdr_base.code is ErrorCode.HDR_CLASS_REFUSED
+    assert not rp.renders_as_hdr10(rp.source_info(_ffprobe()))  # type: ignore[arg-type]
+
+
+def test_hdr_warnings_name_what_is_dropped() -> None:
+    assert jobs.hdr_warnings(rp.source_info(_ffprobe())) == []
+    assert [w.id for w in jobs.hdr_warnings(_hdr10())] == ["render.hdr10"]
+    dv = jobs.hdr_warnings(_dv(8, 1))
+    assert [w.id for w in dv] == ["render.hdr10", "render.hdr_dynamic"]
+    assert dv[1].title.params == {"kind": "Dolby Vision"}
+
+
+def test_hdr_metadata_from_the_first_frame() -> None:
+    meta = _hdr10().hdr
+    m = meta.mastering
+    assert m is not None
+    assert m.red == (Fraction(354, 500), Fraction(146, 500))
+    assert m.white == (Fraction(15635, 50000), Fraction(16450, 50000))
+    assert (m.max_luminance, m.min_luminance) == (Fraction(1000), Fraction(1, 20))
+    assert (meta.max_cll, meta.max_fall) == (0, 0)
+    assert _hdr10(frame=None).hdr.mastering is None  # no frame data: nothing invented
+
+
+def test_x265_and_svtav1_hdr10_parameters() -> None:
+    meta = _hdr10().hdr
+    assert rp.x265_hdr_params(meta) == (
+        "hdr10=1:hdr10-opt=1:repeat-headers=1:"
+        "master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)"
+        "L(10000000,500):max-cll=0,0"
+    )
+    assert rp.svtav1_hdr_params(meta) == (
+        "mastering-display=G(0.1700,0.7970)B(0.1310,0.0460)R(0.7080,0.2920)"
+        "WP(0.3127,0.3290)L(1000.0000,0.0500)"
+    )
+    bare = rp.HdrMeta(max_cll=1000, max_fall=400)
+    assert rp.x265_hdr_params(bare) == "hdr10=1:hdr10-opt=1:repeat-headers=1:max-cll=1000,400"
+    assert rp.svtav1_hdr_params(bare) == "content-light=1000,400"
+    assert rp.svtav1_hdr_params(rp.HdrMeta()) is None
+
+
+def test_hdr10_encode_argv() -> None:
+    info = _hdr10(pix_fmt="yuv420p10le")
+    x265 = pipeline.encode_argv("ffmpeg", "libx265", info, Path("/o/v.mkv"))
+    assert x265[x265.index("-x265-params") + 1].startswith("hdr10=1:")
+    assert x265[x265.index("-pix_fmt") + 1] == "yuv420p10le"
+    assert x265[x265.index("-color_trc") + 1] == "smpte2084"
+    assert x265[x265.index("-colorspace") + 1] == "bt2020nc"
+    av1 = pipeline.encode_argv("ffmpeg", "libsvtav1", info, Path("/o/v.mkv"))
+    assert av1[av1.index("-svtav1-params") + 1].startswith("mastering-display=")
+    sdr = pipeline.encode_argv("ffmpeg", "libx265", rp.source_info(_ffprobe()), Path("/o"))  # type: ignore[arg-type]
+    assert "-x265-params" not in sdr
+
+
+def test_hdr10_encoders_and_matrix() -> None:
+    listed = ("hevc_nvenc", "libsvtav1", "libx265", "libx264")
+    assert rp.usable_encoders(listed, nvidia=True, hdr10=True) == ("libx265", "libsvtav1")
+    assert rp.usable_encoders(("hevc_nvenc",), nvidia=True, hdr10=True) == ()
+    info = _hdr10()
+    assert (rp.vs_matrix(info), rp.vs_range(info)) == ("2020ncl", "limited")
+
+
+def test_hdr10_remux_writes_container_colour() -> None:
+    mk = pipeline.mkvmerge_argv(
+        "mkvmerge", Path("v.mkv"), Path("s.mkv"), Path("o"), start_s=0, src=_hdr10()
+    )
+    opt = dict(zip(mk[4:-3:2], mk[5:-3:2], strict=True))
+    assert opt["--colour-transfer-characteristics"] == "0:16"
+    assert opt["--colour-primaries"] == "0:9" and opt["--colour-matrix-coefficients"] == "0:9"
+    assert opt["--colour-range"] == "0:1"
+    assert opt["--chromaticity-coordinates"] == "0:0.708,0.292,0.17,0.797,0.131,0.046"
+    assert opt["--white-colour-coordinates"] == "0:0.3127,0.329"
+    assert (opt["--max-luminance"], opt["--min-luminance"]) == ("0:1000", "0:0.05")
+    assert "--max-content-light" not in opt  # unknown in the source: not invented
+    assert mk[-3:] == ["v.mkv", "-D", "s.mkv"]
 
 
 def test_encoder_order_follows_the_scope() -> None:

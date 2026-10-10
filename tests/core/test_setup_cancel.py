@@ -208,6 +208,8 @@ async def test_apply_writes_config_last_and_is_idempotent(script: Script, xdg_en
     loaded = cfgmod.load(paths)
     assert loaded.exists and loaded.revision == res.config_revision
     assert loaded.config.general.backend_override is None  # = the proposed backend
+    # not choosing TensorRT leaves it unset (on once set up), never false (§5.2)
+    assert loaded.config.general.trt_experimental is None
     first = paths.config_file.read_bytes()
 
     plan2 = await setup.plan(paths, report, trt_experimental=False)

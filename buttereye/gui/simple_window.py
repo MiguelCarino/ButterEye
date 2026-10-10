@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import shiboken6
-from PySide6.QtCore import QCoreApplication, QSettings, QSize, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QFont, QGuiApplication, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -59,6 +59,7 @@ from buttereye.core.api import (
     EventsDropped,
     Feature,
     FilterState,
+    HdrClass,
     Health,
     HealthChanged,
     JobChanged,
@@ -90,7 +91,7 @@ from buttereye.core.api import (
     render,
     unavailable_text,
 )
-from buttereye.gui import a11y
+from buttereye.gui import a11y, theme
 from buttereye.gui.bridge import CoreBridge
 from buttereye.gui.convert_dialog import (
     Confirm,
@@ -105,13 +106,16 @@ from buttereye.gui.widgets.primary_button import PrimaryButton
 from buttereye.gui.widgets.state_panel import split_headline
 from buttereye.gui.widgets.status_badge import ICON_DIR, BadgeKind, StatusBadge
 from buttereye.gui.widgets.switch import Switch
+from buttereye.gui.widgets.wordmark import Wordmark
 
 _log = logging.getLogger(__name__)
 
 APP_NAME = "ButterEye"
 APP_ICON = ICON_DIR / "buttereye.svg"
-DEFAULT_SIZE = QSize(540, 600)
-MINIMUM_SIZE = QSize(360, 420)
+#: width, and the least height; the window opens at its content's preferred
+#: height and grows (never shrinks) when rows appear
+DEFAULT_SIZE = QSize(760, 260)
+MINIMUM_SIZE = QSize(360, 240)
 SCREEN_FRACTION = 0.9
 
 SIMPLE_ID = "simple"
@@ -162,6 +166,21 @@ def picture_settings(key: str) -> tuple[str, bool]:
     return ("sharper" if key.startswith("sharper") else "standard", key.endswith("deband"))
 
 
+def current_results(
+    history: Sequence[BenchResult], report: DoctorReport | None
+) -> tuple[BenchResult, ...]:
+    """Speed-test results that still describe this computer: measured on a GPU
+    that is in it now (Vulkan UUID), or CPU-only results on a machine without a
+    GPU. A new graphics card has no results, so it is measured again; reopening
+    the app is not a reason to measure."""
+    if report is None:
+        return tuple(history)
+    uuids = {d.uuid.lower() for d in report.hardware.vulkan if d.device_type != "cpu"}
+    if not uuids:
+        return tuple(r for r in history if r.gpu_uuid is None)
+    return tuple(r for r in history if (r.gpu_uuid or "").lower() in uuids)
+
+
 def target_for(key: str) -> Target:
     if key == "fps60":
         return Target(TargetKind.FPS, Fraction(60))
@@ -193,10 +212,17 @@ def smoothness_key(profile: Profile) -> str:
     return "best"
 
 
-def simple_profile(smoothness: str, target: str, *, trt: bool = False) -> Profile:
+def simple_profile(
+    smoothness: str,
+    target: str,
+    *,
+    trt: bool = False,
+    hdr: Literal["skip", "passthrough"] = "skip",
+) -> Profile:
     """The simple profile. ``trt``: experimental NVIDIA TensorRT is turned on and
     set up, so the GPU choices use it (live play falls back to RIFE-ncnn while
-    an engine is being built or when TensorRT can't keep up)."""
+    an engine is being built or when TensorRT can't keep up). ``hdr``:
+    "passthrough" smooths HDR10 videos too (experimental, F7)."""
     backend, model = SMOOTHNESS.get(smoothness, SMOOTHNESS[DEFAULT_SMOOTHNESS])
     if trt and smoothness in GPU_CHOICES:
         backend = BackendId.RIFE_TRT
@@ -210,7 +236,7 @@ def simple_profile(smoothness: str, target: str, *, trt: bool = False) -> Profil
         sc_threshold=0.12,
         buffered_frames=None,
         concurrent_frames=None,
-        hdr="skip",
+        hdr=hdr,
         builtin=False,
     )
 
@@ -282,27 +308,68 @@ class RowView:
     paused: bool
 
 
+def _model_words(model: str | None) -> str:
+    """``rife-v4.22_lite_ensembleFalse`` → ``v4.22 lite``."""
+    if not model:
+        return ""
+    name = model.removeprefix("rife-").removesuffix("_ensembleFalse").removesuffix("_ensembleTrue")
+    return name.replace("_lite", " lite").replace("_", " ")
+
+
 def engine_words(snap: SessionSnapshot) -> str:
+    """What is smoothing this video, in plain words with the specifics: engine,
+    model, the size it works at and its special modes."""
     if snap.filter is FilterState.ACTIVE and snap.backend is not None:
-        return _t("CPU smoothing") if snap.backend is BackendId.MVTOOLS else _t("GPU smoothing")
+        model = _model_words(snap.model)
+        if snap.backend is BackendId.RIFE_TRT:
+            what = _t("RIFE {model} on the GPU with TensorRT").format(model=model)
+        elif snap.backend is BackendId.RIFE_NCNN:
+            what = _t("RIFE {model} on the GPU with Vulkan").format(model=model)
+        else:
+            what = _t("MVTools on the CPU")
+        what = " ".join(what.split())  # no double space without a model name
+        parts = [what]
+        if snap.mv_block:
+            parts.append(_t("fast block mode"))
+        if snap.flow_scale != 1.0:
+            parts.append(_t("motion estimated at half resolution"))
+        src = snap.source
+        if snap.smooth_size is not None:
+            w, h = snap.smooth_size
+            parts.append(_t("smoothed at {w} × {h}, scaled up").format(w=w, h=h))
+        elif src is not None:
+            parts.append(_t("full size {w} × {h}").format(w=src.width, h=src.height))
+        if src is not None and src.hdr_class is HdrClass.HDR10:
+            parts.append(_t("HDR10"))
+        return ", ".join(parts)
     if snap.filter is FilterState.PENDING:
         return _t("Getting smoothing ready")
-    if snap.filter is FilterState.OFF:
-        return _t("Smoothing paused")
-    return _t("Playing normally")
+    return ""  # paused or not smoothed: the row's reason line says why
 
 
 def bypass_words(snap: SessionSnapshot) -> str:
     texts = {
         BypassReason.ALREADY_AT_RATE: _t(
-            "This video already matches your target, so it plays as is."
+            "Not smoothed: this video already plays at your target rate, so there are no "
+            "frames to add. Choose a higher Target to smooth it."
         ),
-        BypassReason.INTERLACED: _t("Interlaced video plays without smoothing."),
-        BypassReason.HDR_SKIP: _t("HDR video plays without smoothing."),
-        BypassReason.UNSUPPORTED_FORMAT: _t("This video's format can't be smoothed."),
-        BypassReason.NO_VIDEO: _t("There's no video to smooth."),
+        BypassReason.INTERLACED: _t(
+            "Not smoothed: this video is interlaced, and smoothing needs whole frames."
+        ),
+        BypassReason.HDR_SKIP: _t(
+            "Not smoothed: HDR videos play as they are unless you choose Smooth HDR (experimental)."
+        ),
+        BypassReason.UNSUPPORTED_FORMAT: _t(
+            "Not smoothed: this video's picture format can't go through the smoothing "
+            "filter (it needs YUV video with an even width and height)."
+        ),
+        BypassReason.NO_VIDEO: _t(
+            "Not smoothed: there's no moving picture (audio or a cover image)."
+        ),
         BypassReason.NO_REALTIME: _t(
-            "This computer can't smooth this video in real time, so it plays normally."
+            "Not smoothed: the speed test says this computer can't add frames fast enough "
+            "for your Target, even at a smaller size. A lower Target or a lighter "
+            "Smoothness may work; Always full size smooths it anyway."
         ),
     }
     return texts[snap.bypass] if snap.bypass is not None else ""
@@ -311,11 +378,25 @@ def bypass_words(snap: SessionSnapshot) -> str:
 def health_words(health: Health) -> str:
     texts = {
         Health.OK: "",
-        Health.DROPPING: _t("Some frames are being dropped."),
-        Health.STALLED: _t("The video stalled, so smoothing was turned off for it."),
-        Health.GPU_FAULT: _t("The GPU had a problem, so smoothing was turned off for this video."),
-        Health.DEVICE_LOST: _t("The GPU stopped responding, so smoothing was turned off."),
-        Health.CONNECTION_LOST: _t("ButterEye lost touch with this player."),
+        Health.DROPPING: _t(
+            "Some frames are being dropped: smoothing can't quite keep up. A lighter "
+            "Smoothness or a lower Target helps."
+        ),
+        Health.STALLED: _t(
+            "Smoothing stopped: the picture froze while the sound kept playing, so "
+            "smoothing was turned off for this video. Resume tries again."
+        ),
+        Health.GPU_FAULT: _t(
+            "Smoothing stopped: the graphics driver reported a fault while smoothing, so "
+            "it was turned off for this video. Copy log has the details."
+        ),
+        Health.DEVICE_LOST: _t(
+            "Smoothing stopped: the GPU stopped responding, so smoothing was turned off. "
+            "Copy log has the details."
+        ),
+        Health.CONNECTION_LOST: _t(
+            "ButterEye lost touch with this player; it may have closed or stopped answering."
+        ),
     }
     return texts[health]
 
@@ -339,11 +420,16 @@ def row_view(snap: SessionSnapshot, note: str | None = None) -> RowView:
     if not notice and note:
         notice = without_code(note)
     if not notice and snap.filter is FilterState.ROLLED_BACK:
-        notice = _t("Smoothing didn't work for this video, so it plays normally.")
+        notice = _t(
+            "Not smoothed: the smoothing filter failed to start for this video, so it plays "
+            "normally. Copy log has the details."
+        )
+    if not notice and snap.filter is FilterState.OFF:
+        notice = _t("Smoothing is paused for this video. Resume turns it back on.")
 
     kind: BadgeKind
     if snap.health in (Health.STALLED, Health.GPU_FAULT, Health.DEVICE_LOST):
-        kind, word = "degraded", _t("Playing normally")
+        kind, word = "degraded", _t("Not smoothed")
     elif snap.health is Health.CONNECTION_LOST:
         kind, word = "blocking", _t("Lost touch")
     elif snap.filter is FilterState.ACTIVE:
@@ -356,9 +442,9 @@ def row_view(snap: SessionSnapshot, note: str | None = None) -> RowView:
     elif snap.filter is FilterState.OFF:
         kind, word = "off", _t("Paused")
     elif snap.filter is FilterState.BYPASSED:
-        kind, word = "info", _t("Playing normally")
+        kind, word = "info", _t("Not smoothed")
     else:  # ROLLED_BACK
-        kind, word = "degraded", _t("Playing normally")
+        kind, word = "degraded", _t("Not smoothed")
     return RowView(
         kind=kind,
         word=word,
@@ -381,12 +467,13 @@ class SessionRow(QFrame):
         super().__init__(parent)
         self.setObjectName(f"session.{snap.sid}")
         self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setProperty(theme.CARD_PROPERTY, True)
         self.sid = snap.sid
         self.snap = snap
         lay = QVBoxLayout(self)
         gap = self.fontMetrics().height() // 2
-        lay.setContentsMargins(gap * 2, gap * 2, gap * 2, gap * 2)
-        lay.setSpacing(gap // 2 + 2)
+        lay.setContentsMargins(gap * 3 // 2, gap, gap * 3 // 2, gap)
+        lay.setSpacing(gap // 2)
 
         top = QHBoxLayout()
         top.setSpacing(gap)
@@ -405,6 +492,7 @@ class SessionRow(QFrame):
         self.detail.setObjectName("rowDetail")
         self.detail.setTextFormat(Qt.TextFormat.PlainText)
         self.detail.setWordWrap(True)
+        theme.secondary(self.detail)
         lay.addWidget(self.detail)
         self.notice = QLabel(self)
         self.notice.setObjectName("rowNotice")
@@ -429,16 +517,26 @@ class SessionRow(QFrame):
             _t("Smooth this video even though the speed test says it may stutter.")
         )
         self.force_button.hide()
-        self.copy_button = QPushButton(_t("Save smooth copy…"), self)
+        self.copy_button = QPushButton(_t("Save copy…"), self)
         self.copy_button.setObjectName("saveCopy")
         self.copy_button.setAutoDefault(False)
         self.copy_button.setToolTip(_t("Convert this video into a smooth file you can keep."))
         self.copy_button.hide()
+        self.hdr_button = QPushButton(self)
+        self.hdr_button.setObjectName("hdrSmoothing")
+        self.hdr_button.setAutoDefault(False)
+        self.hdr_button.hide()
+        self.log_button = QPushButton(_t("Copy log"), self)
+        self.log_button.setObjectName("copyLog")
+        self.log_button.setAutoDefault(False)
+        self.log_button.setToolTip(_t("Copy what happened with this video, to paste in a report."))
         buttons.addWidget(self.force_button)
         buttons.addWidget(self.pause_button)
         buttons.addWidget(self.let_go_button)
         buttons.addWidget(self.copy_button)
+        buttons.addWidget(self.hdr_button)
         buttons.addStretch(1)
+        buttons.addWidget(self.log_button)
         lay.addLayout(buttons)
         self.update_snapshot(snap)
 
@@ -454,7 +552,10 @@ class SessionRow(QFrame):
         self.detail.setText(" · ".join(parts))
         self.notice.setText(view.notice)
         self.notice.setVisible(bool(view.notice))
-        self.pause_button.setText(_t("Resume smoothing") if view.paused else _t("Pause smoothing"))
+        self.pause_button.setText(_t("Resume") if view.paused else _t("Pause"))
+        self.pause_button.setToolTip(
+            _t("Resume smoothing") if view.paused else _t("Pause smoothing")
+        )
         self.pause_button.setAccessibleName(
             (
                 _t("Resume smoothing for {title}")
@@ -462,9 +563,11 @@ class SessionRow(QFrame):
                 else _t("Pause smoothing for {title}")
             ).format(title=snap.title)
         )
+        # a button that can't do anything for this video is hidden, not greyed out
+        # (low contrast, and a screen reader would still stop on it)
+        self.pause_button.setVisible(snap.filter is not FilterState.BYPASSED)
         self.pause_button.setEnabled(
-            snap.health is not Health.CONNECTION_LOST
-            and snap.filter not in (FilterState.PENDING, FilterState.BYPASSED)
+            snap.health is not Health.CONNECTION_LOST and snap.filter is not FilterState.PENDING
         )
         self.force_button.setVisible(
             snap.filter is FilterState.BYPASSED
@@ -476,6 +579,22 @@ class SessionRow(QFrame):
             _t("Save a smooth copy of {title}").format(title=snap.title)
         )
         self.let_go_button.setAccessibleName(_t("Let go of {title}").format(title=snap.title))
+        self.log_button.setAccessibleName(_t("Copy the log for {title}").format(title=snap.title))
+        hdr10 = snap.source is not None and snap.source.hdr_class is HdrClass.HDR10
+        skipped = snap.bypass is BypassReason.HDR_SKIP
+        self.hdr_button.setVisible(
+            hdr10 and snap.health is not Health.CONNECTION_LOST and (skipped or snap.bypass is None)
+        )
+        if skipped:
+            self.hdr_button.setText(_t("Smooth HDR"))
+            self.hdr_button.setToolTip(
+                _t("Experimental: smooth HDR10 videos too. Applies to every HDR10 video.")
+            )
+            self.hdr_button.setAccessibleName(_t("Smooth HDR videos (experimental)"))
+        else:
+            self.hdr_button.setText(_t("Play HDR as is"))
+            self.hdr_button.setToolTip(_t("Stop smoothing HDR10 videos."))
+            self.hdr_button.setAccessibleName(_t("Play HDR videos without smoothing"))
         self.let_go_button.setAccessibleDescription(
             _t("mpv keeps playing; ButterEye stops managing it.")
         )
@@ -538,6 +657,8 @@ class SimpleWindow(QMainWindow):
         self._target_key = DEFAULT_TARGET
         self._upscaling = "standard"  # general.upscaling (§15.2)
         self._deband = False  # general.deband (§15.2)
+        self._hdr: Literal["skip", "passthrough"] = "skip"  # simple profile hdr (F7)
+        self._full_size = False  # general.full_size: never smaller to keep up
         self._jobs: dict[JobId, RenderJobState] = {}
         self._job_rows: dict[JobId, JobRow] = {}
         self._convert_visible = False
@@ -583,10 +704,12 @@ class SimpleWindow(QMainWindow):
         # first when Now playing or Saving copies rows appear.
         body = QWidget(central)
         body.setObjectName("simpleBody")
+        self._body = body
+        body.installEventFilter(self)
         outer.addWidget(body, 1)
         lay = QVBoxLayout(body)
-        lay.setContentsMargins(unit * 3 // 2, unit * 3 // 2, unit * 3 // 2, unit)
-        lay.setSpacing(unit)
+        lay.setContentsMargins(unit, unit * 3 // 4, unit, unit // 2)
+        lay.setSpacing(unit * 2 // 3)
 
         # header
         head = QHBoxLayout()
@@ -598,13 +721,13 @@ class SimpleWindow(QMainWindow):
         head.addWidget(self.logo, 0, Qt.AlignmentFlag.AlignVCenter)
         names = QVBoxLayout()
         names.setSpacing(0)
-        self.app_title = a11y.heading(QLabel(APP_NAME, body), factor=1.8)
+        self.app_title = Wordmark(APP_NAME, body, factor=1.6)
         self.app_title.setObjectName("appTitle")
-        self.app_title.setTextFormat(Qt.TextFormat.PlainText)
         self.tagline = QLabel(self.tr("Smoother motion for the videos you play in mpv."), body)
         self.tagline.setObjectName("tagline")
         self.tagline.setTextFormat(Qt.TextFormat.PlainText)
         self.tagline.setWordWrap(True)
+        theme.secondary(self.tagline)
         names.addWidget(self.app_title)
         names.addWidget(self.tagline)
         head.addLayout(names, 1)
@@ -633,7 +756,7 @@ class SimpleWindow(QMainWindow):
         zones.setSpacing(unit)
         self.drop = self._zone(
             body,
-            self.tr("Drop a video here to play it smooth"),
+            self.tr("Drop a video to play smooth"),
             "dropZone",
             chooser,
         )
@@ -649,7 +772,7 @@ class SimpleWindow(QMainWindow):
 
         self.convert_drop = self._zone(
             body,
-            self.tr("Drop a video here to save a smooth copy"),
+            self.tr("Drop a video to save a copy"),
             "convertZone",
             lambda parent: self._chooser(parent),
         )
@@ -671,8 +794,10 @@ class SimpleWindow(QMainWindow):
         # settings
         grid = QGridLayout()
         grid.setHorizontalSpacing(unit)
-        grid.setVerticalSpacing(unit * 3 // 4)
+        grid.setVerticalSpacing(unit // 2)
+        # two settings per row, so every choice shows its whole text
         grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
         self.smooth_switch = Switch(self.tr("Smooth motion"), body)
         self.smooth_switch.setObjectName("smoothSwitch")
         self.smooth_switch.setChecked(_bool(self.settings.value(SMOOTH_KEY), True))
@@ -690,8 +815,8 @@ class SimpleWindow(QMainWindow):
             self.target_combo,
             description=self.tr("How many frames per second smoothing aims for."),
         )
-        grid.addWidget(tlabel, 1, 0)
-        grid.addWidget(self.target_combo, 1, 1)
+        grid.addWidget(tlabel, 0, 2)
+        grid.addWidget(self.target_combo, 0, 3)
         self.target_combo.currentIndexChanged.connect(lambda _i: self._on_choice_changed())
 
         self.smooth_combo = QComboBox(body)
@@ -702,8 +827,8 @@ class SimpleWindow(QMainWindow):
             self.smooth_combo,
             description=self.tr("Auto picks GPU smoothing when your GPU is fast enough."),
         )
-        grid.addWidget(slabel, 2, 0)
-        grid.addWidget(self.smooth_combo, 2, 1)
+        grid.addWidget(slabel, 1, 0)
+        grid.addWidget(self.smooth_combo, 1, 1)
         self.smooth_combo.currentIndexChanged.connect(lambda _i: self._on_choice_changed())
 
         self.picture_combo = QComboBox(body)
@@ -717,22 +842,44 @@ class SimpleWindow(QMainWindow):
                 "less banding smooths steps in gradients."
             ),
         )
-        grid.addWidget(plabel, 3, 0)
-        grid.addWidget(self.picture_combo, 3, 1)
+        grid.addWidget(plabel, 1, 2)
+        grid.addWidget(self.picture_combo, 1, 3)
         self.picture_combo.currentIndexChanged.connect(lambda _i: self._on_choice_changed())
+        self.resolution_combo = QComboBox(body)
+        self.resolution_combo.setObjectName("resolutionCombo")
+        self._fill_resolution()
+        rlabel, _ = a11y.labelled(
+            self.tr("&Resolution"),
+            self.resolution_combo,
+            description=self.tr(
+                "Lower if needed smooths a smaller picture when this computer can't keep "
+                "up; Always full size never does, even if some frames drop."
+            ),
+        )
+        grid.addWidget(rlabel, 2, 0)
+        grid.addWidget(self.resolution_combo, 2, 1)
+        self.resolution_combo.currentIndexChanged.connect(lambda _i: self._on_choice_changed())
+        for combo in (
+            self.target_combo,
+            self.smooth_combo,
+            self.picture_combo,
+            self.resolution_combo,
+        ):
+            # as wide as the longest choice: a cut-off choice is unreadable
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         lay.addLayout(grid)
 
         # now playing
         self.playing = QWidget(body)
         self.playing.setObjectName("nowPlaying")
         pl2 = QVBoxLayout(self.playing)
-        pl2.setContentsMargins(0, unit // 2, 0, 0)
-        pl2.setSpacing(unit // 2)
-        self.playing_heading = a11y.heading(QLabel(self.tr("Now playing"), self.playing))
+        pl2.setContentsMargins(0, 0, 0, 0)
+        pl2.setSpacing(unit // 3)
+        self.playing_heading = theme.kicker(QLabel(self.tr("Now playing"), self.playing))
         self.playing_heading.setTextFormat(Qt.TextFormat.PlainText)
         pl2.addWidget(self.playing_heading)
         self.rows_box = QVBoxLayout()
-        self.rows_box.setSpacing(unit // 2)
+        self.rows_box.setSpacing(unit // 3)
         pl2.addLayout(self.rows_box)
         self.playing.hide()
         lay.addWidget(self.playing)
@@ -741,16 +888,17 @@ class SimpleWindow(QMainWindow):
         self.copies = QWidget(body)
         self.copies.setObjectName("savingCopies")
         cl = QVBoxLayout(self.copies)
-        cl.setContentsMargins(0, unit // 2, 0, 0)
-        cl.setSpacing(unit // 2)
-        self.copies_heading = a11y.heading(QLabel(self.tr("Saving copies"), self.copies))
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(unit // 3)
+        self.copies_heading = theme.kicker(QLabel(self.tr("Saving copies"), self.copies))
         self.copies_heading.setTextFormat(Qt.TextFormat.PlainText)
         cl.addWidget(self.copies_heading)
         self.jobs_box = QVBoxLayout()
-        self.jobs_box.setSpacing(unit // 2)
+        self.jobs_box.setSpacing(unit // 3)
         cl.addLayout(self.jobs_box)
         self.copies.hide()
         lay.addWidget(self.copies)
+        lay.addStretch(1)  # extra height (a taller window) stays at the bottom
 
         # bottom status line
         line = QFrame(central)
@@ -760,7 +908,7 @@ class SimpleWindow(QMainWindow):
         bottom = QWidget(central)
         bottom.setObjectName("statusLine")
         bl = QHBoxLayout(bottom)
-        bl.setContentsMargins(unit * 3 // 2, unit // 2, unit, unit // 2)
+        bl.setContentsMargins(unit, unit // 4, unit // 2, unit // 4)
         self.status_badge = StatusBadge("busy", "", bottom)
         self.status_badge.setObjectName("statusText")
         bl.addWidget(self.status_badge, 1)
@@ -781,6 +929,7 @@ class SimpleWindow(QMainWindow):
         self.setTabOrder(self.smooth_switch, self.target_combo)
         self.setTabOrder(self.target_combo, self.smooth_combo)
         self.setTabOrder(self.smooth_combo, self.picture_combo)
+        self.setTabOrder(self.picture_combo, self.resolution_combo)
 
     def _zone(self, parent: QWidget, text: str, name: str, chooser: FileChooser | None) -> DropZone:
         unit = self.fontMetrics().height()
@@ -789,21 +938,18 @@ class SimpleWindow(QMainWindow):
         zone.set_filled(True)
         zone.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # its button is the keyboard path
         zone.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        zone.setMinimumHeight(unit * 6)
-        big = QFont(zone.label.font())
-        if big.pointSizeF() > 0:
-            big.setPointSizeF(big.pointSizeF() * 1.15)
-        zone.label.setFont(big)
+        zone.setMinimumHeight(unit * 3)
+        zone.setMaximumHeight(unit * 7)
         zl = zone.layout()
         assert isinstance(zl, QVBoxLayout)
-        zl.setContentsMargins(unit, unit, unit, unit)
-        zl.setSpacing(unit * 3 // 4)
+        zl.setContentsMargins(unit * 3 // 4, unit // 2, unit * 3 // 4, unit // 2)
+        zl.setSpacing(unit // 2)
         zl.insertStretch(0, 1)
         return zone
 
     @staticmethod
     def _zone_button(zone: DropZone, button: QPushButton, unit: int) -> None:
-        button.setMinimumHeight(round(unit * 2.2))
+        button.setMinimumHeight(round(unit * 1.9))
         row = QHBoxLayout()
         row.addStretch(1)
         row.addWidget(button)
@@ -814,7 +960,7 @@ class SimpleWindow(QMainWindow):
         zl.addStretch(1)
 
     def _set_logo(self) -> None:
-        size = round(self.fontMetrics().height() * 3.2)
+        size = round(self.fontMetrics().height() * 2.4)
         icon = QIcon(str(APP_ICON))
         self.logo.setPixmap(icon.pixmap(QSize(size, size), self.devicePixelRatioF()))
         self.logo.setMinimumSize(QSize(size, size))
@@ -902,6 +1048,22 @@ class SimpleWindow(QMainWindow):
         finally:
             self._updating = False
 
+    def _fill_resolution(self) -> None:
+        combo = self.resolution_combo
+        self._updating = True
+        try:
+            combo.clear()
+            combo.addItem(self.tr("Lower if needed"), "auto")
+            combo.addItem(self.tr("Always full size"), "full")
+            combo.setItemData(
+                1,
+                self.tr("Smooth at the video's own size even if this computer may drop frames."),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+            combo.setCurrentIndex(1 if self._full_size else 0)
+        finally:
+            self._updating = False
+
     def _fill_picture(self) -> None:
         combo = self.picture_combo
         self._updating = True
@@ -935,17 +1097,20 @@ class SimpleWindow(QMainWindow):
         return self._target_key
 
     def profile(self) -> Profile:
-        return simple_profile(self.smoothness(), self.target(), trt=self._trt_on)
+        return simple_profile(self.smoothness(), self.target(), trt=self._trt_on, hdr=self._hdr)
 
     def _show_config_choices(self, cfg: Config) -> None:
         self._upscaling = cfg.general.upscaling
         self._deband = cfg.general.deband
         self._fill_picture()
+        self._full_size = cfg.general.full_size
+        self._fill_resolution()
         prof = find_simple(cfg)
         if prof is None:
             return
         self._target_key = target_key(prof.target)
         self._smooth_key = smoothness_key(prof)
+        self._hdr = prof.hdr
         self._fill_targets()
         self._fill_smoothness()
 
@@ -957,6 +1122,7 @@ class SimpleWindow(QMainWindow):
         self._upscaling, self._deband = picture_settings(
             str(self.picture_combo.currentData() or "standard")
         )
+        self._full_size = self.resolution_combo.currentData() == "full"
         self.persist()
 
     def _on_smooth_toggled(self, on: bool) -> None:
@@ -1102,7 +1268,8 @@ class SimpleWindow(QMainWindow):
         )
 
     def _on_trt_history(self, history: tuple[BenchResult, ...]) -> None:
-        if any(m.backend is BackendId.RIFE_TRT for r in history for m in r.measurements):
+        current = current_results(history, self.report)
+        if any(m.backend is BackendId.RIFE_TRT for r in current for m in r.measurements):
             return
         if self._bench_running:
             return
@@ -1208,7 +1375,7 @@ class SimpleWindow(QMainWindow):
 
     def _trt_opted_in(self) -> bool:
         load = self.config_load
-        return load is not None and load.config.general.trt_experimental
+        return load is not None and load.config.general.trt_experimental is True
 
     # silent first run -----------------------------------------------------
     def _setup_after_doctor(self, report: DoctorReport) -> None:
@@ -1285,7 +1452,8 @@ class SimpleWindow(QMainWindow):
         )
 
     def _on_history(self, history: tuple[BenchResult, ...]) -> None:
-        if history or self.bench_started:
+        # measured before on this hardware: never again just because the app opened
+        if current_results(history, self.report) or self.bench_started:
             return
         self.bench_started = True
         self._bench_running = True
@@ -1365,7 +1533,12 @@ class SimpleWindow(QMainWindow):
         )
         cfg = dataclasses.replace(
             cfg,
-            general=dataclasses.replace(cfg.general, upscaling=upscaling, deband=self._deband),
+            general=dataclasses.replace(
+                cfg.general,
+                upscaling=upscaling,
+                deband=self._deband,
+                full_size=self._full_size,
+            ),
         )
         rev = load.revision
         self.bridge.call(
@@ -1426,6 +1599,20 @@ class SimpleWindow(QMainWindow):
             ok=self._upsert,
             err=self._live_failed,
         )
+
+    def toggle_hdr(self, sid: SessionId) -> None:
+        """Smooth HDR10 videos (experimental, F7), or play them as is again; saved
+        in the simple profile, so it applies to every HDR10 video."""
+        snap = self._sessions.get(sid)
+        on = snap is not None and snap.bypass is BypassReason.HDR_SKIP
+        self._hdr = "passthrough" if on else "skip"
+        self.set_status(
+            "info",
+            self.tr("HDR videos will be smoothed (experimental).")
+            if on
+            else self.tr("HDR videos will play as they are."),
+        )
+        self.persist()
 
     def smooth_anyway(self, sid: SessionId) -> None:
         """Smooth a "too demanding" video regardless of the speed test."""
@@ -1561,9 +1748,11 @@ class SimpleWindow(QMainWindow):
             row.cancel_button.clicked.connect(lambda: self.cancel_job(jid))
             row.remove_button.clicked.connect(lambda: self.forget_job(jid))
             row.show_button.clicked.connect(lambda: self.show_job(jid))
+            row.log_button.clicked.connect(lambda: self.copy_job_log(jid))
             self._job_rows[job.id] = row
             self.jobs_box.addWidget(row)
             self.copies.show()
+            self._fit_height()
         else:
             row.update_job(job)
         if job.state is OpState.SUCCEEDED:
@@ -1577,6 +1766,36 @@ class SimpleWindow(QMainWindow):
     @property
     def job_rows(self) -> dict[JobId, JobRow]:
         return self._job_rows
+
+    # ------------------------------------------------------------------ logs
+    def copy_session_log(self, sid: SessionId) -> None:
+        snap = self._sessions.get(sid)
+        name = snap.title if snap is not None else str(sid)
+        self.bridge.call(
+            lambda core: core.session_log(sid),
+            owner=self,
+            ok=lambda text: self._log_copied(name, text),
+            err=lambda exc: self._log_not_copied(name, exc),
+        )
+
+    def copy_job_log(self, job: JobId) -> None:
+        state = self._jobs.get(job)
+        name = state.spec.output.name if state is not None else str(job)
+        self.bridge.call(
+            lambda core: core.job_log(job),
+            owner=self,
+            ok=lambda text: self._log_copied(name, text),
+            err=lambda exc: self._log_not_copied(name, exc),
+        )
+
+    def _log_copied(self, name: str, text: str) -> None:
+        clip = QGuiApplication.clipboard()
+        if clip is not None:
+            clip.setText(text)
+        self.set_status("ok", self.tr("Log for {name} copied.").format(name=name))
+
+    def _log_not_copied(self, name: str, exc: BaseException) -> None:
+        self.set_status("degraded", self.tr("Couldn't copy the log for {name}.").format(name=name))
 
     def cancel_job(self, job: JobId) -> None:
         self.bridge.call(
@@ -1633,9 +1852,12 @@ class SimpleWindow(QMainWindow):
             row.let_go_button.clicked.connect(lambda: self.let_go(sid))
             row.force_button.clicked.connect(lambda: self.smooth_anyway(sid))
             row.copy_button.clicked.connect(lambda: self.save_copy(sid))
+            row.log_button.clicked.connect(lambda: self.copy_session_log(sid))
+            row.hdr_button.clicked.connect(lambda: self.toggle_hdr(sid))
             self._rows[snap.sid] = row
             self.rows_box.addWidget(row)
             self.playing.show()
+            self._fit_height()
             self.setTabOrder(self.smooth_combo, row.pause_button)
         row.update_snapshot(snap, self._notes.get(snap.sid))
         row.copy_button.setVisible(self._convert_visible and snap.source is not None)
@@ -1792,16 +2014,36 @@ class SimpleWindow(QMainWindow):
         return ok
 
     def _restore_size(self) -> None:
+        """The saved width; the height always fits the content (``_fit_height``)."""
         screen = self.screen() or QGuiApplication.primaryScreen()
         avail = screen.availableGeometry().size() if screen is not None else DEFAULT_SIZE
         fit = QSize(int(avail.width() * SCREEN_FRACTION), int(avail.height() * SCREEN_FRACTION))
-        self.setMinimumSize(MINIMUM_SIZE.boundedTo(fit))
+        layout_min = QSize(self.minimumSizeHint().width(), MINIMUM_SIZE.height())
+        self.setMinimumWidth(min(MINIMUM_SIZE.expandedTo(layout_min).width(), fit.width()))
         size = self.settings.value("simple/size")
-        if isinstance(size, QSize) and size.isValid():
-            target = size.boundedTo(avail)
-        else:
-            target = DEFAULT_SIZE.boundedTo(fit)
-        self.resize(target.expandedTo(self.minimumSize()))
+        width = size.width() if isinstance(size, QSize) and size.isValid() else DEFAULT_SIZE.width()
+        self.resize(max(min(width, avail.width()), self.minimumWidth()), self.height())
+        self._fit_now()
+
+    def _fit_now(self) -> None:
+        """Height = the content's preferred height (up to the screen's share), no
+        more and no less: no empty space, nothing squashed. Only the width can be
+        changed by hand. Rows are never in a scroll area."""
+        need = max(self.minimumSizeHint().height(), self.sizeHint().height())
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        cap = int(screen.availableGeometry().height() * SCREEN_FRACTION) if screen else need
+        height = min(need, cap)
+        if (self.minimumHeight(), self.maximumHeight()) != (height, height):
+            self.setFixedHeight(height)
+
+    def _fit_height(self) -> None:
+        QTimer.singleShot(0, self._fit_now)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        # the body's layout changed (rows, problem line, notices): refit the height
+        if event.type() == QEvent.Type.LayoutRequest and watched is self._body:
+            self._fit_height()
+        return super().eventFilter(watched, event)
 
     def _save_size(self) -> None:
         self.settings.setValue("simple/size", self.size())
@@ -1834,6 +2076,7 @@ __all__ = [
     "find_simple",
     "gpu_smoothing_available",
     "is_simple",
+    "current_results",
     "row_view",
     "short_rate",
     "simple_config",

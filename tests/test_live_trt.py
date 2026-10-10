@@ -254,3 +254,50 @@ def test_pinned_tensorrt_that_cannot_keep_up_falls_back_to_ncnn_first() -> None:
     pick = decide.pick_engine(opts, src, None, decide.TargetKind.X2, auto=False)
     assert pick.backend is BackendId.RIFE_NCNN
     assert pick.notice == decide.gpu_fallback_notice(BackendId.RIFE_TRT, BackendId.RIFE_NCNN)
+
+
+@pytest.mark.parametrize(
+    ("trt_cap", "flow", "smaller"),
+    [
+        (50.0, 1.0, False),  # full flow keeps up at 4K 2x: never half
+        (46.0, 0.5, False),  # 46 x 1.08 = 49.7 >= 48: half flow at full size (M0(q))
+        (40.0, 1.0, True),  # even half flow can't: a smaller picture, as before
+    ],
+)
+async def test_half_flow_before_a_smaller_picture(
+    tmp_path: Path,
+    bench_history: list[BenchResult],
+    no_xid: Any,
+    fake_trt: TrtFake,
+    monkeypatch: pytest.MonkeyPatch,
+    trt_cap: float,
+    flow: float,
+    smaller: bool,
+) -> None:
+    from buttereye.core.mpvctl import session as live
+
+    bench_history.append(_result(_trt_m(260.0), _ncnn_m(65.0)))
+
+    async def caps(self: Any, backend: BackendId, model: Any, f: Any, cfg: Any) -> float:
+        full = {BackendId.RIFE_TRT: trt_cap, BackendId.RIFE_NCNN: 14.0}.get(backend, 30.0)
+        return full * (3840 * 2160) / (f.width * f.height)  # smaller sizes run faster
+
+    monkeypatch.setattr(live._Session, "sustainable_fps", caps)
+    ctx = FakeCtx(_paths(tmp_path), _opted(_simple(BackendId.RIFE_TRT)))
+    s = _session(ctx, tmp_path)
+    _load(s, fps=24.0, w=3840, h=2160)
+    await s.apply(raise_on_fail=False)
+    await _settle(ctx)
+    assert fake_trt.builds, "an engine build was started"
+    key = fake_trt.builds[-1]
+    assert key.flow_scale == flow
+    assert ((key.width, key.height) != (3840, 2160)) is smaller
+    if flow != 1.0:
+        assert "-flow0.5-" in trt.engine_dir(ctx.paths, key).name
+    # once the engine is built, the running filter reports what it does
+    await s.apply(raise_on_fail=False)
+    await _settle(ctx)
+    snap = s.snapshot()
+    if snap.backend is BackendId.RIFE_TRT:
+        assert snap.flow_scale == flow
+        assert (snap.smooth_size is not None) is smaller

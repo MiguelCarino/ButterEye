@@ -8,7 +8,7 @@
 1. A blocking report selects nothing.
 2. No non-CPU Vulkan device -> only MVTools ("CPU-only: MVTools interpolation,
    RIFE unavailable" + the reason). RIFE is never returned in that case.
-3. Rank: TensorRT (only with ``trt_experimental`` and every TRT check passing),
+3. Rank: TensorRT (unless ``trt_experimental`` is false, and every TRT check passing),
    RIFE-ncnn, MVTools. Without the opt-in TensorRT is never ranked.
 4. A benchmark recommendation (no GPU faults, real time) wins; otherwise the
    §5.3 conservative defaults: RIFE v4.26 on a discrete GPU with >= 16 GiB,
@@ -266,7 +266,8 @@ def _from_bench(
 def select(report: DoctorReport, cfg: Config, bench: tuple[BenchResult, ...]) -> Selection:
     statuses = backends(report, cfg)
     avail = {s.id: s for s in statuses if s.available}
-    order = ([BackendId.RIFE_TRT] if cfg.general.trt_experimental else []) + [
+    trt_on = cfg.general.trt_experimental is not False  # unset = on when set up (§5.2)
+    order = ([BackendId.RIFE_TRT] if trt_on else []) + [
         BackendId.RIFE_NCNN,
         BackendId.MVTOOLS,
     ]

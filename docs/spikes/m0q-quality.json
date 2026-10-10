@@ -1,0 +1,98 @@
+[
+ {
+  "clip": "4K live-action dance (SDR)",
+  "t": 30.0,
+  "size": "3840x2160",
+  "blend": 23.02,
+  "full": 27.41,
+  "half": 26.89,
+  "half_vs_full": 33.7,
+  "half_px_over_10pct": 1.156,
+  "smaller_1080": 27.34,
+  "smaller_720": 27.18
+ },
+ {
+  "clip": "4K live-action dance (SDR)",
+  "t": 90.0,
+  "size": "3840x2160",
+  "blend": 22.49,
+  "full": 27.82,
+  "half": 27.47,
+  "half_vs_full": 34.45,
+  "half_px_over_10pct": 1.082,
+  "smaller_1080": 27.89,
+  "smaller_720": 27.82
+ },
+ {
+  "clip": "4K live-action dance (SDR)",
+  "t": 150.0,
+  "size": "3840x2160",
+  "blend": 20.45,
+  "full": 25.2,
+  "half": 24.88,
+  "half_vs_full": 29.85,
+  "half_px_over_10pct": 2.872,
+  "smaller_1080": 25.38,
+  "smaller_720": 25.01
+ },
+ {
+  "clip": "4K live-action dance (SDR)",
+  "t": 200.0,
+  "size": "3840x2160",
+  "blend": 20.26,
+  "full": 20.99,
+  "half": 21.1,
+  "half_vs_full": 29.37,
+  "half_px_over_10pct": 3.116,
+  "smaller_1080": 21.03,
+  "smaller_720": 20.99
+ },
+ {
+  "clip": "3840x1616 anime film (HDR10)",
+  "t": 600.0,
+  "size": "3840x1616",
+  "blend": 42.37,
+  "full": 51.15,
+  "half": 50.51,
+  "half_vs_full": 53.78,
+  "half_px_over_10pct": 0.0,
+  "smaller_1080": 43.71,
+  "smaller_720": 39.03
+ },
+ {
+  "clip": "3840x1616 anime film (HDR10)",
+  "t": 1800.0,
+  "size": "3840x1616",
+  "blend": 38.54,
+  "full": 34.88,
+  "half": 34.54,
+  "half_vs_full": 43.87,
+  "half_px_over_10pct": 0.08,
+  "smaller_1080": 34.78,
+  "smaller_720": 34.54
+ },
+ {
+  "clip": "3840x1616 anime film (HDR10)",
+  "t": 3000.0,
+  "size": "3840x1616",
+  "blend": 37.45,
+  "full": 31.66,
+  "half": 31.7,
+  "half_vs_full": 52.66,
+  "half_px_over_10pct": 0.0,
+  "smaller_1080": 31.65,
+  "smaller_720": 31.61
+ },
+ {
+  "clip": "3840x1616 anime film (HDR10)",
+  "t": 4500.0,
+  "size": "3840x1616",
+  "blend": 18.28,
+  "full": 17.83,
+  "half": 17.7,
+  "half_vs_full": 31.23,
+  "half_px_over_10pct": 1.34,
+  "smaller_1080": 17.6,
+  "smaller_720": 17.57
+ }
+]

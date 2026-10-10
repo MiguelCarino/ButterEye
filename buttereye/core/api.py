@@ -23,9 +23,11 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
+from buttereye import __version__ as _VERSION
 from buttereye.core import capabilities as _caps
 from buttereye.core import errors as _errors_mod
 from buttereye.core import events as _events_mod
+from buttereye.core import filelog as _filelog
 from buttereye.core import ops as _ops_mod
 from buttereye.core import types as _types_mod
 from buttereye.core.capabilities import ProviderRef, unavailable_text
@@ -285,6 +287,13 @@ class ButterEye:
         self._provider_state: dict[str, object] = {}
         self._closing = False
         self._shutdown: ShutdownReport | None = None
+        # per-file logs the user can copy (session and job lines, in memory)
+        self._file_logs = _filelog.FileLogBook()
+        core_logger = logging.getLogger("buttereye.core")
+        core_logger.addHandler(self._file_logs)
+        if core_logger.getEffectiveLevel() > logging.INFO:
+            # the book needs INFO lines even when nobody configured logging (the CLI)
+            core_logger.setLevel(logging.INFO)
 
     # ---- lifecycle ----
     @classmethod
@@ -372,6 +381,7 @@ class ButterEye:
 
         self._bus.close()
         self._shutdown = ShutdownReport(detached, failed, jobs_cancelled)
+        logging.getLogger("buttereye.core").removeHandler(self._file_logs)
         return self._shutdown
 
     async def _sessions_as_failed(self) -> tuple[tuple[SessionId, ErrorCode], ...]:
@@ -490,7 +500,8 @@ class ButterEye:
 
     # ---- doctor / setup / hardware (F0, F1, F9, F13) ----
     def doctor(self, *, trt: bool | None = None) -> Operation[DoctorReport]:
-        """``trt=None`` follows the config opt-in."""
+        """``trt=None`` follows the config: on, off, or (unset) checked when TensorRT
+        is set up on this machine."""
         run = self._need(Feature.DOCTOR, DOCTOR)
         cfg = self._current_config()
         use_trt = cfg.general.trt_experimental if trt is None else trt
@@ -628,6 +639,37 @@ class ButterEye:
         fn = self._need(Feature.LIVE, LIVE_SESSIONS)
         return tuple(await fn(self._ctx))
 
+    # ---- per-file logs ----
+    async def session_log(self, sid: SessionId) -> str:
+        """What ButterEye did with one playing video, plus the end of mpv's log for
+        it, as text for the clipboard (also after the session ended)."""
+        snap: SessionSnapshot | None = None
+        if _caps.implemented((LIVE_SESSIONS,)):
+            try:
+                snap = next((x for x in await self.sessions() if x.sid == sid), None)
+            except ButterEyeError:
+                snap = None
+        facts: list[tuple[str, str]] = [("Session", str(sid))]
+        if snap is not None:
+            bypass = f" ({snap.bypass.value})" if snap.bypass else ""
+            code = f" {snap.health_code.code}" if snap.health_code else ""
+            facts += [
+                ("File", snap.source.path if snap.source is not None else snap.title),
+                ("Smoothing", snap.filter.value + bypass),
+                ("Engine", snap.backend.value if snap.backend is not None else ""),
+                ("Health", snap.health.value + code),
+            ]
+        path = self._paths.logs_dir / f"mpv-{sid}.log"
+        return _filelog.compose(
+            version=_VERSION,
+            title=snap.title if snap is not None else str(sid),
+            facts=facts,
+            own=self._file_logs.lines(_filelog.session_key(sid)),
+            tool_name="mpv",
+            tool_path=path,
+            tool=_filelog.tail(path),
+        )
+
     # ---- bench (F14)                                                 Feature.BENCH ----
     def bench(self, req: BenchRequest) -> Operation[BenchResult]:
         fn = self._need(Feature.BENCH, BENCH_RUN)
@@ -668,6 +710,36 @@ class ButterEye:
     async def render_cancel(self, job: JobId) -> None:
         fn = self._need(Feature.RENDER, RENDER_CANCEL)
         await fn(self._ctx, job)
+
+    async def job_log(self, job: JobId) -> str:
+        """What happened to one conversion, plus the end of vspipe's and ffmpeg's
+        output for it, as text for the clipboard."""
+        state: RenderJobState | None = None
+        if _caps.implemented((RENDER_JOBS,)):
+            try:
+                state = next((j for j in await self.render_jobs() if j.id == job), None)
+            except ButterEyeError:
+                state = None
+        facts: list[tuple[str, str]] = [("Job", str(job))]
+        if state is not None:
+            err = state.error
+            facts += [
+                ("Source", os.fspath(state.spec.source)),
+                ("Output", os.fspath(state.spec.output)),
+                ("Encoder", state.spec.encoder),
+                ("State", state.state.value + (f" ({state.phase.value})" if state.phase else "")),
+                ("Error", f"{err.code.code}: {render(err.cause)}" if err is not None else ""),
+            ]  # fmt: skip
+        path = self._paths.logs_dir / f"render-{job}.log"
+        return _filelog.compose(
+            version=_VERSION,
+            title=state.spec.output.name if state is not None else str(job),
+            facts=facts,
+            own=self._file_logs.lines(_filelog.job_key(job)),
+            tool_name="vspipe and ffmpeg",
+            tool_path=path,
+            tool=_filelog.tail(path),
+        )
 
     async def render_forget(self, job: JobId) -> None:
         """Finished/failed/cancelled jobs only."""

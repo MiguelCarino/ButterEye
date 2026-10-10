@@ -438,9 +438,10 @@ class GeneralSettings:
     backend_override: BackendId | None = None
     gpu: str | None = None  # Vulkan device UUID
     language: str | None = None
-    trt_experimental: bool = False  # §5.2 opt-in
+    trt_experimental: bool | None = None  # §5.2: None = use TensorRT when set up
     upscaling: Literal["standard", "sharper"] = "standard"  # SCOPE §15.2
     deband: bool = False  # SCOPE §15.2
+    full_size: bool = False  # never smaller to keep up (GUI.md §12)
 
 
 @dataclass(frozen=True, slots=True)
@@ -672,6 +673,12 @@ class SessionSnapshot:
     notice: Msg | None  # e.g. "TRT engine building; using RIFE-ncnn"
     restore_pending: tuple[str, ...]  # attach settings to restore (§4.3)
     ended: bool
+    #: what the running filter does (GUI rows say it): the size RIFE/MVTools work
+    #: at (None = the video's own), RIFE TensorRT's flow resolution (M0(q)) and
+    #: MVTools' block mode (M0(p))
+    smooth_size: tuple[int, int] | None = None
+    flow_scale: float = 1.0
+    mv_block: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1175,6 +1182,7 @@ class ButterEye:
     async def step_down(self, sid: SessionId) -> SessionSnapshot: ...       # §5.3 step 5
     async def remove_orphan_filter(self, cid: CandidateId) -> None: ...
     async def sessions(self) -> tuple[SessionSnapshot, ...]: ...
+    async def session_log(self, sid: SessionId) -> str: ...              # per-file log to copy (§12.1.1)
 
     # bench (F14)                                                                 Feature.BENCH
     def bench(self, req: BenchRequest) -> Operation[BenchResult]: ...
@@ -1187,6 +1195,7 @@ class ButterEye:
     async def render_jobs(self) -> tuple[RenderJobState, ...]: ...
     async def render_move(self, job: JobId, delta: int) -> None: ...        # queued jobs only
     async def render_cancel(self, job: JobId) -> None: ...
+    async def job_log(self, job: JobId) -> str: ...                         # per-file log to copy (§12.1.1)
     async def render_forget(self, job: JobId) -> None: ...                  # finished/failed/cancelled only
     async def stale_jobs(self) -> tuple[StaleJob, ...]: ...
     async def stale_job_stop(self, job: JobId) -> None: ...                 # SIGTERM pgid, delete partials
@@ -1337,7 +1346,7 @@ Rules:
 - **Every page inside a `QScrollArea`** (font scale scrolls, never clips).
 - **Strings.** GUI strings via `self.tr()`. Core `Msg` via `api.render()`. Behaviour keys on `ErrorCode`/enums, never on text.
 - **Accessible names.** Every input built through `a11y.labelled(label_text, widget)` (sets buddy + `setAccessibleName`). Icon-only buttons are banned. Status changes that matter are announced with `QAccessibleAnnouncementEvent` (available in 6.11): session state transitions, op finished/failed, health changes. Counters are never announced.
-- **Theme.** No colour literals, no `setStyleSheet` with colours, no `setPixelSize`, no `setFixed*` with constants. Headings `pointSizeF() * 1.25`. Custom painting from `palette()`, repaint on `PaletteChange` and `QStyleHints.colorSchemeChanged`. Hyprland has no platform theme → Fusion; dark mode follows the portal colour scheme. `theme.py` installs a `QProxyStyle` that draws a 2 px `palette.highlight` focus frame where the style draws none.
+- **Theme.** (Superseded in part 2026-10-10 by the Carino branding, §12.3: the brand's colours are literals in `theme.CARINO` only, the palette is dark whatever the desktop scheme, and the rest of this rule still holds.) No colour literals outside `theme.CARINO`, no `setStyleSheet` with colours, no `setPixelSize`, no `setFixed*` with constants. Headings `pointSizeF() * 1.25`. Custom painting from `palette()`, repaint on `PaletteChange` and `QStyleHints.colorSchemeChanged`. Hyprland has no platform theme → Fusion; dark mode follows the portal colour scheme. `theme.py` installs a `QProxyStyle` that draws a 2 px `palette.highlight` focus frame where the style draws none.
 - **Status badges.** Distinct glyph per state (check, triangle, octagon, info circle, hourglass, pause) from `QIcon.fromTheme` with bundled SVG fallback, plus the word. Never colour alone.
 - **Wayland.** `setDesktopFileName("io.github.buttereye.ButterEye")`. No window positioning (size saved only), no global shortcuts (F19 deferred), no tray, no `QSystemTrayIcon` import. A session's rate comes from IPC `display-fps`, never `QScreen`. Portal paths under `/run/user/*/doc/` are accepted and flagged in details.
 - **Files.** `QFileDialog` (portal). Drops accept `QUrl.isLocalFile()` only; others → "Only local files can be opened. Streaming isn't supported." (BE-3007).
@@ -1897,37 +1906,65 @@ Field report (RTX 4090, 3440×1440 @ 180 Hz, Hyprland): live playback kept stall
 Owner feedback: the multi-page window "looks like a clone of existing proprietary tools; it should be its own thing, aiming to be simpler." The owner chose (1) one small window: drop or open a video and it plays smooth, one **Smooth motion** switch and one **Smoothness** choice, everything else silent, a **Details** area for system information and licences; (2) the user picks the **Target**: "Double (2×)", "60 fps" or "Your display (N Hz)".
 
 ```
-┌ ButterEye ───────────────────────┐
-│ (icon) ButterEye                  │
-│        Smoother motion for the …  │
-│ [problem line, only when needed]  │
-│ ╭──────────────╮ ╭──────────────╮ │
-│ │ Drop a video │ │ Drop a video │ │
-│ │ here to play │ │ here to save │ │
-│ │  it smooth   │ │ a smooth copy│ │
-│ │[Open video…] │ │[Convert a v…]│ │
-│ ╰──────────────╯ ╰──────────────╯ │
-│ Smooth motion   (●  ) On          │
-│ Target          ( Double (2×) ▾ ) │
-│ Smoothness      ( Auto (rec.) ▾ ) │
-│ Picture         ( Standard    ▾ ) │
-│ Now playing                       │
-│  movie.mkv               ✓ Smooth │
-│  24 → 48 fps · GPU smoothing      │
-│  [Pause smoothing] [Let go]       │
-├───────────────────────────────────┤
-│ ✓ Ready.                Details ▸ │
-└───────────────────────────────────┘
+┌ ButterEye ───────────────────────────────────────────────────────────┐
+│ (icon) BUTTEREYE   (gold wordmark)                                    │
+│        Smoother motion for the videos you play in mpv.                │
+│ [problem line, only when needed]                                      │
+│ ╭───────────────────────────────╮ ╭─────────────────────────────────╮ │
+│ │  Drop a video to play smooth  │ │   Drop a video to save a copy   │ │
+│ │        [OPEN VIDEO…]          │ │       [CONVERT A VIDEO…]        │ │
+│ ╰───────────────────────────────╯ ╰─────────────────────────────────╯ │
+│ Smooth motion (●  ) On  Target (Double (2×)▾)  Smoothness (Auto    ▾) │
+│ Picture  (Standard   ▾) Resolution (Lower if needed▾)                 │
+│ NOW PLAYING                                                           │
+│ ╭───────────────────────────────────────────────────────────────────╮ │
+│ │ movie.mkv                                               ✓ Smooth  │ │
+│ │ 24 → 48 fps · GPU smoothing                                       │ │
+│ │ [PAUSE] [LET GO] [SAVE COPY…] [SMOOTH HDR]            [COPY LOG]  │ │
+│ ╰───────────────────────────────────────────────────────────────────╯ │
+│ SAVING COPIES                                                         │
+│ ╭───────────────────────────────────────────────────────────────────╮ │
+│ │ movie.smooth.mkv                                     Saving 45 %  │ │
+│ │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │ │
+│ │ [CANCEL]                                              [COPY LOG]  │ │
+│ ╰───────────────────────────────────────────────────────────────────╯ │
+├───────────────────────────────────────────────────────────────────────┤
+│ ✓ Ready.                                                   DETAILS ▸  │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 12.1 Modules
 
-- `gui/simple_window.py` — `SimpleWindow` (default 460×560, minimum 360×420, resizable; size in `QSettings` `simple/size`), `SessionRow`, and pure helpers (`simple_profile`, `simple_config`, `row_view`, `short_rate`, `without_code`, `gpu_smoothing_available`).
+- `gui/simple_window.py` — `SimpleWindow` (default 760 wide; the height always equals the content's preferred height, growing and shrinking as rows come and go, up to 90 % of the screen, so there is never empty space; only the width is resizable and saved in `QSettings` `simple/size`; never narrower than the layout needs; never scrolls; settings two per row, each choice as wide as its longest text), `SessionRow`, and pure helpers (`simple_profile`, `simple_config`, `row_view`, `short_rate`, `without_code`, `gpu_smoothing_available`).
 - `gui/details_dialog.py` — `DetailsDialog`: a modeless `QDialog` with tabs System, Speed test, Storage, About, built from the existing pages with their own `GuiContext` (`go(page_id)` switches tabs; `status`/`announce` go to the dialog's status line). Pages refresh on first show of their tab and receive every core event. The Speed test tab hides "Use recommended" (rules come from the simple profile). Esc and Close close it.
 - `gui/widgets/switch.py` — `Switch(QCheckBox)`: painted track and knob plus the word On/Off (state by position and word, never colour alone); accessible name is the setting, the state is the check box state; 2 px Highlight focus ring.
 - `gui/widgets/primary_button.py` — `PrimaryButton`: Button = Highlight, ButtonText = HighlightedText; re-derived on `QGuiApplication.paletteChanged` (a widget with its own palette gets no palette events).
 - `gui/icons/buttereye.svg` — the app icon (a butter droplet with an eye; AGPL), window icon and header logo.
 - `app.py` — opens `SimpleWindow`. `--classic` (with `BUTTEREYE_DEV=1`, like `--fake`) opens the old `MainWindow`, which stays importable and tested.
+
+### 12.1.0 HDR on a row (2026-10-10, F7)
+
+The row of an HDR10 video (`source.hdr_class` HDR10) shows **Smooth HDR** while it plays unsmoothed (`bypass` HDR_SKIP; accessible name "Smooth HDR videos (experimental)") and **Play HDR as is** while it is smoothed. Either saves the simple profile's `hdr` ("passthrough" / "skip") and re-applies to every playing video; the status line says "HDR videos will be smoothed (experimental)." or "HDR videos will play as they are." A smoothed HDR10 video's notice is "HDR smoothing is experimental." unless a more urgent note applies.
+
+### 12.1.1 Copy log (2026-10-10)
+
+Every Now playing and Saving copies row has **Copy log** (accessible name "Copy the log for {file}"). It puts on the clipboard what ButterEye logged about that file (the core keeps the latest 400 lines per session and per job in memory, `core/filelog.py`, records tagged by `filelog.for_item`) followed by the last 200 lines of that file's own tool log (`mpv-<sid>.log`, or vspipe and ffmpeg's `render-<job>.log`), under a header with the version, file, engine and state. Core API: `session_log(sid)`, `job_log(job)`. The status line says "Log for {file} copied." A row disappears when its mpv closes, and its log button with it.
+
+### 12.1.2 Resolution (2026-10-10)
+
+**Resolution**: "Lower if needed" (default) or "Always full size", stored as `[general] full_size`. With full size on, a video the speed test says can't be smoothed at its own size is smoothed there anyway (uncapped, like Smooth anyway) instead of at a smaller size or in MVTools' block mode; the row says "Smoothing at full size as you chose; this computer may not keep up, so some frames may drop."
+
+### 12.1.4 The speed test runs once per hardware (2026-10-10)
+
+The automatic speed test (`FIRST_BENCH`) runs when no stored result was measured on a GPU that is in the computer now (`current_results`: the result's Vulkan UUID against the doctor report's devices; CPU-only results on a machine without a GPU). The TensorRT measurement runs once when no such result has a TensorRT measurement. Results live in `bench.json` and survive restarts and app updates; a new graphics card has a new UUID and is measured. Engines are cached separately per GPU, driver, TensorRT/vstrt version, model, size and flow scale (§4.6), so they are built once too.
+
+### 12.1.3 What a row says (2026-10-10)
+
+The detail line names what is smoothing the video and how: "24 → 48 fps · RIFE v4.26 on the GPU with TensorRT, motion estimated at half resolution, full size 3840 × 1616, HDR10" (engine and model, MVTools' fast block mode, half-resolution flow, the size it works at, "smoothed at W × H, scaled up" when smaller, HDR10), from the snapshot's `backend`, `model`, `smooth_size`, `flow_scale`, `mv_block` and `source`. When the video isn't smoothed the badge says "Not smoothed" and the reason line starts "Not smoothed:" with the cause and what to change (Target, Smoothness, Always full size, Smooth HDR, Resume, Copy log). A button that can't act for the row (Pause on an unsmoothed video) is hidden, not greyed out.
+
+### 12.3 Carino Systems branding (2026-10-10)
+
+Owner decision: ButterEye follows the Carino Systems visual language (branding.carino.systems) though it is not a Carino product; no Carino navbar, links or marks. `theme.ThemeController(brand=True)` (the default): the Carino palette (dark only, whatever the desktop scheme; `theme.CARINO` holds the tokens), still tuned by `accessible_palette()` so control outlines and drop-zone edges keep >= 3:1 and focus is the 2 px gold frame; Fusion with `FocusFrameStyle` painting rounded buttons (IBM Plex Sans semibold in sentence case, at least 2.1 text lines tall with 0.9 lines of extra side padding, `theme.BUTTON_MIN_LINES`, over WCAG 2.5.8's 24 px; the brand's small uppercase mono buttons were too hard to read in the app; the primary action filled gold) and Carino cards for rows (`CARD_PROPERTY`, decorative #262626 hairline); IBM Plex Sans for text; section headings as gold Plex Mono kickers; the app name as a Red Hat Display Black wordmark in the gold gradient (`widgets/wordmark.py`, still a QLabel reading "ButterEye"). No style sheets. Fonts come from Fedora (`ibm-plex-sans-fonts`, `ibm-plex-mono-fonts`, `redhat-display-fonts`, required by the RPM) and fall back to the system's. `set_brand(False)` restores the scheme-following palette with the butter accent (tests).
 
 ### 12.2 Choices → config
 
@@ -1968,7 +2005,7 @@ The problem line (inline, never modal) shows one sentence and a "Details" button
 
 ### 12.5 Identity and accessibility
 
-- One brand colour: butter gold `theme.BUTTER_HSL` = (45, 204, 140) ≈ #E8B931, applied by `theme.butter_palette()` to Highlight and Accent with the palette's darkest text/background colour as HighlightedText (dark text on gold), then tuned by `accessible_palette()` like every role: in light schemes it settles on a deeper amber (≥ 3:1 against the window for the focus frame, ≥ 4.5:1 under the dark text); in dark schemes it stays bright gold. `ThemeController(app, accent=True)` is the default. It is defined with `QColor.fromHsl` from the named triple — the single sanctioned colour constant in `gui/`.
+- (Before the Carino branding, §12.3, and still used with `set_brand(False)`.) One brand colour: butter gold `theme.BUTTER_HSL` = (45, 204, 140) ≈ #E8B931, applied by `theme.butter_palette()` to Highlight and Accent with the palette's darkest text/background colour as HighlightedText (dark text on gold), then tuned by `accessible_palette()` like every role: in light schemes it settles on a deeper amber (≥ 3:1 against the window for the focus frame, ≥ 4.5:1 under the dark text); in dark schemes it stays bright gold. `ThemeController(app, accent=True)` is the default. It is defined with `QColor.fromHsl` from the named triple — the single sanctioned colour constant in `gui/`.
 - Two rounded drop zones side by side, filled with Base (`DropZone.set_filled`): **play** (left, `dropZone`, plays the file smooth in mpv) and **convert** (right, `convertZone`, opens the Save a smooth copy dialog for the file). Larger heading (1.8×), generous spacing in font-height units, glyph + word statuses everywhere.
 - **No scrolling (owner decision 2026-10-09).** The window has no scroll area: the drop zones shrink (to 6 font heights) to make room for Now playing and Saving copies rows, and the window's minimum size follows its content.
 - Keyboard: Tab order Open video → Convert a video → Smooth motion → Target → Smoothness → row buttons → Details. Ctrl+O opens, F1 opens Details, Ctrl+Q quits (the usual quit dialog when players are live). The drop zones are not Tab stops (their buttons are the keyboard path). Every control has an accessible name; combos and the switch have buddy labels with mnemonics.

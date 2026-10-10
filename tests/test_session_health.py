@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import sys
 import types as pytypes
@@ -333,6 +334,10 @@ def test_bypass_rows() -> None:
     assert facts is not None and facts.fps == NTSC and facts.hdr_class is HdrClass.HDR10
     vp = {"w": 1920, "h": 1080, "pixelformat": "yuv420p", "gamma": "pq"}
     assert decide.bypass_reason(facts, vp, p) is BypassReason.HDR_SKIP  # F7 default
+    opt_in = dataclasses.replace(p, hdr="passthrough")  # F7 opt-in, M0(d) passed for PQ
+    assert decide.bypass_reason(facts, vp, opt_in) is None
+    hlg = dataclasses.replace(facts, hdr_class=HdrClass.HLG)
+    assert decide.bypass_reason(hlg, {**vp, "gamma": "hlg"}, opt_in) is BypassReason.HDR_SKIP
     passthrough = Target(TargetKind.DISPLAY)
     assert passthrough.kind is TargetKind.DISPLAY
     assert decide.no_video({"current-tracks/video": {"image": True}})

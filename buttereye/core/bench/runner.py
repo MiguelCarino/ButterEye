@@ -190,9 +190,9 @@ def discover_candidates(
 
 
 def trt_candidates(ctx: ProviderContext) -> tuple[Candidate, ...]:
-    """TensorRT configurations, when the user opted in and vstrt is set up (§5.2)."""
+    """TensorRT configurations, unless turned off, when vstrt is set up (§5.2)."""
     try:
-        if not ctx.config().general.trt_experimental:
+        if ctx.config().general.trt_experimental is False:  # unset = on when set up
             return ()
     except ButterEyeError:
         return ()

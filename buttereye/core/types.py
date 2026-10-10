@@ -274,12 +274,18 @@ class GeneralSettings:
     backend_override: BackendId | None = None
     gpu: str | None = None  # Vulkan device UUID
     language: str | None = None
-    trt_experimental: bool = False  # §5.2 opt-in
+    #: §5.2: None (unset) = use TensorRT when it is set up (building vstrt with
+    #: contrib/build-vstrt.sh is the opt-in, owner decision 2026-10-10); True = the
+    #: Setup opt-in (also plans its downloads); False = turned off
+    trt_experimental: bool | None = None
     #: display upscaling (§15.2, spike M0(o)): mpv's own scaler, or the bundled
     #: FSRCNNX shader on top of it ("sharper")
     upscaling: Literal["standard", "sharper"] = "standard"
     #: mpv's own debanding (libplacebo, ~0 GPU cost) switched on by ButterEye (§15.2)
     deband: bool = False
+    #: never smooth live at a smaller size to keep up; smooth at the video's own
+    #: size even if frames may drop (the user's choice over the speed test)
+    full_size: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -511,6 +517,12 @@ class SessionSnapshot:
     notice: Msg | None  # e.g. "TRT engine building; using RIFE-ncnn"
     restore_pending: tuple[str, ...]  # attach settings to restore (§4.3)
     ended: bool
+    #: what the running filter does (GUI rows say it): the size RIFE/MVTools work
+    #: at (None = the video's own), RIFE TensorRT's flow resolution (M0(q)) and
+    #: MVTools' block mode (M0(p))
+    smooth_size: tuple[int, int] | None = None
+    flow_scale: float = 1.0
+    mv_block: bool = False
 
 
 @dataclass(frozen=True, slots=True)

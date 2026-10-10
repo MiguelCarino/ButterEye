@@ -92,7 +92,12 @@ def base_config(paths: Paths) -> tuple[Config, str, ConfigLoad]:
 
 
 def _with_trt(cfg: Config, on: bool) -> Config:
-    return dataclasses.replace(cfg, general=dataclasses.replace(cfg.general, trt_experimental=on))
+    """``cfg`` with the TensorRT opt-in when chosen. Not choosing it keeps the
+    setting as it is: unset still means "on once set up", so a first-run setup
+    never turns TensorRT off (§5.2)."""
+    if not on:
+        return cfg
+    return dataclasses.replace(cfg, general=dataclasses.replace(cfg.general, trt_experimental=True))
 
 
 def _problem(f: Finding) -> bool:
@@ -293,13 +298,9 @@ async def apply(
                 M("Update ButterEye, or edit the file by hand."),
             )
         override = None if choices.backend is plan.proposed.backend else choices.backend
+        new = _with_trt(base, choices.trt_experimental)
         new = dataclasses.replace(
-            base,
-            general=dataclasses.replace(
-                base.general,
-                trt_experimental=choices.trt_experimental,
-                backend_override=override,
-            ),
+            new, general=dataclasses.replace(new.general, backend_override=override)
         )
         save = _need(_CFG_SAVE)
         new_rev = save(paths, new, expected_revision=revision)

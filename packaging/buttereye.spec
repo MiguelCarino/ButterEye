@@ -38,6 +38,10 @@ Requires:       mpv
 Requires:       /usr/bin/ffmpeg
 Requires:       vulkan-loader
 Requires:       hicolor-icon-theme
+# Carino Systems branding (GUI.md §12.3); Qt falls back to system fonts without them
+Requires:       ibm-plex-sans-fonts
+Requires:       ibm-plex-mono-fonts
+Requires:       redhat-display-fonts
 # MVTools is the only path without a GPU
 Requires:       buttereye-vs-mvtools
 Recommends:     buttereye-vs-rife-ncnn

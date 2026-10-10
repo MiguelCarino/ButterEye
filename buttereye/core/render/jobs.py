@@ -10,8 +10,11 @@ source → rename into place. vspipe and ffmpeg share one process group, recorde
 a manifest under ``jobs_dir`` so a job left by a crashed GUI can be found and
 stopped (``stale_jobs``). Cancel and failure delete every partial file.
 
-SDR first (owner decision 2026-10-08): HDR sources are refused with a plain
-explanation until HDR10 render lands (§7.4).
+HDR (§7.4): HDR10 sources, and HDR10+ / Dolby Vision ones with an HDR10 base
+layer (their dynamic metadata dropped, with a warning), become HDR10 copies through
+x265 or SVT-AV1, with the mastering display and content light level carried into
+the encoder and the container. HLG, Dolby Vision profile 5 and Dolby Vision without
+an HDR10 base layer are refused.
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from buttereye.core import capabilities
+from buttereye.core import capabilities, filelog
 from buttereye.core.backends import trt
 from buttereye.core.capabilities import ProviderRef
 from buttereye.core.doctor.checks_pkgs import parse_encoders
@@ -199,6 +202,30 @@ async def _ffprobe(tools: _Tools, src: Path) -> Mapping[str, Any]:
     return data if isinstance(data, Mapping) else {}
 
 
+async def _first_frame(tools: _Tools, src: Path) -> Mapping[str, Any] | None:
+    """The first video frame's side data (§7.4: HDR metadata and HDR10+ live in the
+    frames); None when ffprobe can't say, which leaves the stream's own data."""
+    res = await run(
+        (
+            tools.ffprobe, "-v", "error", "-of", "json", "-select_streams", "v:0",
+            "-show_frames", "-read_intervals", "%+#1",
+            "-show_entries", "frame=media_type,side_data_list", os.fspath(src),
+        ),
+        timeout_s=PROBE_TIMEOUT_S,
+    )  # fmt: skip
+    if not res.ok:
+        return None
+    try:
+        data = json.loads(res.stdout)
+    except json.JSONDecodeError:
+        return None
+    return rprobe.first_video_frame(data) if isinstance(data, Mapping) else None
+
+
+async def _source_info(tools: _Tools, src: Path) -> rprobe.SourceInfo | None:
+    return rprobe.source_info(await _ffprobe(tools, src), await _first_frame(tools, src))
+
+
 def _refusal(code: ErrorCode, title: str, cause: str, fix: str, **params: str) -> Finding:
     return Finding(
         id="render.refusal",
@@ -238,19 +265,26 @@ def refusal_for(
             "Install a libavcodec that decodes it, such as RPM Fusion's libavcodec-freeworld.",
             codec=info.codec,
         )
-    if info.hdr_class in (HdrClass.HLG, HdrClass.DV):
+    if info.hdr_class is HdrClass.HLG:
         return _refusal(
             ErrorCode.HDR_CLASS_REFUSED,
-            "HLG and Dolby Vision videos can't be converted",
-            "Only SDR video can be converted in this version.",
-            "Choose an SDR video.",
+            "HLG videos can't be converted yet",
+            "This version converts SDR and HDR10 video.",
+            "Choose an SDR or HDR10 video.",
         )
-    if info.hdr_class is not HdrClass.SDR:
+    if info.hdr_class is HdrClass.DV and not rprobe.renders_as_hdr10(info):
+        if info.hdr.dv_profile == 5:
+            return _refusal(
+                ErrorCode.HDR_CLASS_REFUSED,
+                "Dolby Vision profile 5 videos can't be converted",
+                "Profile 5 has no HDR10 picture underneath to convert.",
+                "Choose an SDR or HDR10 video.",
+            )
         return _refusal(
             ErrorCode.HDR_CLASS_REFUSED,
-            "HDR videos can't be converted yet",
-            "This build converts SDR video; HDR10 comes in a later one.",
-            "Choose an SDR video.",
+            "This Dolby Vision video can't be converted",
+            "It has no HDR10 picture underneath to convert.",
+            "Choose an SDR or HDR10 video.",
         )
     if info.width <= 0 or info.height <= 0 or info.duration_s <= 0:
         return _refusal(
@@ -260,6 +294,33 @@ def refusal_for(
             "Try remuxing the file, then convert again.",
         )
     return None
+
+
+def hdr_warnings(info: rprobe.SourceInfo | None) -> list[Finding]:
+    """What an HDR10 copy keeps and drops (§7.4)."""
+    if info is None or not rprobe.renders_as_hdr10(info):
+        return []
+    out = [
+        Finding(
+            "render.hdr10", Section.RENDER, Severity.INFO, None,
+            Msg("Will be saved as HDR10"),
+            Msg("The copy keeps the PQ picture, BT.2020 colour, mastering display and "
+                "light levels; x265 or SVT-AV1 encodes it."),
+            Msg("Nothing to do."),
+        )
+    ]  # fmt: skip
+    dropped = {HdrClass.HDR10PLUS: "HDR10+", HdrClass.DV: "Dolby Vision"}.get(info.hdr_class)
+    if dropped is not None:
+        out.append(
+            Finding(
+                "render.hdr_dynamic", Section.RENDER, Severity.DEGRADED, None,
+                Msg("{kind} metadata will be dropped", {"kind": dropped}),
+                Msg("Its scene-by-scene metadata can't follow new in-between frames, so "
+                    "the copy is plain HDR10.", {"kind": dropped}),
+                Msg("Nothing to do; HDR10 displays show it correctly."),
+            )
+        )  # fmt: skip
+    return out
 
 
 def _ffms2_lib() -> Path:
@@ -427,15 +488,24 @@ def bench_rate(
 async def probe(ctx: ProviderContext, src: Path, *, profile_id: str | None = None) -> RenderProbe:
     tools = _tools()
     src = Path(src)
-    data = await _ffprobe(tools, src)
-    info = rprobe.source_info(data)
+    info = await _source_info(tools, src)
     dec = await run((tools.ffmpeg, "-hide_banner", "-decoders"), timeout_s=10.0)
     enc = await run((tools.ffmpeg, "-hide_banner", "-encoders"), timeout_s=10.0)
     decoders = rprobe.parse_decoders(dec.stdout) if dec.ok else frozenset()
     report = ctx.last_report()
     nvidia = report is None or any(g.vendor == "NVIDIA" for g in report.hardware.gpus)
-    encoders = rprobe.usable_encoders(parse_encoders(enc.stdout) if enc.ok else (), nvidia=nvidia)
+    hdr10 = info is not None and rprobe.renders_as_hdr10(info)
+    encoders = rprobe.usable_encoders(
+        parse_encoders(enc.stdout) if enc.ok else (), nvidia=nvidia, hdr10=hdr10
+    )
     refusal = refusal_for(info, decoders, _ffms2_lib().exists())
+    if refusal is None and hdr10 and not encoders:
+        refusal = _refusal(
+            ErrorCode.ENCODER_FAILED,
+            "HDR10 render needs the x265 or SVT-AV1 encoder",
+            "Only these two take HDR10 mastering data; your ffmpeg lists neither.",
+            "Install ffmpeg-free (SVT-AV1) or RPM Fusion's ffmpeg (x265).",
+        )
     if refusal is None and not encoders:
         refusal = _refusal(
             ErrorCode.ENCODER_FAILED,
@@ -443,7 +513,7 @@ async def probe(ctx: ProviderContext, src: Path, *, profile_id: str | None = Non
             "ffmpeg lists none of HEVC (NVENC or x265), AV1 (NVENC or SVT-AV1) or x264.",
             "Install ffmpeg-free or RPM Fusion's ffmpeg.",
         )
-    warnings: list[Finding] = []
+    warnings: list[Finding] = hdr_warnings(info)
     if info is not None and info.vfr:
         warnings.append(
             Finding(
@@ -532,7 +602,8 @@ async def enqueue(ctx: ProviderContext, spec: RenderJobSpec) -> JobId:
     reg = _reg(ctx)
     job = _Job(JobId(uuid.uuid4().hex[:12]), spec)
     reg.jobs[job.id] = job
-    _log.info("%s: queued a smooth copy → %s", _title(job), os.fspath(spec.output))
+    jlog = filelog.for_item(_log, filelog.job_key(job.id))
+    jlog.info("%s: queued a smooth copy → %s", _title(job), os.fspath(spec.output))
     _emit(ctx, job)
     if reg.worker is None or reg.worker.done():
         reg.worker = ctx.spawn(_worker(ctx), name="render-worker")
@@ -657,6 +728,7 @@ def _fail(
 
 async def _run(ctx: ProviderContext, job: _Job) -> None:
     spec = job.spec
+    jlog = filelog.for_item(_log, filelog.job_key(job.id))
     src, out = Path(spec.source), Path(spec.output)
     video_tmp, part = pipeline.temp_paths(out)
     paths = ctx.paths
@@ -678,7 +750,7 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
         job.phase = RenderPhase.PROBE
         _emit(ctx, job)
         tools = _tools()
-        info = rprobe.source_info(await _ffprobe(tools, src))
+        info = await _source_info(tools, src)
         dec = await run((tools.ffmpeg, "-hide_banner", "-decoders"), timeout_s=10.0)
         refusal = refusal_for(
             info,
@@ -693,6 +765,12 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
                 refusal.title if refusal is not None else Msg("No video stream."),
                 refusal.fix if refusal is not None else None,
                 commands=refusal.commands if refusal is not None else (),
+            )
+        if rprobe.renders_as_hdr10(info) and spec.encoder not in rprobe.HDR10_ENCODERS:
+            raise RenderRefused(
+                ErrorCode.ENCODER_FAILED,
+                Msg("{encoder} can't make an HDR10 copy.", {"encoder": spec.encoder}),
+                Msg("Choose libx265 or libsvtav1."),
             )
         cfg = _config(ctx)
         profile = _profile(cfg, spec.profile_id)
@@ -754,8 +832,8 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
             target_fps=target,
             buffered_frames=4,
             concurrent_frames=8,
-            matrix=None,
-            range=None,
+            matrix=rprobe.vs_matrix(info),
+            range=rprobe.vs_range(info),
             model_path=mc.path if mc is not None else None,
             gpu_id=_gpu_index(ctx) if engine is BackendId.RIFE_NCNN else None,
             gpu_thread=RIFE_GPU_THREAD_DEFAULT if engine is BackendId.RIFE_NCNN else None,
@@ -777,7 +855,7 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
             "cache": os.fspath(_index_cache(ctx, src)),
             "cfr": info.vfr,
         }
-        _log.info(
+        jlog.info(
             "%s: converting %s → %s fps with %s%s at %s × %s (video %s × %s), %s → %s",
             src.name, decide.fmt_rate(info.fps), decide.fmt_rate(target),
             decide.BACKEND_NAMES.get(engine, engine.value),
@@ -811,7 +889,7 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
         job.eta_s = 0.0
         if job.total is not None:
             job.done = job.total
-        _log.info(
+        jlog.info(
             "%s: smooth copy saved in %.0f s → %s", src.name, time.monotonic() - t0, os.fspath(out)
         )
         _emit(ctx, job)
@@ -820,7 +898,7 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
         job.state = OpState.CANCELLED
         job.phase = None
         job.eta_s = None
-        _log.info("%s: conversion cancelled; partial files deleted", src.name)
+        jlog.info("%s: conversion cancelled; partial files deleted", src.name)
         _emit(ctx, job)
         if ctx.closing:
             raise
@@ -829,14 +907,14 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
         job.state = OpState.FAILED
         job.error = exc
         job.eta_s = None
-        _log.info("%s: conversion failed (%s): %s", src.name, exc.code.code, exc.cause.key)
+        jlog.info("%s: conversion failed (%s): %s", src.name, exc.code.code, exc.cause.key)
         if exc.detail:
             for line in exc.detail.splitlines()[-10:]:
-                _log.info("%s:   %s", src.name, line)
+                jlog.info("%s:   %s", src.name, line)
         _emit(ctx, job)
     except Exception as exc:
         _remove(video_tmp, part)
-        _log.exception("conversion crashed")
+        jlog.exception("conversion crashed")
         job.state = OpState.FAILED
         job.error = ButterEyeError(
             ErrorCode.INTERNAL, Msg("Converting failed unexpectedly."), detail=repr(exc)
@@ -980,7 +1058,9 @@ async def _remux(
     tools: _Tools, video: Path, src: Path, part: Path, info: rprobe.SourceInfo, log: Any
 ) -> None:
     if tools.mkvmerge is not None:
-        argv = pipeline.mkvmerge_argv(tools.mkvmerge, video, src, part, start_s=info.start_s)
+        argv = pipeline.mkvmerge_argv(
+            tools.mkvmerge, video, src, part, start_s=info.start_s, src=info
+        )
     else:
         argv = pipeline.ffmpeg_remux_argv(tools.ffmpeg, video, src, part, start_s=info.start_s)
     res = await run(

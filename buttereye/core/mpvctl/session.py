@@ -40,7 +40,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from buttereye.core import capabilities
+from buttereye.core import capabilities, filelog
 from buttereye.core.backends import trt
 from buttereye.core.capabilities import ProviderRef
 from buttereye.core.errors import ButterEyeError, ErrorCode, FilterFailed, NotAvailable
@@ -94,6 +94,7 @@ from buttereye.core.types import (
     Counters,
     DetachPolicy,
     FilterState,
+    HdrClass,
     Health,
     InstanceCandidate,
     Msg,
@@ -229,7 +230,7 @@ class LiveOptions:
 
 TRT_BUILDS = "mpvctl.trt_builds"  # EngineKey -> "building" | "ready" | exception
 TRT_IDENTITY = "mpvctl.trt_identity"  # Vulkan UUID -> (nvidia UUID, driver) | None
-#: Automatic engine order: TensorRT only when opted in and set up
+#: Automatic engine order: TensorRT when set up and not turned off
 LIVE_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVTOOLS)
 
 
@@ -363,6 +364,12 @@ class _Session:
         self.sid = sid
         self.file = file
         self.title = file.name
+        self.log = filelog.for_item(_log, filelog.session_key(sid))
+        self.flow_scale = 1.0  # TensorRT RIFE flow resolution chosen by apply (M0(q))
+        # what the running filter does, for the snapshot (reset when it is off)
+        self.run_size: tuple[int, int] | None = None
+        self.run_flow = 1.0
+        self.run_block = False
         self.proc = proc
         self.pid: int | None = proc.pid
         self.ipc = ipc
@@ -444,7 +451,7 @@ class _Session:
         """Emit ``ev``; health changes and notices also go to the log (gui.log), so
         what happened to a video can be read back after the fact."""
         if isinstance(ev, HealthChanged):
-            _log.info(
+            self.log.info(
                 "%s: %s%s: %s%s",
                 self.title,
                 ev.health.value,
@@ -453,9 +460,9 @@ class _Session:
                 f" → {render(ev.auto_action)}" if ev.auto_action is not None else "",
             )
             for line in ev.evidence[:10]:
-                _log.info("%s:   %s", self.title, line)
+                self.log.info("%s:   %s", self.title, line)
         elif isinstance(ev, Notice):
-            _log.info(
+            self.log.info(
                 "%s: %s%s",
                 self.title,
                 render(ev.message),
@@ -500,13 +507,16 @@ class _Session:
             notice=self.notice,
             restore_pending=(),
             ended=self.ended,
+            smooth_size=self.run_size,
+            flow_scale=self.run_flow,
+            mv_block=self.run_block,
         )
 
     def _key(self, s: SessionSnapshot) -> tuple[object, ...]:
         return (
             s.source, s.display_fps, s.target_fps, s.multiplier, s.backend, s.model,
             s.profile_id, s.filter, s.bypass, s.health, s.health_code, s.gen,
-            s.step_down_to, s.notice, s.ended,
+            s.step_down_to, s.notice, s.ended, s.smooth_size, s.flow_scale, s.mv_block,
         )  # fmt: skip
 
     def publish(self) -> SessionSnapshot:
@@ -647,7 +657,7 @@ class _Session:
                 if chosen is not None:
                     return chosen, note
             except Exception:
-                _log.exception("rule evaluation failed")
+                self.log.exception("rule evaluation failed")
         return cfg.profiles[0], note
 
     async def sustainable_fps(
@@ -790,7 +800,7 @@ class _Session:
                     self.remove_pending = False
                 except TimeoutError:
                     self.remove_pending = True
-                    _log.warning("session %s: mpv did not answer vf remove; retrying", self.sid)
+                    self.log.warning("session %s: mpv did not answer vf remove; retrying", self.sid)
                 except IpcClosed, MpvError:
                     self.remove_pending = False
         self.active_gen = None
@@ -806,6 +816,7 @@ class _Session:
         self.notice = notice
         self.step_down_to = None
         self.drop_rate = None
+        self.run_size, self.run_flow, self.run_block = None, 1.0, False
 
     async def bypass_with(self, reason: BypassReason, *, display_hz: float | None = None) -> None:
         """Bypass; ``display_hz`` when the verdict depends on the display rate, so a
@@ -849,8 +860,9 @@ class _Session:
         self, cfg: Config | None, profile: Profile
     ) -> tuple[trt.TrtInstall | None, str | None]:
         """The TensorRT install and model to use, or (None, None) when the user
-        hasn't opted in or something is missing (doctor's TensorRT section says what)."""
-        if cfg is None or not cfg.general.trt_experimental:
+        turned it off or something is missing (doctor's TensorRT section says what).
+        Unset counts as on: setting TensorRT up is the opt-in (§5.2)."""
+        if cfg is None or cfg.general.trt_experimental is False:
             return None, None
         inst = trt.find_install(self.ctx.paths)
         if inst is None:
@@ -862,7 +874,14 @@ class _Session:
         return inst, None
 
     async def trt_key(
-        self, inst: trt.TrtInstall, model: str, width: int, height: int, cfg: Config | None
+        self,
+        inst: trt.TrtInstall,
+        model: str,
+        width: int,
+        height: int,
+        cfg: Config | None,
+        *,
+        flow_scale: float = 1.0,
     ) -> trt.EngineKey | None:
         dev = self.gpu_device(cfg)
         cache: dict[str | None, tuple[str, str] | None] = self.ctx.state(TRT_IDENTITY, dict)
@@ -873,7 +892,14 @@ class _Session:
         if ident is None:
             return None
         return trt.EngineKey(
-            ident[0], ident[1], inst.vstrt_version, inst.trt_version, model, width, height
+            ident[0],
+            ident[1],
+            inst.vstrt_version,
+            inst.trt_version,
+            model,
+            width,
+            height,
+            flow_scale=flow_scale,
         )
 
     def engine_build_failed(self, key: trt.EngineKey | None) -> Msg | None:
@@ -908,7 +934,7 @@ class _Session:
                 builds.pop(key, None)
                 raise
             except Exception as exc:  # recorded; the session keeps its fallback
-                _log.warning("TensorRT engine %s failed: %s", key.folder_name(), exc)
+                self.log.warning("TensorRT engine %s failed: %s", key.folder_name(), exc)
                 builds[key] = exc
             for other in {*registry(ctx).sessions.values(), starter}:
                 other.trt_built = True
@@ -934,7 +960,7 @@ class _Session:
                     await self.ipc.command("change-list", "glsl-shaders", "append", str(want))
                 self.shader = want
         except (IpcClosed, MpvError, TimeoutError) as exc:
-            _log.warning("%s: could not change the upscaling shader: %s", self.title, exc)
+            self.log.warning("%s: could not change the upscaling shader: %s", self.title, exc)
 
     async def sync_deband(self, cfg: Config | None) -> None:
         """Turn mpv's own debanding on for ``general.deband`` and back to its
@@ -951,7 +977,7 @@ class _Session:
                 await self.ipc.command("set_property", "deband", self.deband_restore)
                 self.deband_restore = None
         except (IpcClosed, MpvError, TimeoutError) as exc:
-            _log.warning("%s: could not change debanding: %s", self.title, exc)
+            self.log.warning("%s: could not change debanding: %s", self.title, exc)
 
     async def apply(self, *, raise_on_fail: bool) -> None:
         """Decide (§4.11, §5.6) and add/replace/remove the filter; verify a new gen."""
@@ -982,6 +1008,16 @@ class _Session:
         self.profile_id = profile.id
         reason = decide.bypass_reason(facts, vp, profile)
         if reason is not None:
+            if reason is not self.bypass:  # once per verdict, not on every re-apply
+                self.log.info(
+                    "%s: %s × %s at %s fps (%s) plays unsmoothed: %s",
+                    self.title,
+                    facts.width,
+                    facts.height,
+                    decide.fmt_rate(facts.fps),
+                    facts.hdr_class.value,
+                    reason.value,
+                )
             await self.bypass_with(reason)
             return
         if profile.target.kind in DISPLAY_KINDS and not facts.display_hz:
@@ -1055,6 +1091,8 @@ class _Session:
                 forced=forced,
             )
 
+        full_size = cfg is not None and cfg.general.full_size
+
         async def decide_with(
             cands: Sequence[BackendId],
         ) -> tuple[decide.EnginePick, tuple[int, int] | None, bool, list[Msg], bool]:
@@ -1065,6 +1103,33 @@ class _Session:
             pick = choose(options, forced=False)
             size: tuple[int, int] | None = None
             forced_used = False
+            if (
+                pick.target.bypass is BypassReason.NO_REALTIME
+                and BackendId.RIFE_TRT in cands
+                and facts.width * facts.height >= decide.HALF_FLOW_MIN_PIXELS
+            ):
+                # TensorRT with half-resolution flow (M0(q)) before a smaller picture
+                half = [
+                    dataclasses.replace(
+                        o,
+                        sustainable_fps=o.sustainable_fps * decide.HALF_FLOW_GAIN
+                        if o.sustainable_fps is not None
+                        else None,
+                    )
+                    for o in options
+                    if o.backend is BackendId.RIFE_TRT
+                ]
+                hp = choose(half, forced=False)
+                if hp.backend is BackendId.RIFE_TRT and hp.target.bypass is None:
+                    self.flow_scale = 0.5
+                    return hp, None, False, [decide.half_flow_notice()], False
+            if pick.target.bypass is BypassReason.NO_REALTIME and full_size:
+                # the user chose the video's own size over keeping up: no smaller
+                # size and no block mode, smooth uncapped (frames may drop)
+                full = choose(options, forced=True)
+                if full.backend is not None and full.target.bypass is None:
+                    full = dataclasses.replace(full, notice=decide.full_size_notice())
+                    return full, None, True, [], False
             if pick.target.bypass is BypassReason.NO_REALTIME:
                 # too demanding at its own size: smooth at a smaller size (§11.9)
                 sized = [
@@ -1113,12 +1178,13 @@ class _Session:
                             return bp, None, False, [decide.blockfps_notice()], True
             return pick, size, forced_used, extra, False
 
+        self.flow_scale = 1.0
         pick, size, forced_used, extra, mv_block = await decide_with(order)
         trt_key: trt.EngineKey | None = None
         self.trt_waiting = None
         if pick.backend is BackendId.RIFE_TRT and trt_inst is not None and trt_model is not None:
             w, h = size or (facts.width, facts.height)
-            trt_key = await self.trt_key(trt_inst, trt_model, w, h, cfg)
+            trt_key = await self.trt_key(trt_inst, trt_model, w, h, cfg, flow_scale=self.flow_scale)
             ready = trt_key is not None and trt.is_ready(trt.engine_dir(paths, trt_key))
             if not ready:
                 failed = self.engine_build_failed(trt_key)
@@ -1141,9 +1207,12 @@ class _Session:
                     self.notice = msg
                     return
         notes.extend(extra)
+        if facts.hdr_class is HdrClass.HDR10:
+            # first, so a fallback or a smaller size (more urgent) takes the notice
+            notes.insert(0, Msg("HDR smoothing is experimental."))
         tc = pick.target
         if tc.bypass is not None:
-            _log.info(
+            self.log.info(
                 "%s: %s × %s at %s fps plays unsmoothed: %s",
                 self.title,
                 facts.width,
@@ -1182,6 +1251,9 @@ class _Session:
             concurrent = profile.concurrent_frames
         h = facts.height
         gen = self.next_gen()
+        self.run_size = size
+        self.run_flow = self.flow_scale if backend is BackendId.RIFE_TRT else 1.0
+        self.run_block = bool(mv_block and backend is BackendId.MVTOOLS)
         params = FilterParams(
             gen=gen,
             backend=backend,
@@ -1211,7 +1283,7 @@ class _Session:
                 else None
             ),
         )
-        _log.info(
+        self.log.info(
             "%s: smoothing %s → %s fps with %s%s at %s × %s (video %s × %s)%s",
             self.title,
             decide.fmt_rate(facts.fps),
@@ -1223,6 +1295,8 @@ class _Session:
             facts.height,
             ", forced past the speed test" if forced_used else "",
         )
+        if facts.hdr_class is HdrClass.HDR10:
+            self.log.info("%s: HDR10 smoothed with the experimental HDR pass-through", self.title)
         write_script(self.script_path, ScriptConstants(paths.rpm_plugin_dir))
         self.failure.clear()
         self.device_lost = False
@@ -1521,9 +1595,9 @@ class _Session:
                         break
                     except TimeoutError:
                         self.probe_timeouts += 1
-                        _log.warning("session %s: mpv is not answering", self.sid)
+                        self.log.warning("session %s: mpv is not answering", self.sid)
                     except ButterEyeError as exc:
-                        _log.warning("session %s: %s", self.sid, exc)
+                        self.log.warning("session %s: %s", self.sid, exc)
         except asyncio.CancelledError:
             cancelled = True
             raise
@@ -1566,7 +1640,7 @@ class _Session:
                             (f"no reply from mpv for {silent:.1f} s",), None,
                         )
                     )  # fmt: skip
-                _log.warning("session %s: mpv is not responding (%.1f s)", self.sid, silent)
+                self.log.warning("session %s: mpv is not responding (%.1f s)", self.sid, silent)
         elif silent < self.opts.probe_after_s and self.probe_timeouts == 0:
             self.unresponsive = False
             self.detector.note_restart(now)  # the frozen gap is not a stall
@@ -1711,7 +1785,7 @@ class _Session:
                 and self.want
                 and trt.is_ready(trt.engine_dir(self.ctx.paths, waiting))
             ):
-                _log.info("%s: TensorRT engine ready; switching to it", self.title)
+                self.log.info("%s: TensorRT engine ready; switching to it", self.title)
                 await self.apply(raise_on_fail=False)  # hot reload (§4.11)
         if not self.busy and (
             self.new_file or (self.active_gen is not None and self.file_changed())
@@ -1985,7 +2059,7 @@ async def set_interpolation(
         if enabled:
             if force and not s.forced:
                 s.forced = True
-                _log.info("%s: smooth anyway (past the speed test) was asked for", s.title)
+                s.log.info("%s: smooth anyway (past the speed test) was asked for", s.title)
             s.reset_health()
             s.want = True
             s.filter = FilterState.PENDING

@@ -471,6 +471,18 @@ def main(argv: list[str] | None = None) -> int:
         help="TensorRT rows only (vs-mlrt vstrt; see contrib/build-vstrt.sh)",
     )
     ap.add_argument(
+        "--onnx-models",
+        type=Path,
+        default=TRT["onnx_models"],
+        help="vs-mlrt models folder (holding rife_v2/), e.g. a patched scale-0.5 set",
+    )
+    ap.add_argument(
+        "--engine-dir",
+        type=Path,
+        default=TRT["engine_dir"],
+        help="TensorRT engine cache (keep patched models' engines apart)",
+    )
+    ap.add_argument(
         "--trt-models",
         type=lambda s: s.split(","),
         default=["v4_26", "v4_22_lite"],
@@ -503,6 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
     LIMITS.update(cache_mb=args.cache_mb, requests=args.requests)
+    TRT.update(onnx_models=args.onnx_models, engine_dir=args.engine_dir)
     for size in args.sizes:
         if size not in SIZES:
             ap.error(f"unknown size {size}; use {','.join(SIZES)}")

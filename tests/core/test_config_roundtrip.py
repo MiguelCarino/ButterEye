@@ -549,7 +549,7 @@ def test_wrong_types_report_field_and_position(paths: Paths) -> None:
     p = next(p for p in load.config.profiles if p.id == "p")
     assert p.sc_threshold == defaults.DEFAULT_SC_THRESHOLD
     assert p.target == Target(TargetKind.DISPLAY) and p.hdr == "skip"
-    assert load.config.general.trt_experimental is False
+    assert load.config.general.trt_experimental is None  # a wrong type falls back to unset
     # the rule with a bad profile is kept (so positions stay aligned) and flagged by validate
     assert load.config.rules[0].profile == ""
     assert any(i.field == "rules[0].profile" for i in load.issues)

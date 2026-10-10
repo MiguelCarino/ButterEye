@@ -106,7 +106,7 @@ def validate(cfg: Config) -> tuple[ConfigIssue, ...]:
     (``config.load`` adds them for values that are written in the file).
     """
     out = _Issues()
-    trt_on = cfg.general.trt_experimental is True
+    trt_on = cfg.general.trt_experimental is not False  # unset: on when set up (§5.2)
     _validate_general(cfg, out, trt_on)
     ids = _validate_profiles(cfg.profiles, out, trt_on)
     _validate_rules(cfg.rules, ids, out)
@@ -138,7 +138,7 @@ def _validate_general(cfg: Config, out: _Issues, trt_on: bool) -> None:
             "{value} is not a language tag such as de or pt-BR.",
             {"value": str(g.language)},
         )
-    if not isinstance(g.trt_experimental, bool):
+    if g.trt_experimental is not None and not isinstance(g.trt_experimental, bool):
         out.add("general.trt_experimental", "trt_experimental must be true or false.")
 
 

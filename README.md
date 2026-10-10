@@ -60,13 +60,10 @@ Pre-alpha, verified on the dev box (Fedora 44, RTX 4090, mpv 0.41.0, VapourSynth
 
 **Not in this build yet** (the GUI shows an "isn't in this build yet" panel, BE-9001)
 
-- Offline render (Render page) — no render provider yet; ffms2 is also not installed on
-  the dev box (BE-4001).
 - Attaching to an mpv you started yourself, and acting on leftover-filter notices from
   the Play page (ATTACH / ORPHANS).
 - Writing the include line into your `mpv.conf` for you (the line is shown to copy).
 - Bug-report bundles, model downloads and installing a model from a file.
-- HDR pass-through (experimental; needs the M0(d) compatibility test).
 
 **Known gaps**
 
@@ -152,6 +149,32 @@ keep up (4K on most CPUs; spike M0(p)), and converted files use the lighter soft
 presets `libx265` *fast* and `libsvtav1` *8* (about 1.5-2× less CPU than *medium*/*6*,
 for files a few % larger at the same quality setting); conversions keep MVTools at
 `pel=2`. See SCOPE §7.5.
+
+**TensorRT** (NVIDIA, experimental): once `contrib/build-vstrt.sh` has set it up, ButterEye
+uses it (4–5× the Vulkan engine on the same GPU) unless you turn it off; there's no separate
+switch to flip. At 4K, when it falls just short, it estimates motion at half resolution
+(spike M0(q)) before it would smooth a smaller picture.
+
+**Resolution**: when this computer can't smooth a video at its own size live, ButterEye
+smooths a smaller picture and mpv scales it back up (*Lower if needed*, the default).
+*Always full size* never does: it smooths at the video's own size even if some frames
+drop.
+
+The window wears the Carino Systems look (gold on near-black, IBM Plex and Red Hat
+Display, from Fedora's font packages) though ButterEye isn't a Carino product.
+
+**HDR10 videos** play as they are by default. Their row offers **Smooth HDR**
+(experimental): ButterEye then smooths HDR10 too, and mpv still shows it as HDR10 (spike
+M0(d): mpv's output colour parameters are identical with the filter on and off). The
+choice is saved and applies to every HDR10 video; **Play HDR as is** turns it off. HLG
+videos are not smoothed.
+
+Converting an **HDR10** video makes an HDR10 copy: the picture stays 10-bit PQ / BT.2020
+through RIFE or MVTools, and `libx265` (or `libsvtav1`) carries the source's mastering
+display and light levels into the stream, with the same values written into the MKV's
+colour fields. HDR10+ and Dolby Vision files with an HDR10 base layer become plain HDR10
+(their scene-by-scene metadata can't follow new frames; you're told). HLG and Dolby
+Vision profile 5 are refused. NVENC and VAAPI are offered for SDR only. See SCOPE §7.4.
 
 Each playing video gets a row with its rates (for example "24 → 48 fps"), whether the
 GPU or the CPU is smoothing it, a **Pause smoothing** button and **Let go** (mpv keeps

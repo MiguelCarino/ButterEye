@@ -179,10 +179,12 @@ class DropZone(QFrame):
         p.setPen(pen)
         if self._filled:
             window = pal.color(group, QPalette.ColorRole.Window)
-            # Light schemes: the Base card. Dark ones: Base is often pure black,
-            # so a slightly lighter window reads as a soft card instead.
+            base = pal.color(group, QPalette.ColorRole.Base)
+            # The Base card (Carino: the raised #0d0d0d), unless Base is darker than
+            # the window (some dark schemes use pure black): then a lighter window.
             dark = window.lightness() < 128
-            p.setBrush(window.lighter(125) if dark else pal.color(group, QPalette.ColorRole.Base))
+            sunk = dark and base.lightness() <= window.lightness()
+            p.setBrush(window.lighter(125) if sunk else base)
         # Mid is held to >= 3:1 against Window (theme.accessible_palette). Put the
         # pen centre on half pixels so a 1 px edge is one solid pixel, not two
         # half-covered ones at ~half the contrast.

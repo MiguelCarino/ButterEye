@@ -376,6 +376,25 @@ def smaller_size_notice(height: int) -> Msg:
     )
 
 
+#: TensorRT RIFE with its optical flow at half resolution (spike M0(q)): about
+#: 8-11 % faster at 4K (v4.26 spends most of its time in full-resolution layers),
+#: within ~0.5 dB of full flow; used only when full flow can't keep up and the
+#: frame is at least this large, before smoothing a smaller picture
+HALF_FLOW_GAIN = 1.08
+HALF_FLOW_MIN_PIXELS = 2560 * 1440
+
+
+def half_flow_notice() -> Msg:
+    return Msg("Estimating motion at half resolution so TensorRT can keep up at full size.")
+
+
+def full_size_notice() -> Msg:
+    return Msg(
+        "Smoothing at full size as you chose; this computer may not keep up, so some "
+        "frames may drop."
+    )
+
+
 def forced_smaller_notice(height: int) -> Msg:
     return Msg(
         "Smoothing anyway at {height}p, past what the speed test says this computer "
@@ -724,8 +743,12 @@ def bypass_reason(
         return BypassReason.UNSUPPORTED_FORMAT
     if facts.interlaced:
         return BypassReason.INTERLACED
+    if facts.hdr_class is HdrClass.HDR10 and profile.hdr == "passthrough":
+        # F7, opt-in and experimental: spike M0(d) passed for PQ (mpv's output
+        # colour parameters are identical with the filter on and off). HLG is
+        # untested and stays skipped.
+        return None
     if facts.hdr_class is not HdrClass.SDR:
-        # F7: "passthrough" stays off until spike M0(d) passes.
         return BypassReason.HDR_SKIP
     return None
 

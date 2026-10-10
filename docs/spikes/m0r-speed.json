@@ -1,0 +1,62 @@
+[
+ {
+  "size": "1920x1080",
+  "target": "2x",
+  "me_ms": 0.23,
+  "render_yuv_ms": 0.02,
+  "up_ms": 0.31,
+  "down_ms": 0.25,
+  "ms_per_source_frame": 0.81,
+  "max_source_fps": 1233.9
+ },
+ {
+  "size": "1920x1080",
+  "target": "24\u219260",
+  "me_ms": 0.23,
+  "render_yuv_ms": 0.02,
+  "up_ms": 0.31,
+  "down_ms": 0.25,
+  "ms_per_source_frame": 1.21,
+  "max_source_fps": 828.1
+ },
+ {
+  "size": "1920x1080",
+  "target": "24\u2192120",
+  "me_ms": 0.23,
+  "render_yuv_ms": 0.02,
+  "up_ms": 0.31,
+  "down_ms": 0.25,
+  "ms_per_source_frame": 1.6,
+  "max_source_fps": 623.2
+ },
+ {
+  "size": "3840x2160",
+  "target": "2x",
+  "me_ms": 0.99,
+  "render_yuv_ms": 0.16,
+  "up_ms": 0.99,
+  "down_ms": 0.96,
+  "ms_per_source_frame": 3.09,
+  "max_source_fps": 323.2
+ },
+ {
+  "size": "3840x2160",
+  "target": "24\u219260",
+  "me_ms": 0.99,
+  "render_yuv_ms": 0.16,
+  "up_ms": 0.99,
+  "down_ms": 0.96,
+  "ms_per_source_frame": 4.77,
+  "max_source_fps": 209.4
+ },
+ {
+  "size": "3840x2160",
+  "target": "24\u2192120",
+  "me_ms": 0.99,
+  "render_yuv_ms": 0.16,
+  "up_ms": 0.99,
+  "down_ms": 0.96,
+  "ms_per_source_frame": 6.46,
+  "max_source_fps": 154.9
+ }
+]

@@ -203,6 +203,92 @@ def _fp16_model(network_path, target_network_path, fp16=False, bf16=False,
     onnx.save(model, target_network_path)
 
 
+# RIFE IFNet flow blocks (v4.x, vs-mlrt v2 export): down-resize factors and
+# output-flow multipliers at scale 1, and the flow rescale for blocks 1-3
+_FLOW_BLOCKS = (16.0, 8.0, 4.0, 2.0)
+_FLOW_NEXT = (0.125, 0.25, 0.5)
+
+
+def _scale_flow(model, k):
+    # RIFE with its optical flow at k x the resolution, warping and blending at
+    # full size (Practical-RIFE's 'scale'; spike M0(q)). vs-mlrt patches its v1
+    # exports the same way and refuses v4.7+; the v2 export of v4.26 has the
+    # same structure. Any constant that isn't exactly as expected stops here.
+    from onnx.numpy_helper import from_array, to_array
+
+    g = model.graph
+    users = {}
+    for n in g.node:
+        for x in n.input:
+            users[x] = users.get(x, 0) + 1
+    const = {n.output[0]: n for n in g.node if n.op_type == 'Constant'}
+    produced = {o: n for n in g.node for o in n.output}
+    named = {n.name: n for n in g.node}
+
+    def private(name):
+        if name not in const or users.get(name) != 1:
+            raise vs.Error('ButterEye: unexpected RIFE graph (%s)' % name)
+        return const[name]
+
+    def rewrite(cnode, fn):
+        t = cnode.attribute[0].t
+        t.CopyFrom(from_array(fn(to_array(t).copy()), t.name))
+
+    for i, s in enumerate(_FLOW_BLOCKS):
+        down, up = named.get('/block%d/Resize' % i), named.get('/block%d/Resize_1' % i)
+        mul = named.get('/block%d/Mul' % i)
+        if down is None or up is None or mul is None:
+            raise vs.Error('ButterEye: unexpected RIFE graph (block %d)' % i)
+        cd, cu = private(down.input[2]), private(up.input[2])
+        cm = private(next(x for x in mul.input if x in const))
+        if (list(to_array(cd.attribute[0].t)) != [1, 1, 1 / s, 1 / s]
+                or list(to_array(cu.attribute[0].t)) != [1, 1, s, s]
+                or float(to_array(cm.attribute[0].t)) != s):
+            raise vs.Error('ButterEye: unexpected RIFE graph (block %d constants)' % i)
+        rewrite(cd, lambda a: (a * [1, 1, k, k]).astype(a.dtype))
+        rewrite(cu, lambda a: (a / [1, 1, k, k]).astype(a.dtype))
+        rewrite(cm, lambda a: (a / k).astype(a.dtype))
+    found = []
+    for n in g.node:
+        if n.op_type != 'Mul' or n.name.startswith('/block'):
+            continue
+        cs = [x for x in n.input if x in const]
+        others = [x for x in n.input if x not in const]
+        if len(cs) != 1 or len(others) != 1:
+            continue
+        v = to_array(const[cs[0]].attribute[0].t)
+        src = produced.get(others[0])
+        if (v.size == 1 and float(v) in _FLOW_NEXT and src is not None
+                and (src.name == '/block0/Mul' or src.op_type == 'Add')):
+            found.append((float(v), n))
+    if sorted(v for v, _ in found) != sorted(_FLOW_NEXT):
+        raise vs.Error('ButterEye: unexpected RIFE graph (flow rescale)')
+    for _, n in found:
+        rewrite(private(next(x for x in n.input if x in const)), lambda a: (a * k).astype(a.dtype))
+    return model
+
+
+def _flow_models(trt):
+    # vs-mlrt reads models_path/rife_v2/<onnx>.onnx; at a flow scale other than 1
+    # that is a patched copy kept with the engine (written when it is built)
+    k = float(trt.get('flow_scale') or 1.0)
+    if k == 1.0:
+        return trt['models_dir']
+    folder = os.path.join(trt['engine_dir'], 'models')
+    dst = os.path.join(folder, 'rife_v2', trt['onnx'] + '.onnx')
+    if not os.path.isfile(dst):
+        if not trt.get('build'):
+            raise vs.Error('ButterEye: the TensorRT engine for this size is not built yet')
+        import onnx
+
+        model = _scale_flow(onnx.load(os.path.join(trt['models_dir'], 'rife_v2',
+                                                   trt['onnx'] + '.onnx')), k)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        onnx.save(model, dst + '.part')
+        os.replace(dst + '.part', dst)
+    return folder
+
+
 def _rife_trt(clip, cfg, props, target):
     # vs-mlrt's vstrt (SCOPE §5.2). Engines are built out of process before
     # playback; inside mpv a missing engine fails fast instead of freezing the
@@ -225,7 +311,7 @@ def _rife_trt(clip, cfg, props, target):
     import vsmlrt
 
     vsmlrt.trtexec_path = trt['trtexec']
-    vsmlrt.models_path = trt['models_dir']
+    vsmlrt.models_path = _flow_models(trt)
     vsmlrt.convert_model = _fp16_model
     matrix = _matrix(cfg, clip, props)
     rng = _range(cfg, props)

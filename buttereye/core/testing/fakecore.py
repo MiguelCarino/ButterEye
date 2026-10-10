@@ -26,6 +26,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, ClassVar, Literal, TypeVar
 
+from buttereye import __version__
 from buttereye.core import api as _api
 from buttereye.core.api import ButterEye
 from buttereye.core.errors import (
@@ -325,7 +326,7 @@ class FakeCore(ButterEye):
     def doctor(self, *, trt: bool | None = None) -> Operation[DoctorReport]:
         self._rec("doctor", trt=trt)
         self._gate(Feature.DOCTOR)
-        use_trt = self._load.config.general.trt_experimental if trt is None else trt
+        use_trt = bool(self._load.config.general.trt_experimental) if trt is None else trt
         phases = (
             "mpv",
             "In-mpv probe",
@@ -615,6 +616,13 @@ class FakeCore(ButterEye):
         self._maybe_fail("sessions")
         return tuple(self._sessions.values())
 
+    async def session_log(self, sid: SessionId) -> str:
+        self._rec("session_log", sid)
+        self._maybe_fail("session_log")
+        snap = self._sessions.get(sid)
+        title = snap.title if snap is not None else str(sid)
+        return f"ButterEye {__version__} — log for {title}\nSession: {sid}\n\n== ButterEye ==\n"
+
     # ------------------------------------------------------------------ bench
     def bench(self, req: BenchRequest) -> Operation[BenchResult]:
         self._rec("bench", req)
@@ -740,6 +748,13 @@ class FakeCore(ButterEye):
         self._gate(Feature.RENDER)
         if self._job(job).state in (OpState.QUEUED, OpState.RUNNING):
             self._set_job(job, state=OpState.CANCELLED, phase=None, eta_s=None)
+
+    async def job_log(self, job: JobId) -> str:
+        self._rec("job_log", job)
+        self._maybe_fail("job_log")
+        state = self._jobs.get(job)
+        title = state.spec.output.name if state is not None else str(job)
+        return f"ButterEye {__version__} — log for {title}\nJob: {job}\n\n== ButterEye ==\n"
 
     async def render_forget(self, job: JobId) -> None:
         self._rec("render_forget", job)

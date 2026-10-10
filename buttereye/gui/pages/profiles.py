@@ -1281,7 +1281,7 @@ class ProfilesPage(Page):
         self._populating = True
         try:
             combo.clear()
-            trt_on = cfg is not None and cfg.general.trt_experimental
+            trt_on = cfg is not None and cfg.general.trt_experimental is not False
             choices: list[BackendId | str] = ["auto", BackendId.RIFE_NCNN]
             if trt_on or (p is not None and p.backend == BackendId.RIFE_TRT):
                 choices.append(BackendId.RIFE_TRT)

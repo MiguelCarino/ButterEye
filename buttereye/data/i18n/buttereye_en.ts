@@ -1071,6 +1071,21 @@
     </message>
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>Copy log</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>Copy the log for {name}</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>Copy what happened with this copy, to paste in a report.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
         <source>Done</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4712,6 +4727,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>&amp;Resolution</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>&amp;Smooth motion</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4723,6 +4743,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>60 fps</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Always full size</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4757,7 +4782,7 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>ButterEye lost touch with this player.</source>
+        <source>ButterEye lost touch with this player; it may have closed or stopped answering.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4778,11 +4803,6 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>CPU only</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>CPU smoothing</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4812,6 +4832,26 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Copy log</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Copy the log for {title}</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Copy what happened with this video, to paste in a report.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Couldn't copy the log for {name}.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Couldn't play that video: {cause}</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4837,22 +4877,22 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>Drop a video here to play it smooth</source>
+        <source>Drop a video to play smooth</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>Drop a video here to save a smooth copy</source>
+        <source>Drop a video to save a copy</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Experimental: smooth HDR10 videos too. Applies to every HDR10 video.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>FSRCNNX shader; costs a little GPU time when the video is upscaled.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>GPU smoothing</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4867,17 +4907,22 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>HDR video plays without smoothing.</source>
+        <source>HDR videos will be smoothed (experimental).</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>HDR videos will play as they are.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>HDR10</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>How many frames per second smoothing aims for.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>Interlaced video plays without smoothing.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4907,7 +4952,27 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Log for {name} copied.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Lost touch</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Lower if needed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Lower if needed smooths a smaller picture when this computer can't keep up; Always full size never does, even if some frames drop.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>MVTools on the CPU</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4947,6 +5012,46 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Not smoothed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Not smoothed: HDR videos play as they are unless you choose Smooth HDR (experimental).</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Not smoothed: the smoothing filter failed to start for this video, so it plays normally. Copy log has the details.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Not smoothed: the speed test says this computer can't add frames fast enough for your Target, even at a smaller size. A lower Target or a lighter Smoothness may work; Always full size smooths it anyway.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Not smoothed: there's no moving picture (audio or a cover image).</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Not smoothed: this video already plays at your target rate, so there are no frames to add. Choose a higher Target to smooth it.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Not smoothed: this video is interlaced, and smoothing needs whole frames.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Not smoothed: this video's picture format can't go through the smoothing filter (it needs YUV video with an even width and height).</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Now playing</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4958,6 +5063,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>Open video…</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Pause</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4977,7 +5087,12 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>Playing normally</source>
+        <source>Play HDR as is</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Play HDR videos without smoothing</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5002,12 +5117,27 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>RIFE {model} on the GPU with TensorRT</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>RIFE {model} on the GPU with Vulkan</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Ready.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>Ready. The speed test didn't finish; see Details.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Resume</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5032,7 +5162,7 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>Save smooth copy…</source>
+        <source>Save copy…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5082,7 +5212,22 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Smooth HDR</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Smooth HDR videos (experimental)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Smooth anyway</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Smooth at the video's own size even if this computer may drop frames.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5122,17 +5267,27 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>Smoothing didn't work for this video, so it plays normally.</source>
+        <source>Smoothing is paused for this video. Resume turns it back on.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>Smoothing paused</source>
+        <source>Smoothing stopped: the GPU stopped responding, so smoothing was turned off. Copy log has the details.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>Some frames are being dropped.</source>
+        <source>Smoothing stopped: the graphics driver reported a fault while smoothing, so it was turned off for this video. Copy log has the details.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Smoothing stopped: the picture froze while the sound kept playing, so smoothing was turned off for this video. Resume tries again.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Some frames are being dropped: smoothing can't quite keep up. A lighter Smoothness or a lower Target helps.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5152,42 +5307,12 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Stop smoothing HDR10 videos.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>System information, speed test, storage and licences</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>The GPU had a problem, so smoothing was turned off for this video.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>The GPU stopped responding, so smoothing was turned off.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>The video stalled, so smoothing was turned off for it.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>There's no video to smooth.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>This computer can't smooth this video in real time, so it plays normally.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>This video already matches your target, so it plays as is.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
-        <source>This video's format can't be smoothed.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5202,7 +5327,27 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>fast block mode</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>full size {w} × {h}</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>motion estimated at half resolution</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>mpv keeps playing; ButterEye stops managing it.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>smoothed at {w} × {h}, scaled up</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

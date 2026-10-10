@@ -31,6 +31,20 @@ every other role, so in a light scheme it settles on a deeper amber that keeps
 >= 3:1 against the window and >= 4.5:1 under the dark text; in a dark scheme it
 stays bright gold. No other colour is hard-coded.
 
+Carino Systems branding (2026-10-10, owner decision): ButterEye wears the Carino
+visual language (branding.carino.systems, ``carino-branding.css``) though it is
+not a Carino product: near-black surfaces, the one Sharp Gold accent, hairline
+cards, IBM Plex Sans text, IBM Plex Mono uppercase buttons and a Red Hat Display
+wordmark. The brand is dark only, so the palette no longer follows the desktop's
+light/dark scheme; ``CARINO`` holds the tokens (the only colour literals). The
+brand palette still goes through ``accessible_palette()``: control outlines and
+drop-zone borders are lifted from the #262626 hairline to >= 3:1, and focus stays a
+2 px gold frame. Cards (``CARD_PROPERTY``) keep the decorative hairline. Buttons,
+combo boxes and cards are painted by ``FocusFrameStyle`` (no style sheets), so the
+focus frame keeps working. Fonts fall back to the system's when the Fedora font
+packages (ibm-plex-sans-fonts, ibm-plex-mono-fonts, redhat-display-fonts) are
+missing.
+
 Font scaling: ``apply_fixed_font()`` gives monospace widgets the system fixed
 family at a size that follows the application font, and ``a11y.heading()``
 labels remember their factor; both are recomputed on
@@ -40,7 +54,7 @@ labels remember their factor; both are recomputed on
 from __future__ import annotations
 
 import logging
-from typing import cast
+from typing import Any, cast
 
 import shiboken6
 from PySide6.QtCore import QEvent, QObject, QRect, QRectF, Qt
@@ -52,8 +66,10 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QFocusFrame,
+    QLabel,
     QLineEdit,
     QProxyStyle,
+    QPushButton,
     QStyle,
     QStyleFactory,
     QStyleOption,
@@ -172,6 +188,8 @@ def rescale_fonts() -> None:
             continue
         if w.property(FIXED_FONT_PROPERTY):
             w.setFont(fixed_font(app_font))
+        if w.property(BUTTON_FONT_PROPERTY):
+            w.setFont(button_font(app_font))
         factor = w.property(HEADING_FACTOR_PROPERTY)
         if isinstance(factor, int | float) and factor > 0:
             font = QFont(w.font())
@@ -235,7 +253,10 @@ def _draw_outline(
 
 
 class FocusFrameStyle(QProxyStyle):
-    """Fusion with a 2 px highlight-coloured focus frame."""
+    """Fusion with a 2 px highlight-coloured focus frame; with ``brand`` set, Carino
+    buttons, combo boxes and cards."""
+
+    brand = False
 
     def drawPrimitive(
         self,
@@ -246,6 +267,9 @@ class FocusFrameStyle(QProxyStyle):
     ) -> None:
         if element == QStyle.PrimitiveElement.PE_FrameFocusRect:
             _draw_focus(painter, option.rect, option.palette)
+            return
+        if element == QStyle.PrimitiveElement.PE_PanelButtonCommand and self.brand:
+            _draw_button(option, painter, widget)
             return
         super().drawPrimitive(element, option, painter, widget)
         if element in _OUTLINED:
@@ -261,7 +285,35 @@ class FocusFrameStyle(QProxyStyle):
         if element == QStyle.ControlElement.CE_FocusFrame:
             _draw_focus(painter, option.rect, option.palette)
             return
+        if (
+            element == QStyle.ControlElement.CE_ShapedFrame
+            and self.brand
+            and widget is not None
+            and widget.property(CARD_PROPERTY)
+        ):
+            _draw_card(option, painter)
+            return
         super().drawControl(element, option, painter, widget)
+
+    def polish(self, arg: Any) -> Any:  # widget, palette or application overloads
+        out = super().polish(arg)
+        if self.brand and isinstance(arg, QPushButton):
+            apply_button_font(arg)
+        return out
+
+    def sizeFromContents(  # type: ignore[override]  # PySide stubs disagree
+        self,
+        ct: QStyle.ContentsType,
+        opt: QStyleOption,
+        size: Any,
+        widget: QWidget,
+    ) -> Any:
+        out = super().sizeFromContents(ct, opt, size, widget)
+        if self.brand and ct == QStyle.ContentsType.CT_PushButton and opt is not None:
+            line = opt.fontMetrics.height()
+            out.setHeight(max(out.height(), round(line * BUTTON_MIN_LINES)))
+            out.setWidth(out.width() + round(line * BUTTON_PAD_LINES))
+        return out
 
     def pixelMetric(
         self,
@@ -408,6 +460,215 @@ def butter_palette(palette: QPalette) -> QPalette:
     return out
 
 
+#: Carino Systems design tokens (carino-branding.css :root), the brand's colours.
+CARINO: dict[str, str] = {
+    "bg": "#050505",
+    "bg_elev": "#0d0d0d",
+    "bg_card": "#0b0b0b",
+    "accent": "#eab308",
+    "accent_hover": "#fbbf24",
+    "border": "#262626",
+    "text": "#ffffff",
+    "text_sec": "#a3a3a3",
+    "text_muted": "#666666",
+    "ok": "#22c55e",
+    "warn": "#eab308",
+    "err": "#ef4444",
+    "info": "#38bdf8",
+    # --gold-text gradient stops (the wordmark)
+    "gold_light": "#fef08a",
+    "gold_dark": "#b45309",
+}
+SANS = "IBM Plex Sans"
+MONO = "IBM Plex Mono"
+DISPLAY = "Red Hat Display"
+#: QFrames with this dynamic property set are drawn as Carino cards.
+CARD_PROPERTY = "carinoCard"
+BUTTON_RADIUS = 6
+CARD_RADIUS = 10
+
+
+def token(name: str) -> QColor:
+    return QColor(CARINO[name])
+
+
+def carino_palette(base: QPalette) -> QPalette:
+    """The Carino palette (dark only) on top of ``base`` (Fusion's, for the
+    shading roles). Run ``accessible_palette()`` afterwards."""
+    out = QPalette(base)
+    R = QPalette.ColorRole  # noqa: N806 - enum alias
+    roles = {
+        R.Window: "bg",
+        R.WindowText: "text",
+        R.Base: "bg_elev",
+        R.AlternateBase: "bg_card",
+        R.Text: "text",
+        R.Button: "bg_elev",
+        R.ButtonText: "text",
+        R.BrightText: "text",
+        R.Highlight: "accent",
+        R.HighlightedText: "bg",
+        R.Accent: "accent",
+        R.Mid: "border",
+        R.Link: "accent",
+        R.LinkVisited: "accent_hover",
+        R.ToolTipBase: "bg_elev",
+        R.ToolTipText: "text",
+        R.PlaceholderText: "text_sec",
+    }
+    for group in _GROUPS:
+        for role, name in roles.items():
+            out.setColor(group, role, token(name))
+        out.setColor(group, R.Dark, token("bg"))
+        out.setColor(group, R.Shadow, token("bg"))
+        out.setColor(group, R.Light, token("border").lighter(150))
+        out.setColor(group, R.Midlight, token("border"))
+    dis = QPalette.ColorGroup.Disabled
+    for role in (R.WindowText, R.Text, R.ButtonText):
+        out.setColor(dis, role, token("text_muted"))
+    return out
+
+
+def secondary(w: QWidget) -> QWidget:
+    """Carino secondary text (#a3a3a3, about 8:1 on the background)."""
+    pal = w.palette()
+    for group in _GROUPS:
+        pal.setColor(group, QPalette.ColorRole.WindowText, token("text_sec"))
+    w.setPalette(pal)
+    return w
+
+
+def _has_family(family: str) -> bool:
+    return family in QFontDatabase.families()
+
+
+def brand_font(family: str, reference: QFont | None = None) -> QFont:
+    """``family`` at the reference (application) size, or the reference font
+    when the family isn't installed."""
+    ref = QFont(reference) if reference is not None else QApplication.font()
+    if not _has_family(family):
+        return ref
+    f = QFont(ref)
+    f.setFamilies([family])
+    return f
+
+
+def button_font(reference: QFont | None = None) -> QFont:
+    """Buttons: IBM Plex Sans semibold in sentence case. (The brand's web buttons
+    are small uppercase mono; in the app readability wins, GUI.md §12.3.)"""
+    f = brand_font(SANS, reference)
+    f.setWeight(QFont.Weight.DemiBold)
+    return f
+
+
+#: buttons are at least this many text lines tall (~32 px at a 15 px font, over
+#: WCAG 2.5.8's 24 px target) with this many lines of side padding
+BUTTON_MIN_LINES = 2.1
+BUTTON_PAD_LINES = 0.9
+
+
+def wordmark_font(reference: QFont, factor: float) -> QFont:
+    """Red Hat Display Black, uppercase, ``factor`` × the reference size."""
+    f = brand_font(DISPLAY, reference)
+    f.setWeight(QFont.Weight.Black)
+    f.setCapitalization(QFont.Capitalization.AllUppercase)
+    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.0)
+    if reference.pointSizeF() > 0:
+        f.setPointSizeF(reference.pointSizeF() * factor)
+    return f
+
+
+def kicker(label: QLabel) -> QLabel:
+    """A Carino kicker: a section label in IBM Plex Mono, uppercase, letter-spaced,
+    in gold (about 10:1 on the background). Same size as body text, bold."""
+    f = brand_font(MONO, label.font())
+    f.setWeight(QFont.Weight.Bold)
+    f.setCapitalization(QFont.Capitalization.AllUppercase)
+    f.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 112)
+    label.setFont(f)
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    pal = label.palette()
+    for group in _GROUPS:
+        pal.setColor(group, QPalette.ColorRole.WindowText, token("accent"))
+    label.setPalette(pal)
+    label.setAccessibleDescription("heading")
+    return label
+
+
+def install_brand_fonts(app: QApplication) -> None:
+    """IBM Plex Sans for text and Plex Mono uppercase for buttons, at the size the
+    desktop chose (no fixed pixel sizes)."""
+    base = app.font()
+    if _has_family(SANS):
+        app.setFont(brand_font(SANS, base))
+    # buttons get their face per widget (FocusFrameStyle.polish, rescale_fonts):
+    # a class font set here is cleared by any later application-wide setFont
+
+
+BUTTON_FONT_PROPERTY = "carinoButtonFont"
+
+
+def apply_button_font(w: QWidget) -> None:
+    w.setProperty(BUTTON_FONT_PROPERTY, True)
+    w.setFont(button_font(QApplication.font()))
+
+
+def _draw_button(option: QStyleOption, painter: QPainter, widget: QWidget | None) -> None:
+    """A Carino button: rounded, filled with the palette's Button (gold for the
+    primary button), a >= 3:1 Mid edge, gold edge and faint gold on hover."""
+    pal = option.palette
+    state = option.state
+    enabled = bool(state & QStyle.StateFlag.State_Enabled)
+    hover = enabled and bool(state & QStyle.StateFlag.State_MouseOver)
+    pressed = bool(state & (QStyle.StateFlag.State_Sunken | QStyle.StateFlag.State_On))
+    fill = pal.color(QPalette.ColorRole.Button)
+    accent = pal.color(QPalette.ColorRole.Highlight)
+    primary = fill == accent
+    if primary:
+        if hover:
+            fill = token("accent_hover")
+        if pressed:
+            fill = fill.darker(112)
+        edge = fill
+    else:
+        if hover:
+            faint = QColor(accent)
+            faint.setAlphaF(0.08)
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(fill)
+            r0 = QRectF(option.rect).adjusted(0.5, 0.5, -0.5, -0.5)
+            painter.drawRoundedRect(r0, BUTTON_RADIUS, BUTTON_RADIUS)
+            painter.restore()
+            fill = faint
+        if pressed:
+            fill = pal.color(QPalette.ColorRole.Button).lighter(140)
+        edge = accent if hover else pal.color(QPalette.ColorRole.Mid)
+    if not enabled:
+        fill.setAlphaF(fill.alphaF() * 0.5)
+        edge.setAlphaF(edge.alphaF() * 0.6)
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(edge)
+    pen.setWidthF(1.0)
+    painter.setPen(pen)
+    painter.setBrush(fill)
+    r = QRectF(option.rect).adjusted(0.5, 0.5, -0.5, -0.5)
+    painter.drawRoundedRect(r, BUTTON_RADIUS, BUTTON_RADIUS)
+    painter.restore()
+
+
+def _draw_card(option: QStyleOption, painter: QPainter) -> None:
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(QPen(token("border"), 1.0))
+    painter.setBrush(token("bg_card"))
+    r = QRectF(option.rect).adjusted(0.5, 0.5, -0.5, -0.5)
+    painter.drawRoundedRect(r, CARD_RADIUS, CARD_RADIUS)
+    painter.restore()
+
+
 def is_dark(palette: QPalette) -> bool:
     return palette.color(QPalette.ColorRole.Window).lightness() < 128
 
@@ -415,17 +676,32 @@ def is_dark(palette: QPalette) -> bool:
 class ThemeController(QObject):
     """Owns the style and keeps the palette in step with the colour scheme."""
 
-    def __init__(self, app: QApplication, *, accent: bool = True) -> None:
+    def __init__(self, app: QApplication, *, accent: bool = True, brand: bool = True) -> None:
         super().__init__(app)
         self._app = app
         self._accent = accent
+        self._brand = brand
         base = QStyleFactory.create("Fusion")
         self.style = FocusFrameStyle(base)
+        self.style.brand = brand
+        if brand:
+            install_brand_fonts(app)
         app.setStyle(self.style)
         self._follower = _FocusFollower(app)
         app.styleHints().colorSchemeChanged.connect(self.apply_scheme)
         app.fontChanged.connect(lambda _font: rescale_fonts())
         self.apply_scheme(app.styleHints().colorScheme())
+
+    @property
+    def brand(self) -> bool:
+        return self._brand
+
+    def set_brand(self, on: bool) -> None:
+        """Carino branding on (the default) or off (the palette then follows the
+        desktop's light/dark scheme, with the butter accent)."""
+        self._brand = on
+        self.style.brand = on
+        self.apply_scheme(self._app.styleHints().colorScheme())
 
     @property
     def focus_follower(self) -> _FocusFollower:
@@ -434,6 +710,12 @@ class ThemeController(QObject):
     def apply_scheme(self, scheme: Qt.ColorScheme) -> None:
         """Set the palette for ``scheme`` (connected to ``colorSchemeChanged``)."""
         palette = self.style.standardPalette()
+        if self._brand:
+            # the Carino brand is dark only: the desktop's scheme doesn't change it
+            self._app.setPalette(accessible_palette(carino_palette(palette)))
+            for w in self._app.topLevelWidgets():
+                w.update()
+            return
         if scheme == Qt.ColorScheme.Dark and not is_dark(palette):
             palette = derived_dark_palette(palette)
         elif scheme == Qt.ColorScheme.Light and is_dark(palette):
@@ -462,6 +744,20 @@ def palette_changed(event: QEvent) -> bool:
 
 
 __all__ = [
+    "CARD_PROPERTY",
+    "CARINO",
+    "DISPLAY",
+    "MONO",
+    "SANS",
+    "brand_font",
+    "BUTTON_MIN_LINES",
+    "button_font",
+    "carino_palette",
+    "install_brand_fonts",
+    "kicker",
+    "secondary",
+    "token",
+    "wordmark_font",
     "FIXED_FONT_PROPERTY",
     "FOCUS_WIDTH",
     "FocusFrameStyle",

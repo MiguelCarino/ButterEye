@@ -129,7 +129,14 @@ def _sort(findings: list[Finding]) -> tuple[Finding, ...]:
     return tuple(sorted(findings, key=lambda f: order.get(f.section, 99)))  # stable
 
 
-async def doctor(paths: Paths, cfg: Config, *, trt: bool, progress: ProgressSink) -> DoctorReport:
+async def doctor(
+    paths: Paths, cfg: Config, *, trt: bool | None, progress: ProgressSink
+) -> DoctorReport:
+    """``trt``: check the TensorRT path; None = when it is set up here (§5.2)."""
+    if trt is None:
+        from buttereye.core.backends import trt as trt_backend
+
+        trt = trt_backend.find_install(paths) is not None
     t0 = time.monotonic()
     prog = _Progress(progress, len(SECTION_ORDER))
     findings: list[Finding] = []

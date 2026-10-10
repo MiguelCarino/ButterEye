@@ -195,8 +195,9 @@ def test_edits_use_frozen_replace_and_engine_rules(make_window: Any, qtbot: Any)
     assert page.concurrent_auto.text() == "Automatic (8)"  # §4.4: RIFE concurrent-frames 8
 
 
-def test_trt_listed_only_after_opt_in(make_window: Any, qtbot: Any) -> None:
-    _win, page = open_page(make_window, qtbot, custom_scenario())
+def test_trt_not_listed_when_turned_off(make_window: Any, qtbot: Any) -> None:
+    sc = custom_scenario(general=GeneralSettings(trt_experimental=False))
+    _win, page = open_page(make_window, qtbot, sc)
     select_profile(page, "anime")
     data = [page.engine_combo.itemData(i) for i in range(page.engine_combo.count())]
     assert BackendId.RIFE_TRT.value not in data
@@ -222,12 +223,11 @@ def test_unavailable_engine_disabled_with_reason(make_window: Any, qtbot: Any) -
     assert "llvmpipe only" in combo.accessibleDescription()
 
 
-def test_hdr_passthrough_disabled_until_spike(make_window: Any, qtbot: Any) -> None:
+def test_hdr_passthrough_offered_after_m0d(make_window: Any, qtbot: Any) -> None:
     _win, page = open_page(make_window, qtbot, custom_scenario())
     select_profile(page, "anime")
     assert page.hdr_skip.isEnabled()
-    assert not page.hdr_pass.isEnabled()
-    assert page.hdr_note.text() == "Needs compatibility test M0(d)."
+    assert page.hdr_pass.isEnabled()  # spike M0(d) passed for PQ
 
 
 # --------------------------------------------------------------------- validation

@@ -1,0 +1,34 @@
+[
+ {
+  "clip": "dance",
+  "t": 90.0,
+  "size": "3840x2160",
+  "blend": 22.49,
+  "full": 27.82,
+  "half": 27.47,
+  "half_vs_full": 34.45,
+  "half_px_over_10pct": 1.082,
+  "detail_full": 0.667,
+  "detail_half": 0.657,
+  "smaller_1080": 27.89,
+  "detail_smaller_1080": 0.225,
+  "smaller_720": 27.82,
+  "detail_smaller_720": 0.096
+ },
+ {
+  "clip": "anime",
+  "t": 600.0,
+  "size": "3840x1616",
+  "blend": 42.37,
+  "full": 51.15,
+  "half": 50.51,
+  "half_vs_full": 53.78,
+  "half_px_over_10pct": 0.0,
+  "detail_full": 0.994,
+  "detail_half": 0.905,
+  "smaller_1080": 43.71,
+  "detail_smaller_1080": 0.335,
+  "smaller_720": 39.03,
+  "detail_smaller_720": 0.134
+ }
+]

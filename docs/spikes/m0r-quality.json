@@ -1,0 +1,66 @@
+[
+ {
+  "clip": "4K live-action dance (SDR)",
+  "t": 30.0,
+  "size": "3840x2160",
+  "blend": 23.02,
+  "gpu_mv": 25.85,
+  "detail_gpu_mv": 0.644
+ },
+ {
+  "clip": "4K live-action dance (SDR)",
+  "t": 90.0,
+  "size": "3840x2160",
+  "blend": 22.49,
+  "gpu_mv": 25.94,
+  "detail_gpu_mv": 0.632
+ },
+ {
+  "clip": "4K live-action dance (SDR)",
+  "t": 150.0,
+  "size": "3840x2160",
+  "blend": 20.45,
+  "gpu_mv": 23.03,
+  "detail_gpu_mv": 0.697
+ },
+ {
+  "clip": "4K live-action dance (SDR)",
+  "t": 200.0,
+  "size": "3840x2160",
+  "blend": 20.26,
+  "gpu_mv": 20.45,
+  "detail_gpu_mv": 0.676
+ },
+ {
+  "clip": "3840x1616 anime film (HDR10)",
+  "t": 600.0,
+  "size": "3840x1616",
+  "blend": 42.37,
+  "gpu_mv": 51.32,
+  "detail_gpu_mv": 0.867
+ },
+ {
+  "clip": "3840x1616 anime film (HDR10)",
+  "t": 1800.0,
+  "size": "3840x1616",
+  "blend": 38.54,
+  "gpu_mv": 35.28,
+  "detail_gpu_mv": 0.896
+ },
+ {
+  "clip": "3840x1616 anime film (HDR10)",
+  "t": 3000.0,
+  "size": "3840x1616",
+  "blend": 37.45,
+  "gpu_mv": 32.38,
+  "detail_gpu_mv": 0.305
+ },
+ {
+  "clip": "3840x1616 anime film (HDR10)",
+  "t": 4500.0,
+  "size": "3840x1616",
+  "blend": 18.28,
+  "gpu_mv": 17.42,
+  "detail_gpu_mv": 0.697
+ }
+]

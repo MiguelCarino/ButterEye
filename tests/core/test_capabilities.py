@@ -87,7 +87,7 @@ def test_missing_provider_is_not_implemented(absent_providers: None) -> None:
     for f in Feature:
         st = capabilities.static_state(f)
         if f is Feature.HDR_PASSTHROUGH:
-            assert st.available  # no provider; gated dynamically (SPIKE_PENDING)
+            assert st.available  # no provider
             continue
         assert not st.available, f
         if f is Feature.MODEL_DOWNLOADS:
@@ -110,7 +110,7 @@ def test_today_live_bench_render_report_absent() -> None:
     ):
         if not capabilities.implemented(refs):
             assert caps.states[f].reason is Reason.NOT_IMPLEMENTED, f
-    assert caps.states[Feature.HDR_PASSTHROUGH].reason is Reason.SPIKE_PENDING
+    assert caps.states[Feature.HDR_PASSTHROUGH].available  # M0(d) passed
     assert caps.states[Feature.TRT].reason is Reason.OPT_IN_REQUIRED
 
 
@@ -270,14 +270,23 @@ def test_trt_states() -> None:
     assert compute(on, sc.report(()), static=static).states[Feature.TRT].available
     ni = compute(on, sc.report(()), static=_all_static(False)).states[Feature.TRT]
     assert ni.reason is Reason.NOT_IMPLEMENTED
-
-
-def test_hdr_passthrough_always_spike_pending() -> None:
-    st = compute(None, None, static=_all_static()).states[Feature.HDR_PASSTHROUGH]
-    assert st.reason is Reason.SPIKE_PENDING
-    assert (
-        render(unavailable_text(Feature.HDR_PASSTHROUGH, st)) == "Needs compatibility test M0(d)."
+    # unset (the default): on once doctor has checked a TensorRT set up here
+    unset = dataclasses.replace(
+        off, general=dataclasses.replace(off.general, trt_experimental=None)
     )
+    checked = dataclasses.replace(sc.report(()), trt_included=True)
+    assert compute(unset, None, static=static).states[Feature.TRT].reason is Reason.OPT_IN_REQUIRED
+    assert compute(unset, sc.report(()), static=static).states[Feature.TRT].reason is (
+        Reason.OPT_IN_REQUIRED
+    )  # vstrt not found: doctor didn't check TensorRT
+    assert compute(unset, checked, static=static).states[Feature.TRT].available
+    no = dataclasses.replace(off, general=dataclasses.replace(off.general, trt_experimental=False))
+    assert compute(no, checked, static=static).states[Feature.TRT].reason is Reason.OPT_IN_REQUIRED
+
+
+def test_hdr_passthrough_available_after_m0d() -> None:
+    st = compute(None, None, static=_all_static()).states[Feature.HDR_PASSTHROUGH]
+    assert st.available  # spike M0(d) passed for PQ
 
 
 @pytest.mark.parametrize(
@@ -368,7 +377,17 @@ def test_api_import_pulls_no_subsystem(repo_root: Path) -> None:
     ).stdout.split()
     allowed = {
         f"buttereye.core.{m}"
-        for m in ("api", "types", "errors", "events", "ops", "i18n", "commands", "capabilities")
+        for m in (
+            "api",
+            "types",
+            "errors",
+            "events",
+            "ops",
+            "i18n",
+            "commands",
+            "capabilities",
+            "filelog",
+        )
     }
     allowed |= {"buttereye", "buttereye.core"}
     assert set(out) <= allowed, set(out) - allowed
