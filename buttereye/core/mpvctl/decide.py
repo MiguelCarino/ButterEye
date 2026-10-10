@@ -279,6 +279,27 @@ def fmt_rate(r: Fraction) -> str:
 
 
 # §11.9: plain-language notices for the live engine decision (the GUI shows them).
+def gpu_fallback_notice(engine: BackendId, fallback: BackendId) -> Msg:
+    return Msg(
+        "{engine} can't keep up with this video; using {fallback}.",
+        {"engine": BACKEND_NAMES[engine], "fallback": BACKEND_NAMES[fallback]},
+    )
+
+
+def engine_building_notice(width: int, height: int, fallback: BackendId | None) -> Msg:
+    if fallback is None:
+        return Msg(
+            "Preparing TensorRT for {w} × {h} (about a minute, once); "
+            "smoothing starts when it is ready.",
+            {"w": width, "h": height},
+        )
+    return Msg(
+        "Preparing TensorRT for {w} × {h} (about a minute, once); "
+        "using {fallback} until it is ready.",
+        {"w": width, "h": height, "fallback": BACKEND_NAMES[fallback]},
+    )
+
+
 def no_realtime_notice() -> Msg:
     return Msg(
         "This video is too demanding to smooth in real time on this computer, "
@@ -373,6 +394,10 @@ class EnginePick:
     notice: Msg | None
 
 
+#: Engines that run on the GPU and need benchmark data before Auto trusts them
+GPU_BACKENDS = frozenset({BackendId.RIFE_TRT, BackendId.RIFE_NCNN})
+
+
 def pick_engine(
     options: Sequence[EngineOption],
     src: Fraction,
@@ -444,9 +469,7 @@ def pick_size(
         return p.backend is not None and p.target.bypass is None and p.target.target is not None
 
     for size, opts in sized:
-        gpu = [
-            o for o in opts if o.backend is BackendId.RIFE_NCNN and o.sustainable_fps is not None
-        ]
+        gpu = [o for o in opts if o.backend in GPU_BACKENDS and o.sustainable_fps is not None]
         if not gpu:
             continue
         p = pick_engine(gpu, src, display_hz, kind, fixed, auto=auto)
@@ -485,9 +508,7 @@ def _pick_engine(
         return EnginePick(None, TargetChoice(None, BypassReason.NO_REALTIME), no_realtime_notice())
     if auto:
         eligible = [
-            o
-            for o in options
-            if o.backend is not BackendId.RIFE_NCNN or o.sustainable_fps is not None
+            o for o in options if o.backend not in GPU_BACKENDS or o.sustainable_fps is not None
         ] or [options[0]]
         picks: list[tuple[EngineOption, TargetChoice]] = []
         for o in eligible:
@@ -510,14 +531,16 @@ def _pick_engine(
     tc = target_for(first)
     if tc.bypass is not BypassReason.NO_REALTIME:
         return EnginePick(first.backend if tc.bypass is None else None, tc, None)
-    if first.backend is BackendId.RIFE_NCNN:
+    if first.backend in GPU_BACKENDS:
+        # a pinned GPU engine that can't keep up: the next engine that can
+        # (TensorRT -> RIFE-ncnn -> MVTools), with a notice
         for o in options[1:]:
-            if o.backend is not BackendId.MVTOOLS:
-                continue
             tc2 = target_for(o)
             if tc2.bypass is None and tc2.target is not None:
                 wanted = choose_target(src, display_hz, kind, fixed).target or tc2.target
-                return EnginePick(o.backend, tc2, cpu_fallback_notice(wanted))
+                if o.backend is BackendId.MVTOOLS:
+                    return EnginePick(o.backend, tc2, cpu_fallback_notice(wanted))
+                return EnginePick(o.backend, tc2, gpu_fallback_notice(first.backend, o.backend))
     return EnginePick(None, tc, no_realtime_notice())
 
 
@@ -546,10 +569,11 @@ def user_models(user_dirs: Sequence[Path]) -> tuple[Path, ...]:
 
 
 def installed_backends(
-    plugin_dir: Path, model_dir: Path, user_model_dirs: Sequence[Path] = ()
+    plugin_dir: Path, model_dir: Path, user_model_dirs: Sequence[Path] = (), *, trt: bool = False
 ) -> frozenset[BackendId]:
-    """Backends whose plugin file (and, for RIFE, a model directory) is installed."""
-    found: set[BackendId] = set()
+    """Backends whose plugin file (and, for RIFE, a model directory) is installed.
+    ``trt``: the TensorRT path is opted in and set up (``backends.trt``)."""
+    found: set[BackendId] = {BackendId.RIFE_TRT} if trt else set()
     if (plugin_dir / "librife.so").is_file() and (
         model_dir.is_dir() or user_models(user_model_dirs)
     ):
@@ -569,9 +593,9 @@ def resolve_backend(
     wanted: BackendId | None,
     installed: frozenset[BackendId],
     *,
-    ranked: Sequence[BackendId] = (BackendId.RIFE_NCNN, BackendId.MVTOOLS),
+    ranked: Sequence[BackendId] = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVTOOLS),
 ) -> BackendChoice:
-    """``wanted`` None = automatic. TensorRT is not live-capable in this build."""
+    """``wanted`` None = automatic (the first installed of ``ranked``)."""
     order = [b for b in ranked if b in installed]
     if wanted is None:
         if order:
@@ -579,11 +603,12 @@ def resolve_backend(
         return BackendChoice(None, Msg("No interpolation engine is installed."))
     if wanted in installed:
         return BackendChoice(wanted, None)
+    order = [b for b in order if b is not BackendId.RIFE_TRT]  # never a silent TRT pick
     fallback = order[0] if order else None
     trt = wanted is BackendId.RIFE_TRT
     if fallback is None:
         if trt:
-            why = Msg("TensorRT isn't available for live playback in this build.")
+            why = Msg("TensorRT isn't turned on or set up (see the System checks).")
         else:
             why = Msg("{engine} isn't installed.", {"engine": BACKEND_NAMES[wanted]})
         return BackendChoice(None, why)
@@ -591,7 +616,7 @@ def resolve_backend(
         return BackendChoice(
             fallback,
             Msg(
-                "TensorRT isn't available for live playback in this build; using {fallback}.",
+                "TensorRT isn't turned on or set up; using {fallback}.",
                 {"fallback": BACKEND_NAMES[fallback]},
             ),
         )

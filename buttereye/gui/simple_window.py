@@ -1069,6 +1069,10 @@ class SimpleWindow(QMainWindow):
         self._maybe_bench()
         self._ready()
 
+    def _trt_opted_in(self) -> bool:
+        load = self.config_load
+        return load is not None and load.config.general.trt_experimental
+
     # silent first run -----------------------------------------------------
     def _setup_after_doctor(self, report: DoctorReport) -> None:
         self._note_report(report)
@@ -1078,7 +1082,7 @@ class SimpleWindow(QMainWindow):
             return
         self.setup_started = True
         self.bridge.call(
-            lambda core: core.setup_plan(report, trt_experimental=False),
+            lambda core: core.setup_plan(report, trt_experimental=self._trt_opted_in()),
             owner=self,
             ok=self._setup_apply,
             err=self._startup_failed,
@@ -1099,8 +1103,11 @@ class SimpleWindow(QMainWindow):
             )
             self._ready()
             return
+        # the silent setup keeps the TensorRT opt-in as it is (never turns it on or off)
         choices = SetupChoices(
-            backend=backend, trt_experimental=False, confirmed_downloads=frozenset()
+            backend=backend,
+            trt_experimental=self._trt_opted_in(),
+            confirmed_downloads=frozenset(),
         )
         self.bridge.run_op(
             lambda core: core.setup_apply(plan, choices),

@@ -220,10 +220,12 @@ def trt_findings(
         raw_mods = probe_raw.get("modules")
         mods = raw_mods if isinstance(raw_mods, dict) else {}
     if rec is not None and rec.get("loaded"):
-        tv = str(rec.get("version") or "")
+        from buttereye.core.doctor.probe import trt_version_of, version_text
+
+        built = trt_version_of(rec.get("version"))
+        tv = f"{built[0]}.{built[1]}" if built else (version_text(rec.get("version")) or "")
         lib = ".".join(map(str, ver)) if ver else ""
-        lib_mm = ".".join(map(str, ver[:2])) if ver else ""
-        if tv and lib_mm and lib_mm not in tv:
+        if built is not None and ver and tuple(ver[:2]) != built:
             out.append(
                 _f(
                     "trt.vstrt",

@@ -262,5 +262,8 @@ def test_engine_for() -> None:
     assert rp.engine_for("auto", both) is BackendId.RIFE_NCNN
     assert rp.engine_for("auto", frozenset({BackendId.MVTOOLS})) is BackendId.MVTOOLS
     assert rp.engine_for(BackendId.MVTOOLS, both) is BackendId.MVTOOLS
-    assert rp.engine_for(BackendId.RIFE_NCNN, frozenset({BackendId.MVTOOLS})) is None
+    # a pinned engine that isn't installed falls back (the copy is still made)
+    assert rp.engine_for(BackendId.RIFE_NCNN, frozenset({BackendId.MVTOOLS})) is BackendId.MVTOOLS
+    # ... but never to TensorRT unless the profile asked for it
+    assert rp.engine_for(BackendId.MVTOOLS, frozenset({BackendId.RIFE_TRT})) is None
     assert rp.engine_for("auto", frozenset()) is None

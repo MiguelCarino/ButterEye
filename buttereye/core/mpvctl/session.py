@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from buttereye.core import capabilities
+from buttereye.core.backends import trt
 from buttereye.core.capabilities import ProviderRef
 from buttereye.core.errors import ButterEyeError, ErrorCode, FilterFailed, NotAvailable
 from buttereye.core.events import (
@@ -226,6 +227,12 @@ class LiveOptions:
     log_check_s: float = 30.0  # how often a running session's log size is checked
 
 
+TRT_BUILDS = "mpvctl.trt_builds"  # EngineKey -> "building" | "ready" | exception
+TRT_IDENTITY = "mpvctl.trt_identity"  # Vulkan UUID -> (nvidia UUID, driver) | None
+#: Automatic engine order: TensorRT only when opted in and set up
+LIVE_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVTOOLS)
+
+
 class Registry:
     """Per-core session registry (``ctx.state("mpvctl.session", Registry)``)."""
 
@@ -389,6 +396,9 @@ class _Session:
         self.remove_pending = False
         self.want = True
         self.toggle_requested = False
+        #: TensorRT engine this session fell back from while it is being built
+        self.trt_waiting: trt.EngineKey | None = None
+        self.trt_built = False
         self.failure: list[str] = []
         self.device_lost = False
         self.rife_used = False
@@ -669,7 +679,7 @@ class _Session:
             req = getattr(result, "request", None)
             if req is None:
                 continue
-            if backend is BackendId.RIFE_NCNN and current is not None:
+            if backend in decide.GPU_BACKENDS and current is not None:
                 measured_on = _resolve_device(devices, getattr(result, "gpu_uuid", None))
                 if measured_on is not None and measured_on.uuid != current.uuid:
                     continue
@@ -830,6 +840,78 @@ class _Session:
             },
         )
 
+    # ---- TensorRT (experimental, SCOPE §5.2) ----
+    def trt_setup(
+        self, cfg: Config | None, profile: Profile
+    ) -> tuple[trt.TrtInstall | None, str | None]:
+        """The TensorRT install and model to use, or (None, None) when the user
+        hasn't opted in or something is missing (doctor's TensorRT section says what)."""
+        if cfg is None or not cfg.general.trt_experimental:
+            return None, None
+        inst = trt.find_install(self.ctx.paths)
+        if inst is None:
+            return None, None
+        avail = trt.available_models(inst)
+        for name in (profile.model, trt.DEFAULT_MODEL, *sorted(avail)):
+            if name in avail:
+                return inst, name
+        return inst, None
+
+    async def trt_key(
+        self, inst: trt.TrtInstall, model: str, width: int, height: int, cfg: Config | None
+    ) -> trt.EngineKey | None:
+        dev = self.gpu_device(cfg)
+        cache: dict[str | None, tuple[str, str] | None] = self.ctx.state(TRT_IDENTITY, dict)
+        vk = dev.uuid if dev is not None else None
+        if vk not in cache:
+            cache[vk] = await trt.nvidia_identity(vk)
+        ident = cache[vk]
+        if ident is None:
+            return None
+        return trt.EngineKey(
+            ident[0], ident[1], inst.vstrt_version, inst.trt_version, model, width, height
+        )
+
+    def engine_build_failed(self, key: trt.EngineKey | None) -> Msg | None:
+        """A notice when the engine for ``key`` failed to build in this run."""
+        if key is None:
+            return Msg("TensorRT needs an NVIDIA GPU that nvidia-smi can see.")
+        builds: dict[trt.EngineKey, object] = self.ctx.state(TRT_BUILDS, dict)
+        state = builds.get(key)
+        if isinstance(state, BaseException):
+            return Msg(
+                "The TensorRT engine for {w} × {h} couldn't be built; see the log in {logs}.",
+                {"w": key.width, "h": key.height, "logs": str(self.ctx.paths.logs_dir)},
+            )
+        return None
+
+    def start_engine_build(self, inst: trt.TrtInstall, key: trt.EngineKey) -> None:
+        """Build the engine for ``key`` in the background (once per core); every
+        session waiting for it re-decides when it is ready."""
+        builds: dict[trt.EngineKey, object] = self.ctx.state(TRT_BUILDS, dict)
+        if key in builds:
+            return
+        builds[key] = "building"
+        ctx, starter = self.ctx, self
+        script = self.script_path.with_name("trt-build.vpy")
+
+        async def run() -> None:
+            try:
+                write_script(script, ScriptConstants(ctx.paths.rpm_plugin_dir))
+                await trt.build_engine(ctx.paths, inst, key, script=script)
+                builds[key] = "ready"
+            except asyncio.CancelledError:
+                builds.pop(key, None)
+                raise
+            except Exception as exc:  # recorded; the session keeps its fallback
+                _log.warning("TensorRT engine %s failed: %s", key.folder_name(), exc)
+                builds[key] = exc
+            for other in {*registry(ctx).sessions.values(), starter}:
+                other.trt_built = True
+                other.wake.set()
+
+        ctx.spawn(run(), name=f"trt-build-{key.folder_name()}")
+
     async def apply(self, *, raise_on_fail: bool) -> None:
         """Decide (§4.11, §5.6) and add/replace/remove the filter; verify a new gen."""
         props = self.props
@@ -864,7 +946,10 @@ class _Session:
         paths = self.ctx.paths
         model_dir = paths.rpm_data_dir / MODEL_SUBDIR
         user_dirs = (paths.data_dir / USER_MODEL_SUBDIR,)
-        installed = decide.installed_backends(paths.rpm_plugin_dir, model_dir, user_dirs)
+        trt_inst, trt_model = self.trt_setup(cfg, profile)
+        installed = decide.installed_backends(
+            paths.rpm_plugin_dir, model_dir, user_dirs, trt=trt_model is not None
+        )
         wanted: BackendId | None
         pinned_note: Msg | None
         if self.backend_override is not None:
@@ -875,14 +960,17 @@ class _Session:
         # §11.9: candidate engines in preference order; the target decides among them
         order: list[BackendId]
         if wanted is None:
-            order = [b for b in (BackendId.RIFE_NCNN, BackendId.MVTOOLS) if b in installed]
+            order = [b for b in LIVE_RANKING if b in installed]
         else:
             choice = decide.resolve_backend(wanted, installed)
             if choice.notice is not None:
                 notes.append(choice.notice)
             order = [choice.backend] if choice.backend is not None else []
-            if choice.backend is BackendId.RIFE_NCNN and BackendId.MVTOOLS in installed:
-                order.append(BackendId.MVTOOLS)  # only if RIFE can't reach the target
+            # fallbacks, used only if the chosen engine can't reach the target
+            if choice.backend is BackendId.RIFE_TRT and BackendId.RIFE_NCNN in installed:
+                order.append(BackendId.RIFE_NCNN)
+            if choice.backend in decide.GPU_BACKENDS and BackendId.MVTOOLS in installed:
+                order.append(BackendId.MVTOOLS)
         model: str | None = None
         model_path: Path | None = None
         model_note: Msg | None = None
@@ -899,15 +987,17 @@ class _Session:
             self.emit(Notice(msg, ErrorCode.PKG_MISSING, self.sid))
             return
 
-        async def engine_options(f: SourceFacts) -> list[decide.EngineOption]:
+        def model_for(b: BackendId) -> str | None:
+            if b is BackendId.RIFE_NCNN:
+                return model
+            return trt_model if b is BackendId.RIFE_TRT else None
+
+        async def engine_options(
+            f: SourceFacts, cands: Sequence[BackendId]
+        ) -> list[decide.EngineOption]:
             return [
-                decide.EngineOption(
-                    b,
-                    await self.sustainable_fps(
-                        b, model if b is BackendId.RIFE_NCNN else None, f, cfg
-                    ),
-                )
-                for b in order
+                decide.EngineOption(b, await self.sustainable_fps(b, model_for(b), f, cfg))
+                for b in cands
             ]
 
         def choose(opts: Sequence[decide.EngineOption], *, forced: bool) -> decide.EnginePick:
@@ -921,45 +1011,82 @@ class _Session:
                 forced=forced,
             )
 
-        options = await engine_options(facts)
-        pick = choose(options, forced=False)
-        size: tuple[int, int] | None = None
-        forced_used = False
-        if pick.target.bypass is BypassReason.NO_REALTIME:
-            # too demanding at its own size: smooth at a smaller size (§11.9)
-            sized = [
-                (
-                    (w, h),
-                    [
-                        dataclasses.replace(
-                            o,
-                            sustainable_fps=decide.shrink_cap(
-                                o.sustainable_fps, facts.width, facts.height
-                            ),
-                        )
-                        for o in await engine_options(dataclasses.replace(facts, width=w, height=h))
-                    ],
+        async def decide_with(
+            cands: Sequence[BackendId],
+        ) -> tuple[decide.EnginePick, tuple[int, int] | None, bool, list[Msg]]:
+            """(pick, smaller size or None, forced past the speed test, notes)"""
+            extra: list[Msg] = []
+            options = await engine_options(facts, cands)
+            pick = choose(options, forced=False)
+            size: tuple[int, int] | None = None
+            forced_used = False
+            if pick.target.bypass is BypassReason.NO_REALTIME:
+                # too demanding at its own size: smooth at a smaller size (§11.9)
+                sized = [
+                    (
+                        (w, h),
+                        [
+                            dataclasses.replace(
+                                o,
+                                sustainable_fps=decide.shrink_cap(
+                                    o.sustainable_fps, facts.width, facts.height
+                                ),
+                            )
+                            for o in await engine_options(
+                                dataclasses.replace(facts, width=w, height=h), cands
+                            )
+                        ],
+                    )
+                    for w, h in decide.smaller_sizes(facts.width, facts.height)
+                ]
+                found = decide.pick_size(
+                    sized,
+                    facts.fps,
+                    facts.display_hz or None,
+                    profile.target.kind,
+                    profile.target.fps,
+                    auto=wanted is None,
+                    forced=self.forced,
                 )
-                for w, h in decide.smaller_sizes(facts.width, facts.height)
-            ]
-            found = decide.pick_size(
-                sized,
-                facts.fps,
-                facts.display_hz or None,
-                profile.target.kind,
-                profile.target.fps,
-                auto=wanted is None,
-                forced=self.forced,
-            )
-            if found is not None:
-                pick, size = found
-                forced_used = pick.notice == decide.forced_smaller_notice(size[1])
-                if not forced_used:
-                    notes.append(decide.smaller_size_notice(size[1]))
-            elif self.forced and not sized:
-                forced = choose(options, forced=True)
-                if forced.backend is not None:
-                    pick, forced_used = forced, True
+                if found is not None:
+                    pick, size = found
+                    forced_used = pick.notice == decide.forced_smaller_notice(size[1])
+                    if not forced_used:
+                        extra.append(decide.smaller_size_notice(size[1]))
+                elif self.forced and not sized:
+                    forced_pick = choose(options, forced=True)
+                    if forced_pick.backend is not None:
+                        pick, forced_used = forced_pick, True
+            return pick, size, forced_used, extra
+
+        pick, size, forced_used, extra = await decide_with(order)
+        trt_key: trt.EngineKey | None = None
+        self.trt_waiting = None
+        if pick.backend is BackendId.RIFE_TRT and trt_inst is not None and trt_model is not None:
+            w, h = size or (facts.width, facts.height)
+            trt_key = await self.trt_key(trt_inst, trt_model, w, h, cfg)
+            ready = trt_key is not None and trt.is_ready(trt.engine_dir(paths, trt_key))
+            if not ready:
+                failed = self.engine_build_failed(trt_key)
+                if trt_key is not None and failed is None:
+                    self.start_engine_build(trt_inst, trt_key)
+                    self.trt_waiting = trt_key
+                rest = [b for b in order if b is not BackendId.RIFE_TRT]
+                if rest:
+                    pick, size, forced_used, extra = await decide_with(rest)
+                if failed is not None:
+                    notes.append(failed)
+                else:
+                    notes.append(
+                        decide.engine_building_notice(w, h, pick.backend if rest else None)
+                    )
+                trt_key = None
+                if not rest:
+                    msg = notes[-1]
+                    await self.set_off(FilterState.OFF, msg)
+                    self.notice = msg
+                    return
+        notes.extend(extra)
         tc = pick.target
         if tc.bypass is not None:
             _log.info(
@@ -986,6 +1113,8 @@ class _Session:
         if backend is BackendId.RIFE_NCNN:
             if model_note is not None and model_note not in notes:
                 notes.append(model_note)
+        elif backend is BackendId.RIFE_TRT:
+            model, model_path = trt_model, None
         else:
             model, model_path = None, None
         if pick.notice is not None:
@@ -1012,9 +1141,20 @@ class _Session:
             gpu_id=self.gpu_index(cfg) if backend is BackendId.RIFE_NCNN else None,
             gpu_thread=RIFE_GPU_THREAD_DEFAULT if backend is BackendId.RIFE_NCNN else None,
             uhd=decide.uhd_mode(*(size or (facts.width, facts.height))),
-            sc_threshold=profile.sc_threshold if backend is BackendId.RIFE_NCNN else None,
+            sc_threshold=profile.sc_threshold if backend in decide.GPU_BACKENDS else None,
             title=self.title,
             size=size,
+            trt=(
+                trt.script_settings(
+                    trt_inst,
+                    trt_key,
+                    trt.engine_dir(paths, trt_key),
+                    streams=trt.streams_for(*(size or (facts.width, facts.height))),
+                    build=False,
+                )
+                if backend is BackendId.RIFE_TRT and trt_inst is not None and trt_key is not None
+                else None
+            ),
         )
         _log.info(
             "%s: smoothing %s → %s fps with %s%s at %s × %s (video %s × %s)%s",
@@ -1508,6 +1648,16 @@ class _Session:
                 self.filter = FilterState.PENDING
                 await self.apply(raise_on_fail=False)
 
+        if self.trt_built and not self.busy:
+            self.trt_built = False
+            waiting = self.trt_waiting
+            if (
+                waiting is not None
+                and self.want
+                and trt.is_ready(trt.engine_dir(self.ctx.paths, waiting))
+            ):
+                _log.info("%s: TensorRT engine ready; switching to it", self.title)
+                await self.apply(raise_on_fail=False)  # hot reload (§4.11)
         if not self.busy and (
             self.new_file or (self.active_gen is not None and self.file_changed())
         ):

@@ -50,7 +50,11 @@ for _entry in _cfg.get("plugins", []):
         else:
             _rec["error"] = "not found"
         if _rec["loaded"] and _ns == "trt" and hasattr(core.trt, "Version"):
-            _rec["version"] = str(core.trt.Version())
+            # {"version": "v16.3.test1-0-g...", "tensorrt_version": "110300", ...}
+            _rec["version"] = {
+                str(_k): (_v.decode("utf-8", "replace") if isinstance(_v, bytes) else str(_v))
+                for _k, _v in core.trt.Version().items()
+            }
     except Exception as _exc:  # noqa: BLE001 - the probe reports every failure
         _rec["error"] = "%s: %s" % (type(_exc).__name__, _exc)
     _result["plugins"].append(_rec)

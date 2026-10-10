@@ -45,6 +45,17 @@ Pre-alpha, verified on the dev box (Fedora 44, RTX 4090, mpv 0.41.0, VapourSynth
 - **Storage and About**: real folder sizes, packaged models, licence texts.
 - **Lua helper in mpv**: Alt+b toggles the filter, Alt+B shows the status line.
 
+- **NVIDIA TensorRT (experimental, opt-in)**: with `[general] trt_experimental = true`
+  in `config.toml` (or the System page of the classic window) and a local `vstrt`
+  build, live play, the speed test and smooth copies use RIFE through TensorRT. A
+  missing engine is built in the background on first use (about 30 s at 1080p);
+  meanwhile the video plays with RIFE (Vulkan) and switches over when it's ready.
+  On the RTX 4090: 1080p 2× at 262 fps and 23.976 → 60 at 101 fps in mpv, about
+  4× the Vulkan path (`docs/spikes/m0l.md`). Setup, after adding NVIDIA's
+  repositories as in `docs/spikes/m0k.md`:
+  `contrib/build-vstrt.sh --with-python-deps --with-models`, then run the speed
+  test again so Automatic can choose TensorRT.
+
 **Not in this build yet** (the GUI shows an "isn't in this build yet" panel, BE-9001)
 
 - Offline render (Render page) — no render provider yet; ffms2 is also not installed on
@@ -53,7 +64,7 @@ Pre-alpha, verified on the dev box (Fedora 44, RTX 4090, mpv 0.41.0, VapourSynth
   the Play page (ATTACH / ORPHANS).
 - Writing the include line into your `mpv.conf` for you (the line is shown to copy).
 - Bug-report bundles, model downloads and installing a model from a file.
-- TensorRT and HDR pass-through (experimental; need the M0(d) compatibility test).
+- HDR pass-through (experimental; needs the M0(d) compatibility test).
 - The `buttereye` command-line tool: the GUI shows the equivalent commands, but there is
   no CLI entry point yet.
 

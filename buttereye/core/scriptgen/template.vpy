@@ -14,6 +14,7 @@
 #   vspipe  ``vspipe -a user_data=<json> script.vpy -`` with a ``source`` entry
 import json
 import os
+import sys
 from fractions import Fraction
 
 import vapoursynth as vs
@@ -185,6 +186,68 @@ def _rife(clip, cfg, props, target):
     return _passthrough(clip, out, target)
 
 
+def _fp16_model(network_path, target_network_path, fp16=False, bf16=False,
+                input_format=0, output_format=0):
+    # Replaces vsmlrt.convert_model (SCOPE §5.2, spike M0(l)): vsmlrt 3.23.2
+    # retypes the outputs of RIFE's Cast nodes but not their 'to' attribute, and
+    # TensorRT 11 rejects the result. Same conversion with the Cast nodes left out.
+    import onnx
+    from onnxconverter_common.float16 import convert_float_to_float16
+
+    if bf16 or not fp16:
+        raise vs.Error('ButterEye: only fp16 TensorRT engines are supported')
+    model = onnx.load(network_path)
+    casts = [n.name for n in model.graph.node if n.op_type == 'Cast']
+    model = convert_float_to_float16(model, keep_io_types=output_format != 1,
+                                     node_block_list=casts)
+    onnx.save(model, target_network_path)
+
+
+def _rife_trt(clip, cfg, props, target):
+    # vs-mlrt's vstrt (SCOPE §5.2). Engines are built out of process before
+    # playback; inside mpv a missing engine fails fast instead of freezing the
+    # player for minutes ('build' is set only for that out-of-process build).
+    trt = cfg.get('trt') or {}
+    engine_dir = trt['engine_dir']
+    if not trt.get('build') and not os.path.isfile(os.path.join(engine_dir, 'ready.json')):
+        raise vs.Error('ButterEye: the TensorRT engine for this size is not built yet')
+    sys.dont_write_bytecode = True  # nothing is written next to vsmlrt.py
+    # vsmlrt looks for a loaded plugin when it is imported: load vstrt first
+    if not hasattr(core, 'trt'):
+        core.std.LoadPlugin(os.path.join(trt['vstrt_dir'], 'libvstrt.so'))
+    if trt['vsmlrt_dir'] not in sys.path:
+        sys.path.insert(0, trt['vsmlrt_dir'])
+    # ButterEye's Python folder first: onnx needs the protobuf installed with it,
+    # and Fedora's python3-protobuf (3.19) is too old for it (spike M0(l))
+    for extra in reversed(trt.get('python_dirs') or ()):
+        if extra not in sys.path:
+            sys.path.insert(0, extra)
+    import vsmlrt
+
+    vsmlrt.trtexec_path = trt['trtexec']
+    vsmlrt.models_path = trt['models_dir']
+    vsmlrt.convert_model = _fp16_model
+    matrix = _matrix(cfg, clip, props)
+    rng = _range(cfg, props)
+    threshold = cfg.get('sc_threshold')
+    if isinstance(threshold, (int, float)) and threshold > 0:
+        clip = _mark_scene_changes(clip, float(threshold))  # vsmlrt reads _SceneChangeNext
+    half = bool(trt.get('half_io'))
+    rgb = core.resize.Bicubic(clip, format=vs.RGBH if half else vs.RGBS,
+                              matrix_in_s=matrix, range_in_s=rng)
+    backend = vsmlrt.Backend.TRT(fp16=bool(trt.get('fp16')), num_streams=int(trt.get('streams') or 2),
+                                 output_format=1 if half else 0, engine_folder=engine_dir,
+                                 device_id=int(cfg.get('gpu_id') or 0))
+    multi = target / Fraction(clip.fps_num, clip.fps_den)
+    rgb = vsmlrt.RIFE(rgb, multi=int(multi) if multi.denominator == 1 else multi,
+                      model=vsmlrt.RIFEModel[trt['model']], backend=backend,
+                      video_player=True, _implementation=2)
+    fmt = _output_format(clip, cfg)
+    out = core.resize.Bicubic(rgb, format=fmt.id, matrix_s=matrix, range_s=rng,
+                              dither_type=_dither(fmt, cfg))
+    return _passthrough(clip, out, target)
+
+
 def _mvtools(clip, cfg, target):
     _load('mv', 'mvtools.so')
     # pel 1 (full-pixel search) from 720p up: ~20-30 % less CPU, and vectors are
@@ -218,6 +281,8 @@ def build():
     backend = cfg.get('backend')
     if backend == 'rife-ncnn':
         out = _rife(clip, cfg, props, target)
+    elif backend == 'rife-trt':
+        out = _rife_trt(clip, cfg, props, target)
     elif backend == 'mvtools':
         out = _mvtools(clip, cfg, target)
     else:

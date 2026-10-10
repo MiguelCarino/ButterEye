@@ -249,16 +249,23 @@ def estimate_bytes(
     return int(2 * video + source_bytes)
 
 
+#: Automatic offline order: time is the cost offline, so the fastest GPU engine
+#: first (TensorRT only when opted in and set up, §5.2), then RIFE-ncnn, then MVTools
+OFFLINE_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVTOOLS)
+
+
 def engine_for(
     backend: BackendId | Literal["auto"], installed: frozenset[BackendId]
 ) -> BackendId | None:
-    """§7.8: the profile's engine; Automatic = RIFE-ncnn when installed, else MVTools."""
-    if backend == "auto":
-        for b in (BackendId.RIFE_NCNN, BackendId.MVTOOLS):
-            if b in installed:
-                return b
-        return None
-    return backend if backend in installed else None
+    """§7.8: the profile's engine when installed; Automatic, or a pinned engine that
+    isn't installed, takes the first installed of ``OFFLINE_RANKING`` (never a
+    TensorRT the profile didn't ask for when it pinned another engine)."""
+    if backend != "auto" and backend in installed:
+        return backend
+    for b in OFFLINE_RANKING:
+        if b in installed and (backend == "auto" or b is not BackendId.RIFE_TRT):
+            return b
+    return None
 
 
 __all__ = [

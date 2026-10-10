@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 import math
 import os
@@ -40,15 +41,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from buttereye.core import capabilities
+from buttereye.core.backends import trt
 from buttereye.core.bench import faults, measure, store
 from buttereye.core.capabilities import ProviderRef
 from buttereye.core.errors import ButterEyeError, ErrorCode
 from buttereye.core.events import Notice
+from buttereye.core.i18n import render as render_msg
 from buttereye.core.ops import OpContext
 from buttereye.core.scriptgen.generator import (
     RIFE_CONCURRENT_FRAMES_DEFAULT,
     RIFE_GPU_THREAD_DEFAULT,
+    FilterParams,
+    ScriptConstants,
+    write_script,
 )
+from buttereye.core.scriptgen.generator import user_data as generator_user_data
 from buttereye.core.types import (
     BackendId,
     BenchMeasurement,
@@ -110,6 +117,7 @@ class Candidate:
     model: str | None  # RIFE model directory name, as in Profile.model
     model_path: Path | None
     concurrent_frames: int
+    trt_install: trt.TrtInstall | None = None  # RIFE_TRT only
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,12 +158,12 @@ def model_label(dirname: str) -> str:
 
 def _quality_key(c: Candidate) -> tuple[int, int, int, int]:
     """Sort key, best first: RIFE before MVTools; full models before lite; newer first."""
-    if c.backend is not BackendId.RIFE_NCNN or c.model is None:
+    if c.backend is BackendId.MVTOOLS or c.model is None:
         return (1, 0, 0, 0)
     lite = 1 if "lite" in c.model.lower() else 0
     v = _VERSION.search(c.model)
     major, minor = (int(v.group(1)), int(v.group(2))) if v else (0, 0)
-    return (0, lite, -major, -minor)
+    return (-1 if c.backend is BackendId.RIFE_TRT else 0, lite, -major, -minor)
 
 
 def discover_candidates(
@@ -177,6 +185,85 @@ def discover_candidates(
         out.append(Candidate("mvtools", BackendId.MVTOOLS, None, None, max(1, min(cpus, 8))))
     out.sort(key=_quality_key)
     return tuple(out)
+
+
+def trt_candidates(ctx: ProviderContext) -> tuple[Candidate, ...]:
+    """TensorRT configurations, when the user opted in and vstrt is set up (§5.2)."""
+    try:
+        if not ctx.config().general.trt_experimental:
+            return ()
+    except ButterEyeError:
+        return ()
+    inst = trt.find_install(ctx.paths)
+    if inst is None:
+        return ()
+    out = [
+        Candidate(
+            f"{model_label(name)} · TensorRT",
+            BackendId.RIFE_TRT,
+            name,
+            None,
+            RIFE_CONCURRENT_FRAMES,
+            inst,
+        )
+        for name in trt.available_models(inst)
+    ]
+    return tuple(sorted(out, key=_quality_key))
+
+
+async def _trt_prepare(
+    ctx: ProviderContext,
+    c: Candidate,
+    gpu_uuid: str | None,
+    *,
+    width: int,
+    height: int,
+    source: Fraction,
+    target: Fraction,
+    src_frames: int,
+) -> tuple[dict[str, Any], Path]:
+    """Build (or reuse) the engine for this size; the template's user_data and path.
+
+    TensorRT is timed through the playback template itself, so the speed test
+    measures exactly what plays (a blank clip in vspipe, mpv's frames in mpv)."""
+    inst = c.trt_install
+    if inst is None or c.model is None:
+        raise measure.MeasureFailed("TensorRT isn't set up")
+    ident = await trt.nvidia_identity(gpu_uuid)
+    if ident is None:
+        raise measure.MeasureFailed("nvidia-smi didn't report the GPU")
+    key = trt.EngineKey(
+        ident[0], ident[1], inst.vstrt_version, inst.trt_version, c.model, width, height
+    )
+    script = ctx.paths.cache_dir / "bench-template.vpy"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    write_script(script, ScriptConstants(ctx.paths.rpm_plugin_dir))
+    try:
+        folder = await trt.build_engine(ctx.paths, inst, key, script=script)
+    except ButterEyeError as exc:
+        raise measure.MeasureFailed(render_msg(exc.cause), str(exc)) from None
+    params = FilterParams(
+        gen=0,
+        backend=BackendId.RIFE_TRT,
+        src_fps=source,
+        target_fps=target,
+        buffered_frames=BUFFERED_FRAMES,
+        concurrent_frames=c.concurrent_frames,
+        matrix="709" if height >= 720 else "170m",
+        range="limited",
+        trt=trt.script_settings(
+            inst, key, folder, streams=trt.streams_for(width, height), build=False
+        ),
+    )
+    data = json.loads(generator_user_data(params))
+    data["source"] = {
+        "kind": "blank",
+        "width": width,
+        "height": height,
+        "fps": [source.numerator, source.denominator],
+        "length": src_frames,
+    }
+    return data, script
 
 
 def target_fps(req: BenchRequest) -> Fraction:
@@ -350,34 +437,49 @@ async def _measure(
     size: tuple[int, int],
     gpu_id: int | None,
     prog: _Progress,
+    gpu_uuid: str | None = None,
 ) -> tuple[BenchMeasurement, measure.MeasureFailed | None]:
     width, height = size
     source, target = req.source_fps, target_fps(req)
     out_frames = output_frames(height)
     src_frames = math.ceil(out_frames * source / target) + 2
-    data = user_data(
-        c,
-        tools,
-        width=width,
-        height=height,
-        source=source,
-        target=target,
-        src_frames=src_frames,
-        gpu_id=gpu_id,
-    )
+    failure: measure.MeasureFailed | None = None
+    vpy = tools.vpy
+    data: dict[str, Any] = {}
+    if c.backend is BackendId.RIFE_TRT:
+        prog.step(Msg("{config} — preparing the TensorRT engine", {"config": label}))
+        try:
+            data, vpy = await _trt_prepare(
+                ctx, c, gpu_uuid, width=width, height=height, source=source,
+                target=target, src_frames=src_frames,
+            )  # fmt: skip
+        except measure.MeasureFailed as exc:
+            failure = exc
+    else:
+        data = user_data(
+            c,
+            tools,
+            width=width,
+            height=height,
+            source=source,
+            target=target,
+            src_frames=src_frames,
+            gpu_id=gpu_id,
+        )
     timeout = 30.0 + out_frames / 2.0  # >= 2 fps or it is not worth waiting for
-    vs_argv = measure.vspipe_argv(tools.vspipe, tools.vpy, data, out_frames)
+    vs_argv = measure.vspipe_argv(tools.vspipe, vpy, data, out_frames)
 
-    if c.backend is BackendId.RIFE_NCNN:
+    if c.backend in (BackendId.RIFE_NCNN, BackendId.RIFE_TRT):
         faults.mark_rife_session(ctx.paths)  # doctor's BE-1030 window starts here
     before = faults.snapshot()
     pids: set[int] = set()
     vram = measure.VramSampler.detect() if tools.vram else None
     vs_runs: list[measure.VspipeRun] = []
     mpv_runs: list[measure.MpvRun] = []
-    failure: measure.MeasureFailed | None = None
     mpv_failure: measure.MeasureFailed | None = None
     try:
+        if failure is not None:
+            raise failure
         for _ in range(WARMUP_RUNS):
             prog.step(Msg("{config} — warm-up — vspipe", {"config": label}))
             await measure.run_vspipe(op, vs_argv, timeout_s=timeout, env=tools.env, pids=pids)
@@ -398,7 +500,7 @@ async def _measure(
     if failure is None and tools.mpv is not None:
         mpv_argv = measure.mpv_argv(
             tools.mpv,
-            tools.vpy,
+            vpy,
             data,
             width=width,
             height=height,
@@ -531,6 +633,8 @@ async def _bench_locked(ctx: ProviderContext, req: BenchRequest, op: OpContext) 
     tools = find_tools(ctx.paths)
     rife_ok, gpu_id, gpu_uuid = _gpu(ctx)
     cands = discover_candidates(tools.plugin_dir, tools.model_dir, rife=rife_ok)
+    if rife_ok:
+        cands = trt_candidates(ctx) + cands
     if not cands:
         raise _fail(
             Msg("No interpolation plugins are installed, so there is nothing to measure."),
@@ -544,16 +648,17 @@ async def _bench_locked(ctx: ProviderContext, req: BenchRequest, op: OpContext) 
         past = ()
     faulters = repeat_faulters(past, gpu_uuid)
     sizes = sizes_for(req)
-    prog = _Progress(op, total=len(sizes) * len(cands) * _STEPS_PER_CANDIDATE)
+    steps = sum(_STEPS_PER_CANDIDATE + (1 if c.backend is BackendId.RIFE_TRT else 0) for c in cands)
+    prog = _Progress(op, total=len(sizes) * steps)
     results: list[BenchMeasurement] = []
     failures: list[str] = []
     index = 0
     for size in sizes:
         for c in cands:
-            prog.done = index * _STEPS_PER_CANDIDATE  # skipped passes still count
-            index += 1
+            prog.done = index  # skipped passes still count
+            index += _STEPS_PER_CANDIDATE + (1 if c.backend is BackendId.RIFE_TRT else 0)
             label = size_label(c.label, size, req)
-            m, failed = await _measure(ctx, op, c, label, tools, req, size, gpu_id, prog)
+            m, failed = await _measure(ctx, op, c, label, tools, req, size, gpu_id, prog, gpu_uuid)
             results.append(m)
             if failed is not None:
                 failures.append(f"{label}: {failed.reason}\n{failed.detail}")
@@ -651,7 +756,11 @@ def bench_config(cfg: Config, result: BenchResult, label: str) -> Config:
         target=target,
         sc_threshold=old.sc_threshold if old is not None else _sc_threshold(cfg),
         buffered_frames=BUFFERED_FRAMES,
-        concurrent_frames=RIFE_CONCURRENT_FRAMES if m.backend is BackendId.RIFE_NCNN else None,
+        concurrent_frames=(
+            RIFE_CONCURRENT_FRAMES
+            if m.backend in (BackendId.RIFE_NCNN, BackendId.RIFE_TRT)
+            else None
+        ),
         hdr=old.hdr if old is not None else "skip",
         builtin=False,
     )

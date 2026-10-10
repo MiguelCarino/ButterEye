@@ -610,7 +610,9 @@ def test_conflict_parser_edge_cases(xdg_env: Any) -> None:
     assert not checks_mpv.hwdec_is_copy(None)
 
 
-async def test_trt_section_after_optin(box: Box) -> None:
+async def test_trt_section_after_optin(box: Box, monkeypatch: pytest.MonkeyPatch) -> None:
+    # the fixture box has no TensorRT, even when the machine running the tests does
+    monkeypatch.setattr(checks_trt, "find_trtexec", lambda: None)
     r = await run_doctor(box, trt=True)
     f = by_id(r)
     assert r.trt_included

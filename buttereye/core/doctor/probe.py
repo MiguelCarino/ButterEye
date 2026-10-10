@@ -65,13 +65,15 @@ def mpv_quote(value: str) -> str:
 
 
 def user_vstrt(paths: Paths) -> Path | None:
-    """The newest user-built vstrt (``$XDG_DATA_HOME/buttereye/plugins/vstrt/<ver>/``)."""
-    base = paths.data_dir / "plugins" / "vstrt"
+    """The newest user-built vstrt (``$XDG_DATA_HOME/buttereye/plugins/vstrt/<ver>/``),
+    chosen as ``backends.trt`` chooses it."""
+    from buttereye.core.backends.trt import _vstrt_dirs
+
     try:
-        found = sorted(base.glob("*/libvstrt.so"))
+        found = _vstrt_dirs(paths)
     except OSError:
         return None
-    return found[-1] if found else None
+    return found[0] / "libvstrt.so" if found else None
 
 
 def plugin_specs(paths: Paths, *, trt: bool) -> tuple[PluginSpec, ...]:
@@ -97,7 +99,36 @@ def plugin_specs(paths: Paths, *, trt: bool) -> tuple[PluginSpec, ...]:
 
 
 def vsmlrt_paths(paths: Paths) -> tuple[str, ...]:
-    return (str(paths.rpm_data_dir / "python"),)
+    """Where ``vsmlrt.py`` and its fp16 helpers may be: next to the user's vstrt
+    (contrib/build-vstrt.sh), ButterEye's own Python folder, the packaged one."""
+    out: list[str] = []
+    vstrt = user_vstrt(paths)
+    if vstrt is not None:
+        out.append(str(vstrt.parent))
+    out += [str(paths.data_dir / "python"), str(paths.rpm_data_dir / "python")]
+    return tuple(out)
+
+
+def version_text(raw: object) -> str | None:
+    """A plugin's reported version as one line (vstrt reports a map)."""
+    if isinstance(raw, dict):
+        tv = trt_version_of(raw)
+        name = str(raw.get("version") or "vstrt")
+        return f"{name} (TensorRT {tv[0]}.{tv[1]})" if tv else name
+    return str(raw) if raw else None
+
+
+def trt_version_of(raw: object) -> tuple[int, int] | None:
+    """(major, minor) of TensorRT from vstrt's ``core.trt.Version()`` (e.g. 110300)."""
+    if isinstance(raw, dict):
+        text = str(raw.get("tensorrt_version") or raw.get("tensorrt_version_build") or "")
+    else:  # older probes stored str(dict)
+        m = re.search(r"tensorrt_version'?\"?:\s*b?'?\"?(\d+)", str(raw or ""))
+        text = m.group(1) if m else ""
+    if not text.isdigit():
+        return None
+    n = int(text)
+    return (n // 10000, (n // 100) % 100) if n >= 10000 else (n // 1000, (n // 100) % 10)
 
 
 async def run_probe(
@@ -205,9 +236,7 @@ def plugin_statuses(
                 active = "distro"
         variant = rife_variant(info)[0] if spec.ns == "rife" else None
         version = (
-            info.evr
-            if info
-            else (str(rec.get("version")) if rec is not None and rec.get("version") else None)
+            info.evr if info else (version_text(rec.get("version")) if rec is not None else None)
         )
         out.append(
             PluginStatus(
@@ -403,5 +432,7 @@ __all__ = [
     "probe_result",
     "probe_findings",
     "parse_vspipe_core",
+    "trt_version_of",
     "user_vstrt",
+    "version_text",
 ]

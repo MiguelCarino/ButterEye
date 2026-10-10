@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from buttereye.core import capabilities
+from buttereye.core.backends import trt
 from buttereye.core.capabilities import ProviderRef
 from buttereye.core.doctor.checks_pkgs import parse_encoders
 from buttereye.core.doctor.proc import run
@@ -294,6 +295,8 @@ def vspipe_requests(engine: BackendId) -> int | None:
     gpu_thread + 2. MVTools (CPU-bound) keeps vspipe's default."""
     if engine is BackendId.RIFE_NCNN:
         return max(RIFE_CONCURRENT_FRAMES_DEFAULT, RIFE_GPU_THREAD_DEFAULT + 2)
+    if engine is BackendId.RIFE_TRT:
+        return RIFE_CONCURRENT_FRAMES_DEFAULT  # a few frames per CUDA stream
     return None
 
 
@@ -304,10 +307,29 @@ def offline_target(target: Target, src_fps: Fraction) -> Fraction:
     return src_fps * 2
 
 
-def _installed(ctx: ProviderContext) -> frozenset[BackendId]:
+def _trt(ctx: ProviderContext, profile: Profile | None) -> tuple[trt.TrtInstall, str] | None:
+    """The TensorRT install and model for a render, when opted in and set up."""
+    cfg = _config(ctx)
+    if cfg is None or not cfg.general.trt_experimental:
+        return None
+    inst = trt.find_install(ctx.paths)
+    if inst is None:
+        return None
+    avail = trt.available_models(inst)
+    wanted = profile.model if profile is not None else None
+    for name in (wanted, trt.DEFAULT_MODEL, *sorted(avail)):
+        if name in avail:
+            return inst, name
+    return None
+
+
+def _installed(ctx: ProviderContext, profile: Profile | None = None) -> frozenset[BackendId]:
     p = ctx.paths
     return decide.installed_backends(
-        p.rpm_plugin_dir, p.rpm_data_dir / MODEL_SUBDIR, (p.data_dir / USER_MODEL_SUBDIR,)
+        p.rpm_plugin_dir,
+        p.rpm_data_dir / MODEL_SUBDIR,
+        (p.data_dir / USER_MODEL_SUBDIR,),
+        trt=_trt(ctx, profile) is not None,
     )
 
 
@@ -315,7 +337,12 @@ def _engine(
     ctx: ProviderContext, profile: Profile | None
 ) -> tuple[BackendId | None, decide.ModelChoice | None]:
     backend = profile.backend if profile is not None else "auto"
-    engine = rprobe.engine_for(backend, _installed(ctx))
+    engine = rprobe.engine_for(backend, _installed(ctx, profile))
+    if engine is BackendId.RIFE_TRT:
+        found = _trt(ctx, profile)
+        if found is not None:
+            return engine, decide.ModelChoice(found[1], None, None)
+        engine = rprobe.engine_for("auto", _installed(ctx, None) - {BackendId.RIFE_TRT})
     if engine is not BackendId.RIFE_NCNN:
         return engine, None
     p = ctx.paths
@@ -327,6 +354,30 @@ def _engine(
     if mc.path is None:
         return (BackendId.MVTOOLS if BackendId.MVTOOLS in _installed(ctx) else None), None
     return engine, mc
+
+
+async def _trt_engine(
+    ctx: ProviderContext,
+    profile: Profile | None,
+    model: str,
+    size: tuple[int, int],
+    script: Path,
+) -> dict[str, Any]:
+    """Build (or reuse) the TensorRT engine for this size; the script's ``trt`` data."""
+    found = _trt(ctx, profile)
+    ident = await trt.nvidia_identity(None)
+    if found is None or ident is None:
+        raise _fail(
+            ErrorCode.TRT_UNSUPPORTED,
+            Msg("TensorRT isn't set up any more."),
+            Msg("Run the System checks, or choose another engine."),
+        )
+    inst = found[0]
+    key = trt.EngineKey(
+        ident[0], ident[1], inst.vstrt_version, inst.trt_version, model, size[0], size[1]
+    )
+    folder = await trt.build_engine(ctx.paths, inst, key, script=script)
+    return trt.script_settings(inst, key, folder, streams=trt.streams_for(*size), build=False)
 
 
 async def _bench_results(ctx: ProviderContext) -> tuple[BenchResult, ...]:
@@ -693,6 +744,9 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
         _emit(ctx, job)
         script.parent.mkdir(parents=True, exist_ok=True)
         write_script(script, _constants(ctx))
+        trt_settings: dict[str, Any] | None = None
+        if engine is BackendId.RIFE_TRT and mc is not None and mc.name is not None:
+            trt_settings = await _trt_engine(ctx, profile, mc.name, (w, h), script)
         params = FilterParams(
             gen=1,
             backend=engine,
@@ -707,13 +761,14 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
             gpu_thread=RIFE_GPU_THREAD_DEFAULT if engine is BackendId.RIFE_NCNN else None,
             uhd=decide.uhd_mode(w, h),
             sc_threshold=(profile.sc_threshold if profile is not None else 0.12)
-            if engine is BackendId.RIFE_NCNN
+            if engine in (BackendId.RIFE_NCNN, BackendId.RIFE_TRT)
             else None,
             title=src.name,
             size=(w, h) if (w, h) != (info.width, info.height) else None,
             # offline keeps the finest settings: no real-time limit (§4.4)
             dither="error_diffusion",
             mv_pel=2,
+            trt=trt_settings,
         )
         ud: dict[str, Any] = json.loads(user_data(params))
         ud["source"] = {

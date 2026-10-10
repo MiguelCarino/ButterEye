@@ -172,12 +172,13 @@ def test_trt_opted_in_but_not_set_up(cfg: Config) -> None:
     assert select(r, c, ()).backend is BackendId.RIFE_NCNN
 
 
-def test_trt_opted_in_all_ok_needs_engine_builder(cfg: Config) -> None:
-    # backends.trt.build_engine is reserved (M2): TRT stays unavailable in this build
+def test_trt_opted_in_all_ok_is_available(cfg: Config) -> None:
+    # backends.trt.build_engine exists (spike M0(l)): an opted-in, clean report offers TRT
     c = with_general(cfg, trt_experimental=True)
     st = {b.id: b for b in backends(report(trt=True, extra=_trt_ok()), c)}
-    assert not st[BackendId.RIFE_TRT].available
-    assert st[BackendId.RIFE_TRT].code is ErrorCode.NOT_IMPLEMENTED
+    assert st[BackendId.RIFE_TRT].available
+    assert st[BackendId.RIFE_TRT].experimental
+    assert st[BackendId.RIFE_TRT].code is None
 
 
 def test_blocking_selects_nothing(cfg: Config) -> None:

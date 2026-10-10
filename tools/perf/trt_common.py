@@ -55,7 +55,8 @@ def rife(core: Any, rgb: Any, cfg: dict[str, Any], multi: Fraction | int) -> Any
     if cfg["vstrt_dir"] not in sys.path:
         sys.path.insert(0, cfg["vstrt_dir"])
     if cfg.get("vspy_dir") and cfg["vspy_dir"] not in sys.path:
-        sys.path.append(cfg["vspy_dir"])  # last: the system's own packages win
+        # first: onnx needs its own protobuf, not Fedora's 3.19
+        sys.path.insert(0, cfg["vspy_dir"])
     import vsmlrt  # type: ignore[import-not-found]  # installed next to vstrt
 
     vsmlrt.trtexec_path = cfg.get("trtexec", "/usr/bin/trtexec")
