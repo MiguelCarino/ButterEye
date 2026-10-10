@@ -4737,6 +4737,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Best quality — GPU · TensorRT</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>ButterEye can't smooth video yet: {problem}.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4882,6 +4887,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Lighter — GPU · TensorRT</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Lost touch</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4963,6 +4973,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>Plays at your display's refresh rate divided by a whole number: the lowest such rate that at least doubles the video (60 fps on a 180 Hz screen, 48 on 144 Hz).</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Preparing NVIDIA TensorRT and measuring your GPU (a few minutes)…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

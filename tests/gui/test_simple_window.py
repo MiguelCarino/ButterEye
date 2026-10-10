@@ -540,3 +540,80 @@ def test_dark_palette_render(make_simple: Make, qtbot: Any, qapp: Any) -> None:
         controller.apply_scheme(Qt.ColorScheme.Light)
     pal = QApplication.palette()
     assert theme.contrast_ratio(pal.color(R.Highlight), pal.color(R.Window)) >= 3.0
+
+
+# ---------------------------------------------------------------------------
+# experimental NVIDIA TensorRT (SCOPE §5.2)
+# ---------------------------------------------------------------------------
+
+
+def _trt_ready() -> Any:
+    """all_ready, where turning TensorRT on finds it set up."""
+    from buttereye.core.capabilities import CapState
+
+    return dataclasses.replace(
+        sc.get("all_ready"), name="trt_ready", trt_after_optin=CapState(True)
+    )
+
+
+def _turn_on_trt(win: Any, qtbot: Any) -> None:
+    rev = win.config_load.revision
+    done: list[object] = []
+    win.bridge.call(
+        lambda core: core.set_trt_experimental(True, expected_revision=rev),
+        owner=win,
+        ok=done.append,
+        err=done.append,
+    )
+    qtbot.waitUntil(lambda: bool(done), timeout=5000)
+
+
+def test_profile_maps_gpu_choices_to_tensorrt_only_when_on() -> None:
+    assert sw.simple_profile("best", "x2").backend is BackendId.RIFE_NCNN
+    assert sw.simple_profile("best", "x2", trt=True).backend is BackendId.RIFE_TRT
+    light = sw.simple_profile("light", "x2", trt=True)
+    assert light.backend is BackendId.RIFE_TRT and light.model == sw.MODEL_LIGHT
+    assert sw.smoothness_key(light) == "light"
+    assert sw.simple_profile("auto", "x2", trt=True).backend == "auto"
+    assert sw.simple_profile("cpu", "x2", trt=True).backend is BackendId.MVTOOLS
+
+
+def test_turning_tensorrt_on_relabels_saves_and_measures(make_simple: Make, qtbot: Any) -> None:
+    win = make_simple(_trt_ready(), auto_bench=True)
+    pick(win.smooth_combo, "best")
+    qtbot.waitUntil(lambda: find_backend(saved(win)) is BackendId.RIFE_NCNN, timeout=5000)
+    assert "TensorRT" not in win.smooth_combo.currentText()
+    _turn_on_trt(win, qtbot)
+    qtbot.waitUntil(lambda: "TensorRT" in win.smooth_combo.currentText(), timeout=5000)
+    qtbot.waitUntil(lambda: find_backend(saved(win)) is BackendId.RIFE_TRT, timeout=5000)
+    # the history has no TensorRT measurement: the speed test runs once
+    qtbot.waitUntil(lambda: bool(calls(win, "bench")), timeout=5000)
+    assert calls(win, "bench")[0].args[0] == sw.FIRST_BENCH
+    assert "TensorRT" in win.status_text()
+    qtbot.waitUntil(lambda: win.status_text() == "Ready.", timeout=10000)
+    assert len(calls(win, "bench")) == 1
+
+
+def test_auto_choice_stays_auto_when_tensorrt_turns_on(make_simple: Make, qtbot: Any) -> None:
+    win = make_simple(_trt_ready())
+    assert win.smoothness() == "auto"
+    before = len(calls(win, "save_config"))
+    _turn_on_trt(win, qtbot)
+    qtbot.wait(200)
+    # only the opt-in itself was saved; Auto ranks TensorRT on its own
+    assert len(calls(win, "save_config")) == before + 1
+    assert sw.find_simple(saved(win)) is None or sw.find_simple(saved(win)).backend == "auto"
+
+
+def find_backend(cfg: Any) -> Any:
+    p = sw.find_simple(cfg)
+    return p.backend if p is not None else None
+
+
+def test_details_system_tab_offers_the_tensorrt_opt_in(make_simple: Make, qtbot: Any) -> None:
+    win = make_simple(_trt_ready())
+    win.open_details("system")
+    page = win.details.pages["system"]
+    qtbot.waitUntil(lambda: page.report is not None, timeout=5000)
+    assert page.trt_row.isVisibleTo(page)
+    assert page.trt_button.accessibleName() == "Turn on experimental NVIDIA TensorRT"

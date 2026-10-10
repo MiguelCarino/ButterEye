@@ -200,7 +200,15 @@ async def doctor(paths: Paths, cfg: Config, *, trt: bool, progress: ProgressSink
 
         if trt and t_ld is not None:
             ld = await t_ld
-            findings.extend(checks_trt.trt_findings(hw, ld, raw, trtexec=checks_trt.find_trtexec()))
+            findings.extend(
+                checks_trt.trt_findings(
+                    hw,
+                    ld,
+                    raw,
+                    trtexec=checks_trt.find_trtexec(),
+                    models_dir=paths.data_dir / "models" / "vsmlrt",
+                )
+            )
         else:
             findings.append(checks_trt.trt_off_finding())
         prog.section(Section.TRT)

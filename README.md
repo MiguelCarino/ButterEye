@@ -45,16 +45,18 @@ Pre-alpha, verified on the dev box (Fedora 44, RTX 4090, mpv 0.41.0, VapourSynth
 - **Storage and About**: real folder sizes, packaged models, licence texts.
 - **Lua helper in mpv**: Alt+b toggles the filter, Alt+B shows the status line.
 
-- **NVIDIA TensorRT (experimental, opt-in)**: with `[general] trt_experimental = true`
-  in `config.toml` (or the System page of the classic window) and a local `vstrt`
-  build, live play, the speed test and smooth copies use RIFE through TensorRT. A
+- **NVIDIA TensorRT (experimental, opt-in)**: turn it on in **Details ▸ System ▸ Turn
+  on…** (or `[general] trt_experimental = true` in `config.toml`). With a local `vstrt`
+  build, live play, the speed test and smooth copies use RIFE through TensorRT; the
+  GPU choices read "… · TensorRT", and the speed test runs once by itself so
+  Automatic can choose it. A
   missing engine is built in the background on first use (about 30 s at 1080p);
   meanwhile the video plays with RIFE (Vulkan) and switches over when it's ready.
   On the RTX 4090: 1080p 2× at 262 fps and 23.976 → 60 at 101 fps in mpv, about
   4× the Vulkan path (`docs/spikes/m0l.md`). Setup, after adding NVIDIA's
   repositories as in `docs/spikes/m0k.md`:
-  `contrib/build-vstrt.sh --with-python-deps --with-models`, then run the speed
-  test again so Automatic can choose TensorRT.
+  `contrib/build-vstrt.sh --with-python-deps --with-models`. The System checks list
+  anything still missing, with the command that installs it.
 
 **Not in this build yet** (the GUI shows an "isn't in this build yet" panel, BE-9001)
 

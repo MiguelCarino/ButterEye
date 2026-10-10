@@ -91,6 +91,7 @@ def trt_findings(
     probe_raw: Mapping[str, Any] | None,
     *,
     trtexec: str | None,
+    models_dir: Path | None = None,
 ) -> list[Finding]:
     out: list[Finding] = []
     dnf_rt = "sudo dnf install libnvinfer-bin"
@@ -254,8 +255,36 @@ def trt_findings(
                 code=ErrorCode.TRT_UNSUPPORTED,
                 cause=M("No user-built vstrt loads in mpv ({why}).", {"why": why}),
                 fix=M("Build it locally with contrib/build-vstrt.sh."),
+                commands=("contrib/build-vstrt.sh --with-python-deps --with-models",),
             )
         )
+    # (h) vs-mlrt's RIFE ONNX models (user-downloaded, §5.4)
+    if models_dir is not None:
+        onnx = sorted(p.name for p in (models_dir / "rife_v2").glob("*.onnx"))
+        if onnx:
+            out.append(
+                _f(
+                    "trt.models",
+                    Severity.OK,
+                    M("RIFE models for TensorRT: {n}", {"n": len(onnx)}),
+                    evidence=tuple(onnx),
+                )
+            )
+        else:
+            out.append(
+                _f(
+                    "trt.models",
+                    Severity.DEGRADED,
+                    M("No RIFE models for TensorRT"),
+                    code=ErrorCode.TRT_UNSUPPORTED,
+                    cause=M(
+                        "vs-mlrt's RIFE ONNX models aren't in {path}.",
+                        {"path": str(models_dir / "rife_v2")},
+                    ),
+                    fix=M("Download them with contrib/build-vstrt.sh."),
+                    commands=("contrib/build-vstrt.sh --with-models --skip-build",),
+                )
+            )
     if core_n is not None and core_n > MAX_VS_CORE:
         out.append(
             _f(
@@ -282,22 +311,32 @@ def trt_findings(
         out.append(
             _f(
                 "trt.fp16",
-                Severity.INFO,
-                M("Only fp32 engines are offered"),
-                cause=M("onnxconverter_common is not importable in the vspipe Python."),
-                commands=("sudo dnf install buttereye-onnxconverter-common",),
+                Severity.DEGRADED,
+                M("onnxconverter-common is missing"),
+                code=ErrorCode.TRT_UNSUPPORTED,
+                cause=M(
+                    "ButterEye builds fp16 TensorRT engines (spike M0(l)), which needs "
+                    "onnxconverter_common in the vspipe Python."
+                ),
+                fix=M("Install it into ButterEye's own Python folder."),
+                commands=("contrib/build-vstrt.sh --with-python-deps --skip-build",),
             )
         )
     if mods.get("onnx"):
-        out.append(_f("trt.onnx", Severity.OK, M("python3-onnx found")))
+        out.append(_f("trt.onnx", Severity.OK, M("onnx found")))
     else:
         out.append(
             _f(
                 "trt.onnx",
-                Severity.INFO,
-                M("RIFE scale profiles below 1 are disabled"),
-                cause=M("onnx is not importable in the Python that mpv and vspipe use."),
-                commands=("sudo dnf install python3-onnx",),
+                Severity.DEGRADED,
+                M("onnx is missing"),
+                code=ErrorCode.TRT_UNSUPPORTED,
+                cause=M(
+                    "fp16 engines are converted with onnx in the vspipe Python; Fedora's "
+                    "python3-onnx comes with a protobuf too old for it."
+                ),
+                fix=M("Install it into ButterEye's own Python folder."),
+                commands=("contrib/build-vstrt.sh --with-python-deps --skip-build",),
             )
         )
     return out

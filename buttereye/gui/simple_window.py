@@ -178,8 +178,13 @@ def smoothness_key(profile: Profile) -> str:
     return "best"
 
 
-def simple_profile(smoothness: str, target: str) -> Profile:
+def simple_profile(smoothness: str, target: str, *, trt: bool = False) -> Profile:
+    """The simple profile. ``trt``: experimental NVIDIA TensorRT is turned on and
+    set up, so the GPU choices use it (live play falls back to RIFE-ncnn while
+    an engine is being built or when TensorRT can't keep up)."""
     backend, model = SMOOTHNESS.get(smoothness, SMOOTHNESS[DEFAULT_SMOOTHNESS])
+    if trt and smoothness in GPU_CHOICES:
+        backend = BackendId.RIFE_TRT
     return Profile(
         id=SIMPLE_ID,
         name=SIMPLE_NAME,
@@ -496,6 +501,8 @@ class SimpleWindow(QMainWindow):
         self.report: DoctorReport | None = None
         self.gpu_available: bool | None = None
         self.bench_started = False
+        self.trt_bench_started = False
+        self._trt_on = False  # Feature.TRT available: opted in and set up
         self.setup_started = False
         self._may_close = False
         self._in_close_flow = False
@@ -843,10 +850,14 @@ class SimpleWindow(QMainWindow):
         try:
             combo.clear()
             combo.addItem(self.tr("Auto (recommended)"), "auto")
-            for key, text in (
-                ("best", self.tr("Best quality — GPU")),
-                ("light", self.tr("Lighter — GPU")),
-            ):
+            gpu = (
+                (("best", self.tr("Best quality — GPU · TensorRT")),
+                 ("light", self.tr("Lighter — GPU · TensorRT")))
+                if self._trt_on
+                else (("best", self.tr("Best quality — GPU")),
+                      ("light", self.tr("Lighter — GPU")))
+            )  # fmt: skip
+            for key, text in gpu:
                 if self.gpu_available is False:
                     if current != key:
                         continue
@@ -865,7 +876,7 @@ class SimpleWindow(QMainWindow):
         return self._target_key
 
     def profile(self) -> Profile:
-        return simple_profile(self.smoothness(), self.target())
+        return simple_profile(self.smoothness(), self.target(), trt=self._trt_on)
 
     def _show_config_choices(self, cfg: Config) -> None:
         prof = find_simple(cfg)
@@ -980,6 +991,57 @@ class SimpleWindow(QMainWindow):
         else:
             self.drop.setToolTip("")
 
+    # ------------------------------------------------------------------ TensorRT
+    def _sync_trt(self) -> None:
+        """Follow the TensorRT capability: relabel the GPU choices, keep the saved
+        profile on the right engine, and measure TensorRT once if it never was."""
+        on = self._ok(Feature.TRT)
+        changed = on != self._trt_on
+        self._trt_on = on
+        if changed:
+            self._fill_smoothness()
+        load = self.config_load
+        if load is None or self._busy == "setup":
+            return
+        saved = find_simple(load.config)
+        if saved is not None and self.smoothness() in GPU_CHOICES:
+            want = BackendId.RIFE_TRT if on else BackendId.RIFE_NCNN
+            if saved.backend is not want:
+                self.persist()
+        if on:
+            self._maybe_trt_bench()
+
+    def _maybe_trt_bench(self) -> None:
+        if (
+            not self.auto_bench
+            or self.trt_bench_started
+            or self._bench_running
+            or not self._ok(Feature.BENCH)
+        ):
+            return
+        self.trt_bench_started = True
+        self.bridge.call(
+            lambda core: core.bench_history(),
+            owner=self,
+            ok=self._on_trt_history,
+            err=self._quiet,
+        )
+
+    def _on_trt_history(self, history: tuple[BenchResult, ...]) -> None:
+        if any(m.backend is BackendId.RIFE_TRT for r in history for m in r.measurements):
+            return
+        if self._bench_running:
+            return
+        self._bench_running = True
+        self.set_status("busy", self._bench_text())
+        self.bridge.run_op(
+            lambda core: core.bench(FIRST_BENCH),
+            owner=self,
+            ok=self._bench_done,
+            err=self._bench_failed,
+            progress=self._bench_progress,
+        )
+
     def _seed(self, snaps: tuple[SessionSnapshot, ...]) -> None:
         for snap in snaps:
             self._upsert(snap)
@@ -1067,6 +1129,7 @@ class SimpleWindow(QMainWindow):
         self._note_report(report)
         self._busy = None
         self._maybe_bench()
+        self._sync_trt()
         self._ready()
 
     def _trt_opted_in(self) -> bool:
@@ -1162,6 +1225,9 @@ class SimpleWindow(QMainWindow):
         )
 
     def _bench_text(self, pct: int | None = None) -> str:
+        if self._trt_on and self.trt_bench_started:
+            base = self.tr("Preparing NVIDIA TensorRT and measuring your GPU (a few minutes)…")
+            return f"{base} {pct}%" if pct else base
         if self.gpu_available is False:
             base = self.tr("Measuring your computer (about a minute)…")
         else:
@@ -1178,6 +1244,7 @@ class SimpleWindow(QMainWindow):
     def _bench_done(self, _result: BenchResult) -> None:
         self._bench_running = False
         self._ready()
+        self._sync_trt()
 
     def _bench_failed(self, err: ButterEyeError) -> None:
         self._bench_running = False
@@ -1532,6 +1599,7 @@ class SimpleWindow(QMainWindow):
             self._upsert_job(ev.job)
         elif isinstance(ev, CapabilitiesChanged):
             self._apply_caps(ev.caps)
+            self._sync_trt()
         elif isinstance(ev, ConfigChanged):
             load = self.config_load
             if not self._saving and (load is None or ev.revision != load.revision):

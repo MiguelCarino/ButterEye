@@ -619,6 +619,9 @@ async def test_trt_section_after_optin(box: Box, monkeypatch: pytest.MonkeyPatch
     assert f["trt.trtexec"].code is ErrorCode.TRT_UNSUPPORTED
     assert f["trt.libnvinfer"].code is ErrorCode.TRT_UNSUPPORTED
     assert f["trt.vstrt"].code is ErrorCode.TRT_UNSUPPORTED
+    # no vs-mlrt models on the fixture box: says where they go and how to get them
+    assert f["trt.models"].code is ErrorCode.TRT_UNSUPPORTED
+    assert f["trt.models"].commands == ("contrib/build-vstrt.sh --with-models --skip-build",)
     assert f["trt.gpu"].severity is Severity.OK
     trt_rows = [x for x in r.findings if x.section is Section.TRT]
     assert trt_rows and all(x.experimental for x in trt_rows)
