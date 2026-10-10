@@ -147,7 +147,8 @@ file. There are four choices:
   frame). Shaders from your own `mpv.conf` stay as they are.
 
 To keep CPU and GPU load down, live CPU smoothing (MVTools) searches at full-pixel
-precision (`pel=1`) from 720p up, and converted files use the lighter software encoder
+precision (`pel=1`) from 720p up, switches to its faster block mode when it can't
+keep up (4K on most CPUs; spike M0(p)), and converted files use the lighter software encoder
 presets `libx265` *fast* and `libsvtav1` *8* (about 1.5-2× less CPU than *medium*/*6*,
 for files a few % larger at the same quality setting); conversions keep MVTools at
 `pel=2`. See SCOPE §7.5.

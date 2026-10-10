@@ -1,0 +1,270 @@
+{
+ "speed": [
+  {
+   "variant": "default (blk16 ov4 flow)",
+   "size": "1920x1080",
+   "runs": [
+    133.82,
+    136.74,
+    139.12
+   ],
+   "fps": 136.74
+  },
+  {
+   "variant": "default (blk16 ov4 flow)",
+   "size": "3840x2160",
+   "runs": [
+    34.63,
+    35.33,
+    35.41
+   ],
+   "fps": 35.33
+  },
+  {
+   "variant": "blk16 ov0 flow",
+   "size": "1920x1080",
+   "runs": [
+    148.5,
+    148.09,
+    148.48
+   ],
+   "fps": 148.48
+  },
+  {
+   "variant": "blk16 ov0 flow",
+   "size": "3840x2160",
+   "runs": [
+    36.53,
+    36.51,
+    36.43
+   ],
+   "fps": 36.51
+  },
+  {
+   "variant": "blk16 ov4 luma-only",
+   "size": "1920x1080",
+   "runs": [
+    146.27,
+    146.33,
+    145.35
+   ],
+   "fps": 146.27
+  },
+  {
+   "variant": "blk16 ov4 luma-only",
+   "size": "3840x2160",
+   "runs": [
+    35.62,
+    36.21,
+    35.8
+   ],
+   "fps": 35.8
+  },
+  {
+   "variant": "blk32 ov8 flow",
+   "size": "1920x1080",
+   "runs": [
+    151.51,
+    149.12,
+    149.79
+   ],
+   "fps": 149.79
+  },
+  {
+   "variant": "blk32 ov8 flow",
+   "size": "3840x2160",
+   "runs": [
+    37.03,
+    36.81,
+    36.68
+   ],
+   "fps": 36.81
+  },
+  {
+   "variant": "blk32 ov8 luma-only",
+   "size": "1920x1080",
+   "runs": [
+    144.0,
+    143.43,
+    151.73
+   ],
+   "fps": 144.0
+  },
+  {
+   "variant": "blk32 ov8 luma-only",
+   "size": "3840x2160",
+   "runs": [
+    37.13,
+    37.31,
+    37.74
+   ],
+   "fps": 37.31
+  },
+  {
+   "variant": "blk32 ov0 flow",
+   "size": "1920x1080",
+   "runs": [
+    152.9,
+    153.26,
+    152.47
+   ],
+   "fps": 152.9
+  },
+  {
+   "variant": "blk32 ov0 flow",
+   "size": "3840x2160",
+   "runs": [
+    37.49,
+    37.5,
+    37.3
+   ],
+   "fps": 37.49
+  },
+  {
+   "variant": "blk16 ov4 block",
+   "size": "1920x1080",
+   "runs": [
+    395.96,
+    392.83,
+    392.16
+   ],
+   "fps": 392.83
+  },
+  {
+   "variant": "blk16 ov4 block",
+   "size": "3840x2160",
+   "runs": [
+    89.58,
+    91.55,
+    90.42
+   ],
+   "fps": 90.42
+  },
+  {
+   "variant": "blk32 ov8 block",
+   "size": "1920x1080",
+   "runs": [
+    430.21,
+    426.48,
+    427.08
+   ],
+   "fps": 427.08
+  },
+  {
+   "variant": "blk32 ov8 block",
+   "size": "3840x2160",
+   "runs": [
+    97.27,
+    96.35,
+    96.21
+   ],
+   "fps": 96.35
+  }
+ ],
+ "quality": [
+  {
+   "clip": "film-1920x804",
+   "t": 600.0,
+   "blend": 26.82,
+   "default (blk16 ov4 flow)": 32.64,
+   "blk16 ov0 flow": 32.47,
+   "blk16 ov4 luma-only": 32.64,
+   "blk32 ov8 flow": 32.39,
+   "blk32 ov8 luma-only": 32.34,
+   "blk32 ov0 flow": 32.28,
+   "blk16 ov4 block": 32.63,
+   "blk32 ov8 block": 32.4
+  },
+  {
+   "clip": "film-1920x804",
+   "t": 1800.0,
+   "blend": 42.29,
+   "default (blk16 ov4 flow)": 44.41,
+   "blk16 ov0 flow": 44.42,
+   "blk16 ov4 luma-only": 44.38,
+   "blk32 ov8 flow": 44.38,
+   "blk32 ov8 luma-only": 44.46,
+   "blk32 ov0 flow": 44.29,
+   "blk16 ov4 block": 44.55,
+   "blk32 ov8 block": 44.55
+  },
+  {
+   "clip": "film-1920x804",
+   "t": 3600.0,
+   "blend": 38.03,
+   "default (blk16 ov4 flow)": 39.19,
+   "blk16 ov0 flow": 39.2,
+   "blk16 ov4 luma-only": 39.22,
+   "blk32 ov8 flow": 39.36,
+   "blk32 ov8 luma-only": 39.25,
+   "blk32 ov0 flow": 39.21,
+   "blk16 ov4 block": 39.39,
+   "blk32 ov8 block": 39.55
+  },
+  {
+   "clip": "film-1920x804",
+   "t": 7200.0,
+   "blend": 35.66,
+   "default (blk16 ov4 flow)": 33.08,
+   "blk16 ov0 flow": 33.04,
+   "blk16 ov4 luma-only": 33.05,
+   "blk32 ov8 flow": 33.09,
+   "blk32 ov8 luma-only": 33.08,
+   "blk32 ov0 flow": 33.04,
+   "blk16 ov4 block": 33.11,
+   "blk32 ov8 block": 33.11
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "blend": 46.75,
+   "default (blk16 ov4 flow)": 43.27,
+   "blk16 ov0 flow": 43.37,
+   "blk16 ov4 luma-only": 43.25,
+   "blk32 ov8 flow": 43.34,
+   "blk32 ov8 luma-only": 43.46,
+   "blk32 ov0 flow": 43.74,
+   "blk16 ov4 block": 43.43,
+   "blk32 ov8 block": 43.42
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "blend": 32.47,
+   "default (blk16 ov4 flow)": 30.04,
+   "blk16 ov0 flow": 30.09,
+   "blk16 ov4 luma-only": 30.06,
+   "blk32 ov8 flow": 30.38,
+   "blk32 ov8 luma-only": 30.43,
+   "blk32 ov0 flow": 30.63,
+   "blk16 ov4 block": 30.09,
+   "blk32 ov8 block": 30.42
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "blend": 26.14,
+   "default (blk16 ov4 flow)": 23.64,
+   "blk16 ov0 flow": 23.66,
+   "blk16 ov4 luma-only": 23.64,
+   "blk32 ov8 flow": 23.67,
+   "blk32 ov8 luma-only": 23.66,
+   "blk32 ov0 flow": 23.67,
+   "blk16 ov4 block": 23.65,
+   "blk32 ov8 block": 23.69
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "blend": 17.55,
+   "default (blk16 ov4 flow)": 22.65,
+   "blk16 ov0 flow": 22.83,
+   "blk16 ov4 luma-only": 22.82,
+   "blk32 ov8 flow": 22.27,
+   "blk32 ov8 luma-only": 22.2,
+   "blk32 ov0 flow": 22.23,
+   "blk16 ov4 block": 22.67,
+   "blk32 ov8 block": 22.3
+  }
+ ]
+}

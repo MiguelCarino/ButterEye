@@ -35,3 +35,19 @@ M0(i) left two P1 items: (1) mpv seemed to halve MVTools (78 vs 150 fps in vspip
 3. **`gpu_thread` 8 for RIFE-ncnn gains 0–6 %**, within run-to-run spread, though it is
    steadier. With the earlier fault history of this build (m0f.md) and TensorRT now the
    fast NVIDIA path, the default stays 4. No Xid in these 33 runs.
+
+## Addendum (2026-10-10): the scene-change callback
+
+P1 also listed replacing the per-frame Python scene-change callback
+(`template.vpy` `_mark_scene_changes`: `std.PlaneStats` + `std.ModifyFrame`) with a native
+filter. Fedora's VapourSynth R72 ships neither `misc.SCDetect` nor akarin, so a native
+version would mean a new COPR plugin package. Measured first, through the real template on
+the TensorRT path (fp16, half-precision frames, 3 runs each, vspipe `-r 8`):
+
+| Size | Scene marking off | Scene marking on (0.12) | Cost |
+|---|---|---|---|
+| 1920×1080 → 2× | 201.7 fps | 200.6 fps | 0.5 % |
+| 1280×720 → 2× | 485.7 fps | 484.7 fps | 0.2 % |
+
+**Decision:** keep the Python callback; its cost is within run-to-run noise even at
+TensorRT speeds, so a new plugin dependency isn't justified. P1 is closed.

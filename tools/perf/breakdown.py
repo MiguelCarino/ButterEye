@@ -87,6 +87,7 @@ class Run:
     target: str
     variant: str | None = None  # TensorRT: "fp16-h" (fp16, RGBH frames), "fp16-s", "fp32-s"
     concurrent: int | None = None  # mpv concurrent-frames (None: 8 for RIFE, 4 otherwise)
+    mv_mode: str | None = None  # MVTools: "block" = BlockFPS (spike M0(p)), else FlowFPS
     out_fps: float | None = None
     src_fps: float | None = None  # source frames per second through the stage
     interp_fps: float | None = None  # new (interpolated) frames per second
@@ -172,6 +173,8 @@ def user_data(run: Run, frames: int, width: int, height: int) -> str:
         "matrix": "709",
         "cache_mb": LIMITS["cache_mb"],
     }
+    if run.mv_mode:
+        data["mv_mode"] = run.mv_mode
     if run.stage.startswith("trt"):
         precision, io = (run.variant or "fp16-h").split("-")
         data.update(

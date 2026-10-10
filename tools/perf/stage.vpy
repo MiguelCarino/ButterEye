@@ -139,7 +139,8 @@ elif stage == 'mvtools':
     sup = core.mv.Super(clip, pel=1 if clip.width >= 1280 or clip.height >= 720 else 2)
     bv = core.mv.Analyse(sup, isb=True, blksize=16, overlap=4)
     fv = core.mv.Analyse(sup, isb=False, blksize=16, overlap=4)
-    out = core.mv.FlowFPS(clip, sup, bv, fv, num=target.numerator, den=target.denominator)
+    fps = core.mv.BlockFPS if cfg.get('mv_mode') == 'block' else core.mv.FlowFPS
+    out = fps(clip, sup, bv, fv, num=target.numerator, den=target.denominator)
 else:
     raise vs.Error('unknown stage ' + repr(stage))
 

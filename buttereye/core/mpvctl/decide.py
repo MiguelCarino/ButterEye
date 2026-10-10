@@ -279,6 +279,24 @@ def fmt_rate(r: Fraction) -> str:
 
 
 # §11.9: plain-language notices for the live engine decision (the GUI shows them).
+#: MVTools' BlockFPS against FlowFPS inside mpv (spike M0(p): 2.2x at 1080p, 2.3x at
+#: 2160p, same fidelity, visible blocks only in very fast motion); a little under it
+BLOCKFPS_SPEEDUP = 2.0
+
+
+def blockfps_option(options: Sequence[EngineOption]) -> EngineOption | None:
+    """MVTools with BlockFPS: its live cap estimated from FlowFPS's (None without
+    MVTools or without a measured FlowFPS cap)."""
+    for o in options:
+        if o.backend is BackendId.MVTOOLS and o.sustainable_fps is not None:
+            return dataclasses.replace(o, sustainable_fps=o.sustainable_fps * BLOCKFPS_SPEEDUP)
+    return None
+
+
+def blockfps_notice() -> Msg:
+    return Msg("Using MVTools' faster block mode to keep up; very fast motion may look blocky.")
+
+
 def gpu_fallback_notice(engine: BackendId, fallback: BackendId) -> Msg:
     return Msg(
         "{engine} can't keep up with this video; using {fallback}.",

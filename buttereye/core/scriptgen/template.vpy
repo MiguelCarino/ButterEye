@@ -258,7 +258,10 @@ def _mvtools(clip, cfg, target):
     sup = core.mv.Super(clip, pel=pel)
     bv = core.mv.Analyse(sup, isb=True, blksize=16, overlap=4)
     fv = core.mv.Analyse(sup, isb=False, blksize=16, overlap=4)
-    return core.mv.FlowFPS(clip, sup, bv, fv, num=target.numerator, den=target.denominator)
+    # BlockFPS: ~2.2x faster in mpv with the same fidelity; blocks show only in very
+    # fast motion, so live play uses it only when FlowFPS can't keep up (M0(p))
+    fps = core.mv.BlockFPS if cfg.get('mv_mode') == 'block' else core.mv.FlowFPS
+    return fps(clip, sup, bv, fv, num=target.numerator, den=target.denominator)
 
 
 def _shrink(clip, cfg):

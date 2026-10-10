@@ -77,6 +77,8 @@ class FilterParams:
     dither: str | None = None
     #: MVTools Super pel; None = 1 from 720p up, else 2 (renders ask for 2)
     mv_pel: int | None = None
+    #: MVTools "block" = BlockFPS (live fallback when FlowFPS can't keep up, M0(p))
+    mv_mode: str | None = None
     #: TensorRT settings (``backends.trt.script_settings``): folders, model,
     #: precision, streams, build mode. Data only, never code (§4.4).
     trt: Mapping[str, Any] | None = None
@@ -144,8 +146,11 @@ def user_data(params: FilterParams) -> str:
         data["gpu_id"] = params.gpu_id
         if params.dither is not None:
             data["dither"] = params.dither
-    elif params.backend is BackendId.MVTOOLS and params.mv_pel is not None:
-        data["mv_pel"] = int(params.mv_pel)
+    elif params.backend is BackendId.MVTOOLS:
+        if params.mv_pel is not None:
+            data["mv_pel"] = int(params.mv_pel)
+        if params.mv_mode == "block":
+            data["mv_mode"] = "block"
     return json.dumps(data, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 

@@ -1036,8 +1036,9 @@ class _Session:
 
         async def decide_with(
             cands: Sequence[BackendId],
-        ) -> tuple[decide.EnginePick, tuple[int, int] | None, bool, list[Msg]]:
-            """(pick, smaller size or None, forced past the speed test, notes)"""
+        ) -> tuple[decide.EnginePick, tuple[int, int] | None, bool, list[Msg], bool]:
+            """(pick, smaller size or None, forced past the speed test, notes,
+            MVTools in block mode)"""
             extra: list[Msg] = []
             options = await engine_options(facts, cands)
             pick = choose(options, forced=False)
@@ -1080,9 +1081,18 @@ class _Session:
                     forced_pick = choose(options, forced=True)
                     if forced_pick.backend is not None:
                         pick, forced_used = forced_pick, True
-            return pick, size, forced_used, extra
+                # a GPU engine at a smaller size wins; otherwise MVTools' block mode
+                # at the video's own size beats MVTools at a smaller one (M0(p))
+                gpu_smaller = found is not None and found[0].backend in decide.GPU_BACKENDS
+                block = decide.blockfps_option(options) if not gpu_smaller else None
+                if block is not None:
+                    bp = choose([block], forced=False)
+                    if bp.backend is BackendId.MVTOOLS and bp.target.bypass is None:
+                        if bp.target.target is not None:
+                            return bp, None, False, [decide.blockfps_notice()], True
+            return pick, size, forced_used, extra, False
 
-        pick, size, forced_used, extra = await decide_with(order)
+        pick, size, forced_used, extra, mv_block = await decide_with(order)
         trt_key: trt.EngineKey | None = None
         self.trt_waiting = None
         if pick.backend is BackendId.RIFE_TRT and trt_inst is not None and trt_model is not None:
@@ -1096,7 +1106,7 @@ class _Session:
                     self.trt_waiting = trt_key
                 rest = [b for b in order if b is not BackendId.RIFE_TRT]
                 if rest:
-                    pick, size, forced_used, extra = await decide_with(rest)
+                    pick, size, forced_used, extra, mv_block = await decide_with(rest)
                 if failed is not None:
                     notes.append(failed)
                 else:
@@ -1167,6 +1177,7 @@ class _Session:
             sc_threshold=profile.sc_threshold if backend in decide.GPU_BACKENDS else None,
             title=self.title,
             size=size,
+            mv_mode="block" if mv_block and backend is BackendId.MVTOOLS else None,
             trt=(
                 trt.script_settings(
                     trt_inst,

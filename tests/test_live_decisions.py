@@ -642,9 +642,9 @@ async def test_session_nothing_keeps_up_bypasses_with_notice(
 ) -> None:
     bench_history.append(_devbox())
     s = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
-    # 60 → 120 at 720p: RIFE ~110, MVTools ~184 live; 120 → 240 nothing; 720p has
-    # no smaller size to try
-    _load(s, fps=120.0, w=1280, h=720)
+    # 240 → 480 at 720p: RIFE ~110, MVTools ~184 live (BlockFPS ~368); nothing
+    # reaches 480, and 720p has no smaller size to try
+    _load(s, fps=240.0, w=1280, h=720)
     await s.apply(raise_on_fail=False)
     snap = s.snapshot()
     assert snap.filter is FilterState.BYPASSED and snap.bypass is BypassReason.NO_REALTIME
@@ -708,10 +708,25 @@ async def test_session_forced_without_smaller_size_runs_at_its_own(
     bench_history.append(_devbox())
     s = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
     s.forced = True
-    _load(s, fps=120.0, w=1280, h=720)
+    _load(s, fps=240.0, w=1280, h=720)  # not even MVTools' block mode reaches 480
     await s.apply(raise_on_fail=False)
     snap = s.snapshot()
     assert snap.backend is BackendId.RIFE_NCNN and snap.notice == decide.forced_notice()
+    assert s.ipc.sizes() == [None]  # type: ignore[attr-defined]
+
+
+async def test_session_mvtools_block_mode_keeps_up_where_flow_cannot(
+    tmp_path: Path, bench_history: list[BenchResult]
+) -> None:
+    bench_history.append(_devbox())
+    s = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
+    # 120 → 240 at 720p: RIFE ~110 and MVTools FlowFPS ~184 fall short; BlockFPS
+    # (~368, spike M0(p)) keeps up at the video's own size
+    _load(s, fps=120.0, w=1280, h=720)
+    await s.apply(raise_on_fail=False)
+    snap = s.snapshot()
+    assert snap.backend is BackendId.MVTOOLS and snap.target_fps == 240
+    assert snap.notice == decide.blockfps_notice()
     assert s.ipc.sizes() == [None]  # type: ignore[attr-defined]
 
 
@@ -831,9 +846,11 @@ async def test_rife_switch_when_mvtools_keeps_up_only_smaller(
     await s.stalled(_stall())
     await _settle(ctx)
     snap = s.snapshot()
-    # MVTools can't double 24 fps at 1080p (32 live) but can at 720p (72)
+    # MVTools' FlowFPS can't double 24 fps at 1080p (32 live); its block mode can
+    # (64) at the video's own size, which beats FlowFPS at 720p (spike M0(p))
     assert snap.backend is BackendId.MVTOOLS and snap.target_fps == Fraction(48000, 1001)
-    assert s.ipc.sizes()[-1] == (1280, 720)  # type: ignore[attr-defined]
+    assert s.ipc.sizes()[-1] is None  # type: ignore[attr-defined]
+    assert '"mv_mode":"block"' in str(s.ipc.commands[-1])  # type: ignore[attr-defined]
     assert snap.notice == decide.switched_to_cpu_notice()
 
 
