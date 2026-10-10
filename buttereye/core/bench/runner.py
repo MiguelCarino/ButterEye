@@ -49,6 +49,7 @@ from buttereye.core.events import Notice
 from buttereye.core.i18n import render as render_msg
 from buttereye.core.ops import OpContext
 from buttereye.core.scriptgen.generator import (
+    MVTOOLS_MAX_CONCURRENT,
     RIFE_CONCURRENT_FRAMES_DEFAULT,
     RIFE_GPU_THREAD_DEFAULT,
     FilterParams,
@@ -182,7 +183,8 @@ def discover_candidates(
                 )
     if (plugin_dir / MVTOOLS_PLUGIN).is_file():
         cpus = concurrency if concurrency is not None else (os.cpu_count() or 1)
-        out.append(Candidate("mvtools", BackendId.MVTOOLS, None, None, max(1, min(cpus, 8))))
+        conc = max(1, min(cpus, MVTOOLS_MAX_CONCURRENT))  # as live play uses it
+        out.append(Candidate("mvtools", BackendId.MVTOOLS, None, None, conc))
     out.sort(key=_quality_key)
     return tuple(out)
 

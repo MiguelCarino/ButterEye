@@ -38,7 +38,10 @@ USER_DATA_VERSION = 1
 RIFE_CONCURRENT_FRAMES_DEFAULT = 8
 RIFE_GPU_THREAD_DEFAULT = 4
 BUFFERED_FRAMES_DEFAULT = 4
-MVTOOLS_MAX_CONCURRENT = 8
+#: MVTools in mpv: concurrent-frames up to 16, never above the CPU count. On the
+#: dev box (Ryzen 9 5900X, 24 threads) 8 / 16 / 24 give 128 / 148 / 137 fps at
+#: 1080p 2x and 28 / 35 / 34 at 2160p (spike M0(m)); 16 matches vspipe.
+MVTOOLS_MAX_CONCURRENT = 16
 
 
 @dataclass(frozen=True, slots=True)

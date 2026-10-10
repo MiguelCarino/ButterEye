@@ -86,6 +86,7 @@ class Run:
     layers: bool
     target: str
     variant: str | None = None  # TensorRT: "fp16-h" (fp16, RGBH frames), "fp16-s", "fp32-s"
+    concurrent: int | None = None  # mpv concurrent-frames (None: 8 for RIFE, 4 otherwise)
     out_fps: float | None = None
     src_fps: float | None = None  # source frames per second through the stage
     interp_fps: float | None = None  # new (interpolated) frames per second
@@ -262,7 +263,7 @@ def run_vspipe(run: Run, frames: int, filter_time: bool, timeout: float) -> Run:
 
 def mpv_once(run: Run, frames: int, timeout: float) -> float:
     width, height = SIZES[run.size]
-    concurrent = 8 if run.model is not None else 4
+    concurrent = run.concurrent or (8 if run.model is not None else 4)
     vf = (
         f"vapoursynth=file=%{len(str(STAGE_VPY))}%{STAGE_VPY}"
         f":buffered-frames=4:concurrent-frames={concurrent}"

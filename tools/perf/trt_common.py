@@ -48,7 +48,9 @@ def convert_model(
     onnx.save(model, target_network_path)
 
 
-def rife(core: Any, rgb: Any, cfg: dict[str, Any], multi: Fraction | int) -> Any:
+def setup(core: Any, cfg: dict[str, Any]) -> tuple[Any, Any]:
+    """``(vsmlrt module, TRT backend)`` from ``cfg``, with vstrt loaded first and
+    the Cast-safe fp16 conversion in place."""
     # vsmlrt looks for a loaded plugin at import time, so load vstrt first
     if not hasattr(core, "trt"):
         core.std.LoadPlugin(os.path.join(cfg["vstrt_dir"], "libvstrt.so"))
@@ -68,6 +70,11 @@ def rife(core: Any, rgb: Any, cfg: dict[str, Any], multi: Fraction | int) -> Any
         output_format=1 if cfg["half_io"] else 0,
         engine_folder=cfg["engine_dir"],
     )
+    return vsmlrt, backend
+
+
+def rife(core: Any, rgb: Any, cfg: dict[str, Any], multi: Fraction | int) -> Any:
+    vsmlrt, backend = setup(core, cfg)
     return vsmlrt.RIFE(
         rgb,
         multi=multi,
@@ -76,3 +83,10 @@ def rife(core: Any, rgb: Any, cfg: dict[str, Any], multi: Fraction | int) -> Any
         video_player=True,
         _implementation=2,  # rife_v2: internal padding, any frame size
     )
+
+
+def upscale(core: Any, rgb: Any, cfg: dict[str, Any]) -> Any:
+    """vs-mlrt's Real-ESRGAN-family upscaler (``cfg["sr_model"]``: a
+    ``vsmlrt.RealESRGANModel`` member name)."""
+    vsmlrt, backend = setup(core, cfg)
+    return vsmlrt.RealESRGAN(rgb, model=vsmlrt.RealESRGANModel[cfg["sr_model"]], backend=backend)

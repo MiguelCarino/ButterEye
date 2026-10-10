@@ -128,7 +128,8 @@ def test_user_data_fields() -> None:
 
 def test_default_frames_per_backend() -> None:
     assert g.default_frames(BackendId.RIFE_NCNN) == (4, 8)  # mpv concurrent-frames 8 (§4.4)
-    assert g.default_frames(BackendId.MVTOOLS, cpu_count=24) == (4, 8)
+    assert g.default_frames(BackendId.MVTOOLS, cpu_count=24) == (4, 16)
+    assert g.default_frames(BackendId.MVTOOLS, cpu_count=12) == (4, 12)
     assert g.default_frames(BackendId.MVTOOLS, cpu_count=2) == (4, 2)
 
 

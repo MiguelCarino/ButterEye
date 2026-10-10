@@ -162,7 +162,7 @@ def test_model_label_and_candidates(tmp_path: Path) -> None:
         "mvtools",
     ]
     assert all(c.concurrent_frames == 8 for c in cands if c.backend is BackendId.RIFE_NCNN)
-    assert cands[-1].concurrent_frames == 8  # min(nproc, 8), §4.4
+    assert cands[-1].concurrent_frames == 16  # min(nproc, 16), spike M0(m)
     assert cands[0].model_path == models / "rife-v4.26_ensembleFalse"
     assert [c.label for c in runner.discover_candidates(plugins, models, rife=False)] == ["mvtools"]
     (plugins / "librife.so").unlink()

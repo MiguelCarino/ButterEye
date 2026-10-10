@@ -1,0 +1,682 @@
+{
+ "speed": [
+  {
+   "model": "animevideo_xsx2",
+   "input": "1280x720",
+   "output": "2560x1440",
+   "chain": false,
+   "fps": 80.0
+  },
+  {
+   "model": "animevideo_xsx2",
+   "input": "1280x720",
+   "output": "2560x1440",
+   "chain": true,
+   "fps": 75.7
+  },
+  {
+   "model": "animevideo_xsx2",
+   "input": "1920x1080",
+   "output": "3840x2160",
+   "chain": false,
+   "fps": 33.33
+  },
+  {
+   "model": "animevideo_xsx2",
+   "input": "1920x1080",
+   "output": "3840x2160",
+   "chain": true,
+   "fps": 33.06
+  },
+  {
+   "model": "animevideo_xsx4",
+   "input": "960x540",
+   "output": "3840x2160",
+   "chain": false,
+   "fps": 61.09
+  },
+  {
+   "model": "animevideo_xsx4",
+   "input": "960x540",
+   "output": "3840x2160",
+   "chain": true,
+   "fps": 71.53
+  },
+  {
+   "model": "animevideov3",
+   "input": "960x540",
+   "output": "3840x2160",
+   "chain": false,
+   "fps": 58.03
+  },
+  {
+   "model": "animevideov3",
+   "input": "960x540",
+   "output": "3840x2160",
+   "chain": true,
+   "fps": 68.58
+  },
+  {
+   "model": "animejanaiV3_HD_L1",
+   "input": "1280x720",
+   "output": "2560x1440",
+   "chain": false,
+   "fps": 135.68
+  },
+  {
+   "model": "animejanaiV3_HD_L1",
+   "input": "1280x720",
+   "output": "2560x1440",
+   "chain": true,
+   "fps": 172.29
+  },
+  {
+   "model": "animejanaiV3_HD_L1",
+   "input": "1920x1080",
+   "output": "3840x2160",
+   "chain": false,
+   "fps": 57.31
+  },
+  {
+   "model": "animejanaiV3_HD_L1",
+   "input": "1920x1080",
+   "output": "3840x2160",
+   "chain": true,
+   "fps": 60.05
+  },
+  {
+   "model": "animejanaiV3_HD_L2",
+   "input": "1280x720",
+   "output": "2560x1440",
+   "chain": false,
+   "fps": 103.81
+  },
+  {
+   "model": "animejanaiV3_HD_L2",
+   "input": "1280x720",
+   "output": "2560x1440",
+   "chain": true,
+   "fps": 114.75
+  },
+  {
+   "model": "animejanaiV3_HD_L2",
+   "input": "1920x1080",
+   "output": "3840x2160",
+   "chain": false,
+   "fps": 43.4
+  },
+  {
+   "model": "animejanaiV3_HD_L2",
+   "input": "1920x1080",
+   "output": "3840x2160",
+   "chain": true,
+   "fps": 46.57
+  },
+  {
+   "model": "animejanaiV3_HD_L3",
+   "input": "1280x720",
+   "output": "2560x1440",
+   "chain": false,
+   "fps": 84.05
+  },
+  {
+   "model": "animejanaiV3_HD_L3",
+   "input": "1280x720",
+   "output": "2560x1440",
+   "chain": true,
+   "fps": 76.34
+  },
+  {
+   "model": "animejanaiV3_HD_L3",
+   "input": "1920x1080",
+   "output": "3840x2160",
+   "chain": false,
+   "fps": 31.13
+  },
+  {
+   "model": "animejanaiV3_HD_L3",
+   "input": "1920x1080",
+   "output": "3840x2160",
+   "chain": true,
+   "fps": 32.93
+  },
+  {
+   "model": "Ani4Kv2_G6i2_UltraCompact",
+   "input": "1280x720",
+   "output": "2560x1440",
+   "chain": false,
+   "fps": 106.49
+  },
+  {
+   "model": "Ani4Kv2_G6i2_UltraCompact",
+   "input": "1280x720",
+   "output": "2560x1440",
+   "chain": true,
+   "fps": 117.12
+  },
+  {
+   "model": "Ani4Kv2_G6i2_UltraCompact",
+   "input": "1920x1080",
+   "output": "3840x2160",
+   "chain": false,
+   "fps": 46.12
+  },
+  {
+   "model": "Ani4Kv2_G6i2_UltraCompact",
+   "input": "1920x1080",
+   "output": "3840x2160",
+   "chain": true,
+   "fps": 47.66
+  },
+  {
+   "model": "Ani4Kv2_G6i2_Compact",
+   "input": "1280x720",
+   "output": "2560x1440",
+   "chain": false,
+   "fps": 80.88
+  },
+  {
+   "model": "Ani4Kv2_G6i2_Compact",
+   "input": "1280x720",
+   "output": "2560x1440",
+   "chain": true,
+   "fps": 76.77
+  },
+  {
+   "model": "Ani4Kv2_G6i2_Compact",
+   "input": "1920x1080",
+   "output": "3840x2160",
+   "chain": false,
+   "fps": 33.85
+  },
+  {
+   "model": "Ani4Kv2_G6i2_Compact",
+   "input": "1920x1080",
+   "output": "3840x2160",
+   "chain": true,
+   "fps": 32.63
+  }
+ ],
+ "quality": [
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "factor": 2,
+   "method": "lanczos",
+   "psnr": 48.63,
+   "ssim": 0.99263
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "factor": 2,
+   "method": "spline36",
+   "psnr": 48.45,
+   "ssim": 0.99245
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "factor": 2,
+   "method": "animevideo_xsx2",
+   "psnr": 34.84,
+   "ssim": 0.95892
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L1",
+   "psnr": 45.53,
+   "ssim": 0.98747
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L2",
+   "psnr": 47.15,
+   "ssim": 0.98967
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L3",
+   "psnr": 47.71,
+   "ssim": 0.99068
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_UltraCompact",
+   "psnr": 45.93,
+   "ssim": 0.9868
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 600.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_Compact",
+   "psnr": 46.14,
+   "ssim": 0.98701
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "factor": 2,
+   "method": "lanczos",
+   "psnr": 45.87,
+   "ssim": 0.99232
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "factor": 2,
+   "method": "spline36",
+   "psnr": 45.65,
+   "ssim": 0.99216
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "factor": 2,
+   "method": "animevideo_xsx2",
+   "psnr": 31.5,
+   "ssim": 0.9497
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L1",
+   "psnr": 42.59,
+   "ssim": 0.98593
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L2",
+   "psnr": 44.26,
+   "ssim": 0.98892
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L3",
+   "psnr": 44.82,
+   "ssim": 0.98986
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_UltraCompact",
+   "psnr": 42.76,
+   "ssim": 0.98502
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_Compact",
+   "psnr": 43.23,
+   "ssim": 0.9855
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "factor": 2,
+   "method": "lanczos",
+   "psnr": 44.35,
+   "ssim": 0.98869
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "factor": 2,
+   "method": "spline36",
+   "psnr": 44.11,
+   "ssim": 0.98828
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "factor": 2,
+   "method": "animevideo_xsx2",
+   "psnr": 29.64,
+   "ssim": 0.93141
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L1",
+   "psnr": 41.71,
+   "ssim": 0.98248
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L2",
+   "psnr": 43.68,
+   "ssim": 0.98702
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L3",
+   "psnr": 44.53,
+   "ssim": 0.98875
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_UltraCompact",
+   "psnr": 42.74,
+   "ssim": 0.98343
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 3000.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_Compact",
+   "psnr": 42.68,
+   "ssim": 0.98353
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "factor": 2,
+   "method": "lanczos",
+   "psnr": 47.45,
+   "ssim": 0.99552
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "factor": 2,
+   "method": "spline36",
+   "psnr": 47.32,
+   "ssim": 0.99543
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "factor": 2,
+   "method": "animevideo_xsx2",
+   "psnr": 33.17,
+   "ssim": 0.95077
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L1",
+   "psnr": 45.17,
+   "ssim": 0.98974
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L2",
+   "psnr": 45.74,
+   "ssim": 0.99133
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L3",
+   "psnr": 46.9,
+   "ssim": 0.9929
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_UltraCompact",
+   "psnr": 44.96,
+   "ssim": 0.98862
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 1200.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_Compact",
+   "psnr": 45.05,
+   "ssim": 0.98865
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "factor": 2,
+   "method": "lanczos",
+   "psnr": 35.78,
+   "ssim": 0.97081
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "factor": 2,
+   "method": "spline36",
+   "psnr": 35.58,
+   "ssim": 0.96942
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "factor": 2,
+   "method": "animevideo_xsx2",
+   "psnr": 26.95,
+   "ssim": 0.86682
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L1",
+   "psnr": 33.42,
+   "ssim": 0.94086
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L2",
+   "psnr": 35.2,
+   "ssim": 0.96157
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L3",
+   "psnr": 35.93,
+   "ssim": 0.968
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_UltraCompact",
+   "psnr": 33.65,
+   "ssim": 0.93993
+  },
+  {
+   "clip": "anime-film-b",
+   "t": 3600.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_Compact",
+   "psnr": 33.2,
+   "ssim": 0.93056
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "factor": 2,
+   "method": "lanczos",
+   "psnr": 41.42,
+   "ssim": 0.98959
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "factor": 2,
+   "method": "spline36",
+   "psnr": 41.23,
+   "ssim": 0.9892
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "factor": 2,
+   "method": "animevideo_xsx2",
+   "psnr": 31.93,
+   "ssim": 0.96427
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L1",
+   "psnr": 39.96,
+   "ssim": 0.98419
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L2",
+   "psnr": 41.58,
+   "ssim": 0.98894
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L3",
+   "psnr": 41.81,
+   "ssim": 0.98933
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_UltraCompact",
+   "psnr": 41.67,
+   "ssim": 0.98659
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 30.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_Compact",
+   "psnr": 42.06,
+   "ssim": 0.98764
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "factor": 2,
+   "method": "lanczos",
+   "psnr": 48.84,
+   "ssim": 0.99777
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "factor": 2,
+   "method": "spline36",
+   "psnr": 48.71,
+   "ssim": 0.99773
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "factor": 2,
+   "method": "animevideo_xsx2",
+   "psnr": 36.3,
+   "ssim": 0.987
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L1",
+   "psnr": 47.87,
+   "ssim": 0.99564
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L2",
+   "psnr": 48.82,
+   "ssim": 0.99634
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "factor": 2,
+   "method": "animejanaiV3_HD_L3",
+   "psnr": 48.93,
+   "ssim": 0.99649
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_UltraCompact",
+   "psnr": 48.66,
+   "ssim": 0.99533
+  },
+  {
+   "clip": "live-action-4k",
+   "t": 90.0,
+   "factor": 2,
+   "method": "Ani4Kv2_G6i2_Compact",
+   "psnr": 48.78,
+   "ssim": 0.99545
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "factor": 4,
+   "method": "lanczos",
+   "psnr": 37.59,
+   "ssim": 0.96577
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "factor": 4,
+   "method": "spline36",
+   "psnr": 37.44,
+   "ssim": 0.96554
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "factor": 4,
+   "method": "animevideo_xsx4",
+   "psnr": 30.01,
+   "ssim": 0.92221
+  },
+  {
+   "clip": "anime-film-a",
+   "t": 1800.0,
+   "factor": 4,
+   "method": "animevideov3",
+   "psnr": 34.99,
+   "ssim": 0.95038
+  }
+ ]
+}

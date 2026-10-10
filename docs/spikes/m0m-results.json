@@ -1,0 +1,212 @@
+[
+ {
+  "label": "mvtools concurrent-frames 4",
+  "size": "1080",
+  "stage": "mvtools",
+  "gpu_thread": null,
+  "concurrent": 4,
+  "runs": [
+   78.02,
+   79.3,
+   79.21
+  ],
+  "median": 79.21,
+  "spread_pct": 1.6159575811134974,
+  "xid": 0
+ },
+ {
+  "label": "mvtools concurrent-frames 8",
+  "size": "1080",
+  "stage": "mvtools",
+  "gpu_thread": null,
+  "concurrent": 8,
+  "runs": [
+   129.81,
+   127.79,
+   128.34
+  ],
+  "median": 128.34,
+  "spread_pct": 1.5739442106903505,
+  "xid": 0
+ },
+ {
+  "label": "mvtools concurrent-frames 16",
+  "size": "1080",
+  "stage": "mvtools",
+  "gpu_thread": null,
+  "concurrent": 16,
+  "runs": [
+   148.32,
+   148.58,
+   146.72
+  ],
+  "median": 148.32,
+  "spread_pct": 1.2540453074433748,
+  "xid": 0
+ },
+ {
+  "label": "mvtools concurrent-frames 8",
+  "size": "2160",
+  "stage": "mvtools",
+  "gpu_thread": null,
+  "concurrent": 8,
+  "runs": [
+   26.01,
+   28.02,
+   27.87
+  ],
+  "median": 27.87,
+  "spread_pct": 7.212055974165763,
+  "xid": 0
+ },
+ {
+  "label": "mvtools concurrent-frames 16",
+  "size": "2160",
+  "stage": "mvtools",
+  "gpu_thread": null,
+  "concurrent": 16,
+  "runs": [
+   35.14,
+   35.49,
+   35.11
+  ],
+  "median": 35.14,
+  "spread_pct": 1.0813887307911285,
+  "xid": 0
+ },
+ {
+  "label": "rife-ncnn gpu_thread 4 concurrent 8",
+  "size": "1080",
+  "stage": "rife",
+  "gpu_thread": 4,
+  "concurrent": 8,
+  "runs": [
+   70.34,
+   70.03,
+   64.3
+  ],
+  "median": 70.03,
+  "spread_pct": 8.624875053548488,
+  "xid": 0
+ },
+ {
+  "label": "rife-ncnn gpu_thread 4 concurrent 12",
+  "size": "1080",
+  "stage": "rife",
+  "gpu_thread": 4,
+  "concurrent": 12,
+  "runs": [
+   69.93,
+   69.0,
+   73.02
+  ],
+  "median": 69.93,
+  "spread_pct": 5.748605748605742,
+  "xid": 0
+ },
+ {
+  "label": "rife-ncnn gpu_thread 8 concurrent 8",
+  "size": "1080",
+  "stage": "rife",
+  "gpu_thread": 8,
+  "concurrent": 8,
+  "runs": [
+   69.07,
+   67.35,
+   68.07
+  ],
+  "median": 68.07,
+  "spread_pct": 2.5268106361098854,
+  "xid": 0
+ },
+ {
+  "label": "rife-ncnn gpu_thread 8 concurrent 12",
+  "size": "1080",
+  "stage": "rife",
+  "gpu_thread": 8,
+  "concurrent": 12,
+  "runs": [
+   74.22,
+   76.19,
+   72.37
+  ],
+  "median": 74.22,
+  "spread_pct": 5.146860684451622,
+  "xid": 0
+ },
+ {
+  "label": "rife-ncnn gpu_thread 4 concurrent 8",
+  "size": "2160",
+  "stage": "rife",
+  "gpu_thread": 4,
+  "concurrent": 8,
+  "runs": [
+   13.2,
+   14.39,
+   16.08
+  ],
+  "median": 14.39,
+  "spread_pct": 20.013898540653223,
+  "xid": 0
+ },
+ {
+  "label": "rife-ncnn gpu_thread 8 concurrent 8",
+  "size": "2160",
+  "stage": "rife",
+  "gpu_thread": 8,
+  "concurrent": 8,
+  "runs": [
+   14.98,
+   14.96,
+   14.6
+  ],
+  "median": 14.96,
+  "spread_pct": 2.5401069518716626,
+  "xid": 0
+ },
+ {
+  "label": "mvtools concurrent-frames 24",
+  "size": "1080",
+  "stage": "mvtools",
+  "gpu_thread": null,
+  "concurrent": 24,
+  "runs": [
+   134.89,
+   136.76,
+   138.96
+  ],
+  "median": 136.76,
+  "spread_pct": 2.9760163790582204,
+  "xid": 0
+ },
+ {
+  "label": "mvtools concurrent-frames 24",
+  "size": "2160",
+  "stage": "mvtools",
+  "gpu_thread": null,
+  "concurrent": 24,
+  "runs": [
+   32.53,
+   34.01,
+   34.04
+  ],
+  "median": 34.01,
+  "spread_pct": 4.439870626286381,
+  "xid": 0
+ },
+ {
+  "label": "mvtools concurrent-frames 12",
+  "size": "2160",
+  "stage": "mvtools",
+  "gpu_thread": null,
+  "concurrent": 12,
+  "runs": [
+   32.12,
+   33.73,
+   33.5
+  ],
+  "median": 33.5,
+  "spread_pct": 4.80597014925373,
+  "xid": 0
+ }
+]

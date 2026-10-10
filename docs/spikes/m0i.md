@@ -108,7 +108,7 @@ What the full run changes:
    37.3 / 33.8). A model sweep at `gpu_thread` 8 is the open check: if lite pulls ahead
    there, the ncnn kernels are the ceiling.
 6. **The implicit Vulkan layer doesn't matter** (71.2 vs 71.1; mpv 64.4 vs 65.2).
-7. **mpv halves MVTools again** (74 vs 150) while costing RIFE only ~8 %. MVTools at 4K
+7. **mpv halves MVTools again** (74 vs 150) while costing RIFE only ~8 %. *(Correction, M0(m): an artefact of this profiler's concurrent-frames 4; the product's 8 gives 128, and 16 gives 148.)* MVTools at 4K
    (37 out fps) can't do 2× live on this CPU in any case.
 
 **Revised decision (supersedes the 1080p-only one above):** the RIFE-ncnn plugin path is
