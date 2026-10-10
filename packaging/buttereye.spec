@@ -80,6 +80,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/%{app_id}.desktop
 appstreamcli validate --no-net %{buildroot}%{_metainfodir}/%{app_id}.metainfo.xml
 # The core imports without Qt, VapourSynth or a GPU; the shipped data is there.
 %{py3_test_envvars} %{python3} - <<'EOF'
+import buttereye.cli
 import buttereye.core.api
 import buttereye.core.backends.trt
 from buttereye.core.mpvctl import shaders
@@ -96,6 +97,7 @@ EOF
 %license COPYING LICENSES/AdditionRef-ButterEye-generated-output.txt
 %license %{pypi_name}/data/shaders/LGPL-3.0.txt %{pypi_name}/data/shaders/GPL-3.0.txt
 %doc README.md
+%{_bindir}/buttereye
 %{_bindir}/buttereye-gui
 %{_datadir}/applications/%{app_id}.desktop
 %{_metainfodir}/%{app_id}.metainfo.xml

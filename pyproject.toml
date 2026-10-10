@@ -32,6 +32,7 @@ gui = ["PySide6-Essentials>=6.11"]
 dev = ["pytest", "pytest-qt", "pytest-asyncio", "ruff", "mypy"]
 
 [project.scripts]
+buttereye = "buttereye.cli:main"
 buttereye-gui = "buttereye.gui.__main__:main"
 
 [tool.setuptools.dynamic]

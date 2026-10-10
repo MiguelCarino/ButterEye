@@ -67,8 +67,6 @@ Pre-alpha, verified on the dev box (Fedora 44, RTX 4090, mpv 0.41.0, VapourSynth
 - Writing the include line into your `mpv.conf` for you (the line is shown to copy).
 - Bug-report bundles, model downloads and installing a model from a file.
 - HDR pass-through (experimental; needs the M0(d) compatibility test).
-- The `buttereye` command-line tool: the GUI shows the equivalent commands, but there is
-  no CLI entry point yet.
 
 **Known gaps**
 
@@ -166,6 +164,18 @@ Your choices are stored in `~/.config/buttereye/config.toml` as one profile, `si
 with a single rule that uses it. The earlier multi-page window (profiles, rules,
 render) is still available for development: `BUTTEREYE_DEV=1 .venv/bin/python -m
 buttereye.gui --classic`.
+
+## The `buttereye` command
+
+Everything the window does is also a command (SCOPE §4.1), over the same core:
+`buttereye doctor [--trt]`, `setup [--trt-experimental]`, `play FILE [--profile ID]` (stays
+until mpv closes; Ctrl+C leaves mpv playing), `render FILE [-o OUT] [--size WxH] [--target
+2x|60] [--encoder E]`, `bench [--width W --height H --fps F] [--history] [--apply LABEL]`,
+`profiles list|explain --fps F --height H`, `plugins`, `models`, `clean --dry-run|--engines…`,
+`licence`, `--version`. Every command takes `--json` (one versioned document), `-v`/`-q`, and
+honours `NO_COLOR`. Exit codes: 0 ok, 1 failure, 2 usage or config, 3 blocking `doctor`
+issue, 4 dependency missing, 130 cancelled. `attach` and `detach` say they aren't in this
+build yet.
 
 ## Building the RPM
 
