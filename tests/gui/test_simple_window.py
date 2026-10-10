@@ -644,3 +644,28 @@ def test_upscaling_choice_follows_the_config(make_simple: Make, qtbot: Any) -> N
     scen = dataclasses.replace(base, name="sharp", config_load=sc.config_load(sharp))
     win = make_simple(scen)
     assert win.upscale_combo.currentData() == "sharper"
+
+
+# ---------------------------------------------------------------------------
+# videos on the command line ("Open with ButterEye", desktop Exec %F)
+# ---------------------------------------------------------------------------
+
+
+def test_command_line_files_are_split_from_qt_options(tmp_path: Path) -> None:
+    video = tmp_path / "film one.mkv"
+    video.write_bytes(b"x")
+    ns, rest = gui_app.parse_args([str(video), "-platform", "offscreen", "nofile.mkv"], {})
+    assert ns.files == [video]
+    # a Qt option's value or a missing path is never taken for a video
+    assert rest == ["-platform", "offscreen", "nofile.mkv"]
+
+
+def test_files_play_once_the_window_is_ready(make_simple: Make, qtbot: Any, tmp_path: Path) -> None:
+    video = tmp_path / "film.mkv"
+    video.write_bytes(b"x")
+    win = make_simple("all_ready", ready=False)
+    win.play_when_ready([video])
+    qtbot.waitUntil(lambda: bool(calls(win, "play")), timeout=5000)
+    assert calls(win, "play")[0].args[0] == video
+    win._ready()  # a later "Ready." doesn't play it again
+    assert len(calls(win, "play")) == 1

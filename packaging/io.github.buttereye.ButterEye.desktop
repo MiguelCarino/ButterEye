@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=ButterEye
+GenericName=Smooth motion for mpv
+Comment=Smoother motion for the videos you play in mpv
+Exec=buttereye-gui %F
+Icon=io.github.buttereye.ButterEye
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=mpv;interpolation;smooth;motion;RIFE;frame rate;
+MimeType=video/mp4;video/x-matroska;video/webm;video/quicktime;video/x-msvideo;video/mp2t;
+StartupWMClass=ButterEye

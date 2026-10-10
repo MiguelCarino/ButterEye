@@ -18,7 +18,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Literal
@@ -502,6 +502,7 @@ class SimpleWindow(QMainWindow):
         self.gpu_available: bool | None = None
         self.bench_started = False
         self.trt_bench_started = False
+        self._pending_files: list[Path] = []  # from the command line, played when ready
         self._trt_on = False  # Feature.TRT available: opted in and set up
         self.setup_started = False
         self._may_close = False
@@ -960,9 +961,18 @@ class SimpleWindow(QMainWindow):
         if shiboken6.isValid(self) and w is self.status_badge:
             self.set_status(self.status_badge.kind(), text)
 
+    def play_when_ready(self, files: Sequence[Path]) -> None:
+        """Play these videos once the startup checks are done (command line,
+        "Open with ButterEye")."""
+        self._pending_files = list(files)
+
     def _ready(self) -> None:
         if self._busy is None and not self._bench_running:
             self.set_status("ok", self.tr("Ready."))
+        if self._busy is None and self._pending_files:
+            files, self._pending_files = self._pending_files, []
+            for f in files:
+                self.play_file(f)
 
     def show_problem(self, kind: BadgeKind, text: str, *, details: bool = True) -> None:
         self.problem_badge.set_state(kind, text)

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: CC0-1.0 -->
+<component type="desktop-application">
+  <id>io.github.buttereye.ButterEye</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <name>ButterEye</name>
+  <summary>Smoother motion for the videos you play in mpv</summary>
+  <description>
+    <p>
+      ButterEye interpolates video to a frame rate that suits your display, live in mpv or
+      as a saved copy, using RIFE on the GPU (Vulkan, or experimental NVIDIA TensorRT) or
+      MVTools on the CPU. It works with your distribution's own mpv and never edits your
+      mpv.conf.
+    </p>
+    <p>
+      Drop a video on the window to play it smooth, or on the second drop zone to save a
+      smooth copy. A short speed test picks the best engine your computer can keep up with.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.buttereye.ButterEye.desktop</launchable>
+  <url type="homepage">https://github.com/MiguelCarino/ButterEye</url>
+  <url type="bugtracker">https://github.com/MiguelCarino/ButterEye/issues</url>
+  <developer id="io.github.buttereye">
+    <name>The ButterEye contributors</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <provides>
+    <binary>buttereye-gui</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0~dev0" date="2026-10-10" type="development">
+      <description>
+        <p>Pre-alpha development build.</p>
+      </description>
+    </release>
+  </releases>
+</component>

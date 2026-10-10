@@ -167,6 +167,21 @@ with a single rule that uses it. The earlier multi-page window (profiles, rules,
 render) is still available for development: `BUTTEREYE_DEV=1 .venv/bin/python -m
 buttereye.gui --classic`.
 
+## Building the RPM
+
+`packaging/buttereye.spec` builds the application package (noarch) from the sdist, with
+the desktop file and AppStream metadata next to it. The plugin packages
+(`buttereye-vs-mvtools`, `buttereye-vs-rife-ncnn`, `buttereye-rife-ncnn-models`) have their
+own specs (`spikes/m0f-copr-plugins/specs/` until they move to `packaging/`).
+
+```sh
+W=~/rpmbuild-buttereye && mkdir -p $W/SOURCES $W/SRPMS
+.venv/bin/python -m build --sdist --outdir $W/SOURCES .
+cp packaging/io.github.buttereye.ButterEye.{desktop,metainfo.xml} $W/SOURCES/
+rpmbuild -bs --define "_sourcedir $W/SOURCES" --define "_srcrpmdir $W/SRPMS" packaging/buttereye.spec
+mock -r fedora-44-x86_64 --rebuild $W/SRPMS/buttereye-*.src.rpm   # network off, as in COPR
+```
+
 ## Tests and checks
 
 ```sh

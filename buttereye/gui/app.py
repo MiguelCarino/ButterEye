@@ -80,6 +80,10 @@ def parse_args(args: Sequence[str], env: Mapping[str, str]) -> tuple[argparse.Na
     parser.add_argument("--fake", metavar="SCENARIO", help=argparse.SUPPRESS)
     parser.add_argument("--classic", action="store_true", help=argparse.SUPPRESS)
     ns, rest = parser.parse_known_args(list(args))
+    # videos to play ("Open with ButterEye", desktop Exec %F): existing files only, so
+    # the value of a Qt option (``-platform offscreen``) is never taken for a video
+    ns.files = [Path(a) for a in rest if not a.startswith("-") and Path(a).is_file()]
+    rest = [a for a in rest if a.startswith("-") or not Path(a).is_file()]
     if ns.fake is not None and not dev_mode(env):
         parser.error(f"--fake needs {DEV_ENV}=1 (development only)")
     if ns.classic and not dev_mode(env):
@@ -321,6 +325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         window = MainWindow(bridge, settings, log_path=log_path)
     else:
         window = SimpleWindow(bridge, settings, log_path=log_path)
+        window.play_when_ready(ns.files)
 
     def last_resort_shutdown() -> None:
         if not bridge.is_closed:
