@@ -13,64 +13,82 @@
   <link rel="stylesheet" href="web/style.css">
 </head>
 <body>
-  <main>
-    <header class="hero">
-      <img class="hero-mark" src="web/buttereye.svg" alt="" width="96" height="96">
-      <p class="kicker">Smooth motion for mpv</p>
-      <h1 class="wordmark">ButterEye</h1>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <radialGradient id="pan-iron" cx="45%" cy="40%" r="65%">
+        <stop offset="0" stop-color="#2a2a2a"/><stop offset="1" stop-color="#0e0e0e"/>
+      </radialGradient>
+      <radialGradient id="pan-melt" cx="50%" cy="50%" r="50%">
+        <stop offset="0" stop-color="#fef08a"/><stop offset=".55" stop-color="#eab308"/><stop offset="1" stop-color="#b45309" stop-opacity=".0"/>
+      </radialGradient>
+      <!-- a frying pan seen from above: handle, rim, cooking surface, melted butter -->
+      <symbol id="pan" viewBox="0 0 160 120">
+        <!-- styled through custom properties: selectors can't reach inside <use> -->
+        <rect x="104" y="54" width="54" height="12" rx="6" fill="#1c1c1c" stroke="#333" stroke-width="1.5"/>
+        <circle cx="58" cy="60" r="54" fill="#151515" style="stroke: var(--rim, #333); stroke-width: var(--rim-w, 2)"/>
+        <circle cx="58" cy="60" r="44" fill="url(#pan-iron)"/>
+        <ellipse cx="58" cy="60" rx="30" ry="26" fill="url(#pan-melt)"
+                 style="opacity: var(--melt, 0); transform-origin: 58px 60px; transform: scale(calc(0.3 + var(--melt, 0) * 0.7))"/>
+      </symbol>
+    </defs>
+  </svg>
+
+  <main class="page">
+    <section class="intro">
+      <div class="brand">
+        <img class="mark" src="web/buttereye.svg" alt="" width="72" height="72">
+        <div>
+          <p class="kicker">Smooth motion for mpv</p>
+          <h1 class="wordmark">ButterEye</h1>
+        </div>
+      </div>
       <p class="claim"><span>Smoother motion</span> <span class="gold">for the videos you play in mpv.</span></p>
-      <p class="lede">New in-between frames, live while you watch or saved as a copy. RIFE on your GPU,
-        a fast GPU motion engine for 4K and high refresh rates, MVTools on the CPU.
-        Free software for Fedora Linux.</p>
+      <p class="lede">New in-between frames, live while you watch or saved as a copy. Free software for Fedora Linux.</p>
+      <ul class="points">
+        <li><b>Live in your own mpv</b> — double, 60 fps or your display's rate; your mpv.conf is never edited.</li>
+        <li><b>Picked for your computer</b> — RIFE on the GPU, mvgpu for 4K and high refresh, MVTools on the CPU; a speed test chooses.</li>
+        <li><b>Smooth copies</b> — in the background, with audio, subtitles and chapters; HDR10 stays HDR10.</li>
+        <li><b>Explains itself</b> — system checks with the fix, a small line in mpv, Copy log when something goes wrong.</li>
+      </ul>
       <p class="chips"><span class="chip" id="version-chip">v0.0.1</span><span class="chip">Fedora 44 · 45</span><span class="chip">AGPL-3.0</span></p>
-    </header>
+    </section>
 
-    <section class="download" aria-labelledby="dl-title">
+    <section class="stove" aria-labelledby="dl-title">
       <p class="kicker">Download</p>
-      <h2 id="dl-title"><span class="wide">Slide the butter to your platform</span><span class="narrow">Pick your platform</span></h2>
-      <p class="hint" id="dl-hint">Drag the butter along the rail, or use the arrow keys and Enter. You can also pick a platform directly.</p>
+      <h2 id="dl-title">Put the butter in your pan</h2>
+      <p class="hint" id="dl-hint">Drag the butter into the pan for your system. Keyboard: arrows, then Enter. Or pick a pan.</p>
 
-      <div class="rail" id="rail">
-        <div class="track" aria-hidden="true"><div class="melt" id="melt"></div></div>
-        <ol class="stops" id="stops">
-          <li><button type="button" class="stop" data-platform="fc44">
-            <span class="stop-name">Fedora 44</span><span class="stop-sub">Linux · x86_64</span></button></li>
-          <li><button type="button" class="stop" data-platform="fc45">
-            <span class="stop-name">Fedora 45</span><span class="stop-sub">Linux · x86_64</span></button></li>
-          <li><button type="button" class="stop soon" data-platform="macos">
-            <span class="stop-name">macOS</span><span class="stop-sub">not yet</span></button></li>
-          <li><button type="button" class="stop soon" data-platform="windows">
-            <span class="stop-name">Windows</span><span class="stop-sub">not yet</span></button></li>
-        </ol>
-        <div class="butter" id="butter" role="slider" tabindex="0" aria-label="Butter: slide it to a platform"
+      <div class="kitchen" id="kitchen">
+        <div class="butter" id="butter" role="slider" tabindex="0" aria-label="Butter: put it in a pan"
              aria-describedby="dl-hint" aria-valuemin="0" aria-valuemax="4" aria-valuenow="0"
-             aria-valuetext="Start: no platform yet">
+             aria-valuetext="Not in a pan yet">
           <img src="web/buttereye.svg" alt="" width="56" height="56" draggable="false">
         </div>
+        <ol class="pans" id="pans">
+          <li><button type="button" class="pan" data-platform="fc44">
+            <svg aria-hidden="true"><use href="#pan"/></svg>
+            <span class="pan-name">Fedora 44</span><span class="pan-sub">Linux · x86_64</span></button></li>
+          <li><button type="button" class="pan" data-platform="fc45">
+            <svg aria-hidden="true"><use href="#pan"/></svg>
+            <span class="pan-name">Fedora 45</span><span class="pan-sub">Linux · x86_64</span></button></li>
+          <li><button type="button" class="pan cold" data-platform="macos">
+            <svg aria-hidden="true"><use href="#pan"/></svg>
+            <span class="pan-name">macOS</span><span class="pan-sub">not yet</span></button></li>
+          <li><button type="button" class="pan cold" data-platform="windows">
+            <svg aria-hidden="true"><use href="#pan"/></svg>
+            <span class="pan-name">Windows</span><span class="pan-sub">not yet</span></button></li>
+        </ol>
       </div>
 
       <div class="result" id="result" aria-live="polite" hidden></div>
     </section>
-
-    <section class="features" aria-labelledby="ft-title">
-      <p class="kicker">What it does</p>
-      <h2 id="ft-title">Watch it smooth, or keep a smooth copy</h2>
-      <div class="cards">
-        <article class="card"><h3>Live in mpv</h3><p>Drop a video on the window and it plays in your own mpv with new frames: double, 60 fps, or your display's rate.</p></article>
-        <article class="card"><h3>Picked for your computer</h3><p>A speed test measures each engine once per GPU. Automatic takes the best one that keeps up, and never stutters on purpose.</p></article>
-        <article class="card"><h3>4K and high refresh</h3><p>mvgpu, ButterEye's own Vulkan motion engine, smooths 4K to 120 fps with room to spare on a modern GPU.</p></article>
-        <article class="card"><h3>Smooth copies</h3><p>Save a smoothed file in the background, with the audio, subtitles and chapters kept. HDR10 stays HDR10.</p></article>
-        <article class="card"><h3>Your mpv, untouched</h3><p>ButterEye never edits your mpv.conf. A small line in mpv says what it is doing; Copy log says why if it can't.</p></article>
-        <article class="card"><h3>Explains itself</h3><p>System checks name every missing piece with the command that fixes it. A <code>buttereye</code> command does everything the window does.</p></article>
-      </div>
-    </section>
   </main>
 
   <footer class="foot">
-    <p><span id="foot-version">ButterEye 0.0.1</span> · AGPL-3.0-or-later ·
-      <a href="https://github.com/MiguelCarino/ButterEye">Source</a> ·
-      <a href="https://github.com/MiguelCarino/ButterEye/releases">Releases</a> ·
-      <a href="https://github.com/MiguelCarino/ButterEye/blob/main/CHANGELOG.md">Changelog</a></p>
+    <span id="foot-version">ButterEye 0.0.1</span> · AGPL-3.0-or-later ·
+    <a href="https://github.com/MiguelCarino/ButterEye">Source</a> ·
+    <a href="https://github.com/MiguelCarino/ButterEye/releases">Releases</a> ·
+    <a href="https://github.com/MiguelCarino/ButterEye/blob/main/CHANGELOG.md">Changelog</a>
   </footer>
 
   <template id="tpl-fedora">

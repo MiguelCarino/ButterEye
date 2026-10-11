@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 The ButterEye contributors
-// butter.carino.systems: slide the butter to a platform to get ButterEye for it.
-// Pointer drag, keyboard (arrows, Home, Enter) and plain buttons all reach the same
-// choose(). The download list comes from the latest GitHub release when the API
-// answers, else from the built-in 0.0.1 list below.
+// butter.carino.systems: put the butter in a pan (one pan per platform) to get
+// ButterEye for it. Pointer drag anywhere in the kitchen, keyboard (arrows hover the
+// butter over a pan, Enter drops it, Home/Escape take it back) and the pans as
+// buttons all reach choose(). The download list comes from the latest GitHub
+// release when the API answers, else from the built-in 0.0.1 list.
 'use strict';
 
 const REPO = 'MiguelCarino/ButterEye';
@@ -30,98 +31,123 @@ const SOON = {
 
 let release = FALLBACK;
 
-const rail = document.getElementById('rail');
+const kitchen = document.getElementById('kitchen');
 const butter = document.getElementById('butter');
-const stops = Array.from(document.querySelectorAll('.stop'));
+const pans = Array.from(document.querySelectorAll('.pan'));
 const result = document.getElementById('result');
 const reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
 
-let index = 0;          // 0 = resting at the start, 1..4 = a stop
-let x = 0;              // butter offset in px
-let dragging = null;    // {dx} while dragging
+let hover = 0;          // pan the butter is over (1-based), 0 = none
+let pos = { x: 0, y: 0 };
+let dragging = null;    // {dx, dy} while dragging
+let timer = 0;
 
-function butterSize() { return butter.getBoundingClientRect().width || 64; }
-function stopX(i) {     // butter offset that centres it over stop i (1-based)
-  const r = rail.getBoundingClientRect();
-  const s = stops[i - 1].getBoundingClientRect();
-  return s.left + s.width / 2 - r.left - butterSize() / 2;
+function size() { return butter.getBoundingClientRect().width || 64; }
+function home() {       // resting place: centred above the pans
+  const k = kitchen.getBoundingClientRect();
+  return { x: (k.width - size()) / 2, y: 6 };
 }
-function maxX() { return rail.getBoundingClientRect().width - butterSize(); }
-
-function place(px, settle) {
-  x = Math.max(0, Math.min(px, maxX()));
-  rail.classList.toggle('settle', Boolean(settle) && !reduce.matches);
-  butter.classList.toggle('settle', Boolean(settle) && !reduce.matches);
-  rail.style.setProperty('--x', `${x}px`);
+function panCentre(i) { // butter position that centres it over pan i's cooking surface
+  const k = kitchen.getBoundingClientRect();
+  const s = pans[i - 1].querySelector('svg').getBoundingClientRect();
+  // the pan body sits in the left 72 % of the drawing (the handle is the rest)
+  return { x: s.left + s.width * 0.36 - k.left - size() / 2, y: s.top + s.height / 2 - k.top - size() / 2 };
 }
 
-function nearest(px) {  // the stop under the butter, if any
-  const centre = px + butterSize() / 2;
-  const r = rail.getBoundingClientRect();
-  for (let i = 0; i < stops.length; i++) {
-    const s = stops[i].getBoundingClientRect();
-    if (centre >= s.left - r.left && centre <= s.right - r.left) return i + 1;
+function place(p, { settle = false, scale = 1 } = {}) {
+  pos = p;
+  butter.classList.toggle('settle', settle && !reduce.matches);
+  butter.style.setProperty('--bx', `${p.x}px`);
+  butter.style.setProperty('--by', `${p.y}px`);
+  butter.style.setProperty('--bs', String(scale));
+}
+
+function under(p) {     // the pan under the butter's centre
+  const k = kitchen.getBoundingClientRect();
+  const cx = k.left + p.x + size() / 2;
+  const cy = k.top + p.y + size() / 2;
+  for (let i = 0; i < pans.length; i++) {
+    const r = pans[i].getBoundingClientRect();
+    if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) return i + 1;
   }
   return 0;
 }
 
 function mark(i) {
-  stops.forEach((s, k) => s.classList.toggle('near', k + 1 === i));
+  hover = i;
+  pans.forEach((p, k) => p.classList.toggle('near', k + 1 === i));
   butter.setAttribute('aria-valuenow', String(i));
-  butter.setAttribute('aria-valuetext', i ? NAMES[stops[i - 1].dataset.platform] : 'Start: no platform yet');
+  butter.setAttribute('aria-valuetext', i ? `Over the ${NAMES[pans[i - 1].dataset.platform]} pan` : 'Not in a pan yet');
 }
 
-function goTo(i, settle = true) {
-  index = i;
-  place(i ? stopX(i) : 0, settle);
-  mark(i);
+function back() {       // a fresh pat of butter at home
+  clearTimeout(timer);
+  butter.classList.remove('melted');
+  place(home(), { settle: true });
+  mark(0);
 }
 
 function choose(i) {
-  goTo(i);
-  stops.forEach((s, k) => s.classList.toggle('chosen', k + 1 === i));
-  if (!i) { result.hidden = true; return; }
-  show(stops[i - 1].dataset.platform);
+  clearTimeout(timer);
+  mark(i);
+  place(panCentre(i), { settle: true, scale: 0.7 });
+  butter.classList.add('melted');
+  pans.forEach((p, k) => p.classList.toggle('chosen', k + 1 === i));
+  show(pans[i - 1].dataset.platform);
+  // once it has melted, a new pat waits at home for another choice
+  timer = setTimeout(() => {
+    butter.classList.remove('melted', 'settle');
+    place(home());
+    mark(0);
+  }, reduce.matches ? 0 : 900);
 }
 
 // ---------------------------------------------------------------- pointer
 butter.addEventListener('pointerdown', (e) => {
-  dragging = { dx: e.clientX - butter.getBoundingClientRect().left };
+  clearTimeout(timer);
+  butter.classList.remove('melted');
+  const b = butter.getBoundingClientRect();
+  dragging = { dx: e.clientX - b.left, dy: e.clientY - b.top };
   butter.setPointerCapture(e.pointerId);
   butter.classList.add('dragging');
   e.preventDefault();
 });
 butter.addEventListener('pointermove', (e) => {
   if (!dragging) return;
-  const r = rail.getBoundingClientRect();
-  place(e.clientX - r.left - dragging.dx, false);
-  mark(nearest(x));
+  const k = kitchen.getBoundingClientRect();
+  place({ x: e.clientX - k.left - dragging.dx, y: e.clientY - k.top - dragging.dy });
+  mark(under(pos));
 });
 function drop() {
   if (!dragging) return;
   dragging = null;
   butter.classList.remove('dragging');
-  const i = nearest(x);
-  if (i) choose(i); else goTo(0);  // not over a platform: the butter slides back
+  const i = under(pos);
+  if (i) choose(i); else back();  // not over a pan: the butter slides back
 }
 butter.addEventListener('pointerup', drop);
 butter.addEventListener('pointercancel', drop);
 
 // ---------------------------------------------------------------- keyboard
+function hoverOver(i) {
+  mark(i);
+  if (i) place({ x: panCentre(i).x, y: panCentre(i).y - 40 }, { settle: true });
+  else place(home(), { settle: true });
+}
 butter.addEventListener('keydown', (e) => {
-  const last = stops.length;
-  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') goTo(Math.min(index + 1, last));
-  else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') goTo(Math.max(index - 1, 0));
-  else if (e.key === 'Home') goTo(0);
-  else if (e.key === 'End') goTo(last);
-  else if (e.key === 'Enter' || e.key === ' ') { if (index) choose(index); }
+  const last = pans.length;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') hoverOver(Math.min(hover + 1, last));
+  else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') hoverOver(Math.max(hover - 1, 0));
+  else if (e.key === 'Home' || e.key === 'Escape') back();
+  else if (e.key === 'End') hoverOver(last);
+  else if (e.key === 'Enter' || e.key === ' ') { if (hover) choose(hover); }
   else return;
   e.preventDefault();
 });
 
-// ---------------------------------------------------------------- the stops themselves
-stops.forEach((s, k) => s.addEventListener('click', () => choose(k + 1)));
-window.addEventListener('resize', () => goTo(index, false));
+// ---------------------------------------------------------------- the pans themselves
+pans.forEach((p, k) => p.addEventListener('click', () => choose(k + 1)));
+window.addEventListener('resize', () => { if (!dragging) place(hover ? panCentre(hover) : home()); });
 
 // ---------------------------------------------------------------- result
 function show(platform) {
@@ -187,12 +213,12 @@ fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accep
       tag: data.tag_name,
       assets: data.assets.map((a) => ({ name: a.name, url: a.browser_download_url })),
     };
-    const v = release.tag.replace(/^v/, '');
     document.getElementById('version-chip').textContent = release.tag;
-    document.getElementById('foot-version').textContent = `ButterEye ${v}`;
-    const chosen = stops.findIndex((s) => s.classList.contains('chosen'));
-    if (chosen >= 0) show(stops[chosen].dataset.platform);
+    document.getElementById('foot-version').textContent = `ButterEye ${release.tag.replace(/^v/, '')}`;
+    const chosen = pans.findIndex((p) => p.classList.contains('chosen'));
+    if (chosen >= 0) show(pans[chosen].dataset.platform);
   })
   .catch(() => { /* offline or rate-limited: the built-in list stays */ });
 
-goTo(0, false);
+place(home());
+mark(0);
