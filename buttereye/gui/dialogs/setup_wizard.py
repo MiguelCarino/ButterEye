@@ -55,6 +55,7 @@ from buttereye.core.api import (
     SetupResult,
     command_hint,
     legal_notices,
+    osapi,
     render,
     unavailable_text,
 )
@@ -447,7 +448,7 @@ class EnginePage(QWizardPage):
 
 
 class PackagesPage(QWizardPage):
-    """Page 4: the exact dnf lines (never run) + [Check again]."""
+    """Page 4: the exact dnf lines (winget on Windows; never run) + [Check again]."""
 
     def __init__(self, wizard: SetupWizard) -> None:
         super().__init__()
@@ -456,7 +457,12 @@ class PackagesPage(QWizardPage):
         self.busy = False
         lay = QVBoxLayout(self)
         self.body = _label(
-            _t("Run these in a terminal, then press Check again. ButterEye never runs dnf."),
+            _t(
+                "Run these in PowerShell or a Command Prompt, then press Check again. "
+                "ButterEye never runs winget."
+            )
+            if osapi.IS_WINDOWS
+            else _t("Run these in a terminal, then press Check again. ButterEye never runs dnf."),
             self,
         )
         self.missing = _label("", self)
@@ -506,11 +512,18 @@ class PackagesPage(QWizardPage):
         )
         n = len(plan.dnf_lines)
         for i, line in enumerate(plan.dnf_lines):
-            name = (
-                _t("Copy dnf command")
-                if n == 1
-                else _t("Copy dnf command {i} of {n}").format(i=i + 1, n=n)
-            )
+            if osapi.IS_WINDOWS:
+                name = (
+                    _t("Copy winget command")
+                    if n == 1
+                    else _t("Copy winget command {i} of {n}").format(i=i + 1, n=n)
+                )
+            else:
+                name = (
+                    _t("Copy dnf command")
+                    if n == 1
+                    else _t("Copy dnf command {i} of {n}").format(i=i + 1, n=n)
+                )
             f = CopyField(line, accessible_name=name, parent=self)
             self.fields.append(f)
             self.cmd_box.addWidget(f)

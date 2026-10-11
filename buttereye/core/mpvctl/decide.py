@@ -21,6 +21,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+from buttereye.core import osapi
 from buttereye.core.types import (
     BackendId,
     BypassReason,
@@ -67,7 +68,7 @@ BACKEND_NAMES: Mapping[BackendId, str] = {
 }
 
 #: mvgpu's plugin file in the private plugin directory (``buttereye-vs-mvgpu``)
-MVGPU_PLUGIN = "libmvgpu.so"
+MVGPU_PLUGIN = osapi.plugin_file("libmvgpu.so")
 
 
 def fps_fraction(value: float | int | None) -> Fraction | None:
@@ -658,11 +659,11 @@ def installed_backends(
     """Backends whose plugin file (and, for RIFE, a model directory) is installed.
     ``trt``: the TensorRT path is opted in and set up (``backends.trt``)."""
     found: set[BackendId] = {BackendId.RIFE_TRT} if trt else set()
-    if (plugin_dir / "librife.so").is_file() and (
+    if (plugin_dir / osapi.plugin_file("librife.so")).is_file() and (
         model_dir.is_dir() or user_models(user_model_dirs)
     ):
         found.add(BackendId.RIFE_NCNN)
-    if (plugin_dir / "mvtools.so").is_file():
+    if (plugin_dir / osapi.plugin_file("mvtools.so")).is_file():
         found.add(BackendId.MVTOOLS)
     if (plugin_dir / MVGPU_PLUGIN).is_file():
         found.add(BackendId.MVGPU)

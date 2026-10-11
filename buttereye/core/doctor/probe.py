@@ -20,13 +20,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from buttereye.core import osapi
 from buttereye.core.doctor.checks_pkgs import (
     MVTOOLS_SO,
     PKG_MVTOOLS,
     PKG_RIFE,
     RIFE_SO,
     RpmDb,
+    platform_fix,
     rife_variant,
+    tool_fix,
 )
 from buttereye.core.doctor.proc import CmdResult, run
 from buttereye.core.doctor.text import M
@@ -37,8 +40,25 @@ from buttereye.core.types import Finding, Msg, Paths, PluginStatus, ProbeResult,
 PROBE_VPY = Path(__file__).with_name("probe.vpy")
 PROBE_SOURCE = "av://lavfi:testsrc2=size=320x240:rate=24,format=yuv420p"
 #: Distro autoload directories (R72 on F44; R79 uses site-packages/vapoursynth/plugins).
-AUTOLOAD_DIRS = ("/usr/lib64/vapoursynth", "/usr/lib/vapoursynth")
-AUTOLOAD_GLOBS = ("/usr/lib*/python3*/site-packages/vapoursynth/plugins",)
+#: Windows: the per-user plugins64 folder, ``vs-plugins`` beside an installed
+#: VapourSynth, and the same site-packages folder in any Python.
+if osapi.IS_WINDOWS:
+    _APPDATA = os.environ.get("APPDATA", "")
+    AUTOLOAD_DIRS: tuple[str, ...] = (
+        (os.path.join(_APPDATA, "VapourSynth", "plugins64"),) if _APPDATA else ()
+    )
+    AUTOLOAD_GLOBS: tuple[str, ...] = tuple(
+        os.path.join(base, pattern)
+        for base in filter(None, (os.environ.get("ProgramFiles"), os.environ.get("LOCALAPPDATA")))
+        for pattern in (
+            os.path.join("VapourSynth", "vs-plugins"),
+            os.path.join("Programs", "Python", "Python3*", "Lib", "site-packages",
+                         "vapoursynth", "plugins"),
+        )
+    )  # fmt: skip
+else:
+    AUTOLOAD_DIRS = ("/usr/lib64/vapoursynth", "/usr/lib/vapoursynth")
+    AUTOLOAD_GLOBS = ("/usr/lib*/python3*/site-packages/vapoursynth/plugins",)
 
 ActiveCopy = Literal["buttereye", "distro", "user-vstrt", "none"]
 
@@ -73,7 +93,7 @@ def user_vstrt(paths: Paths) -> Path | None:
         found = _vstrt_dirs(paths)
     except OSError:
         return None
-    return found[0] / "libvstrt.so" if found else None
+    return found[0] / osapi.VSTRT_LIB if found else None
 
 
 def plugin_specs(paths: Paths, *, trt: bool) -> tuple[PluginSpec, ...]:
@@ -83,18 +103,18 @@ def plugin_specs(paths: Paths, *, trt: bool) -> tuple[PluginSpec, ...]:
             "rife",
             PKG_RIFE,
             paths.rpm_plugin_dir / RIFE_SO,
-            ("librife.so", "librife_ncnn_vulkan.so"),
+            tuple(map(osapi.plugin_file, ("librife.so", "librife_ncnn_vulkan.so"))),
         ),
         PluginSpec(
             "MVTools",
             "mv",
             PKG_MVTOOLS,
             paths.rpm_plugin_dir / MVTOOLS_SO,
-            ("libmvtools.so", "mvtools.so"),
+            tuple(map(osapi.plugin_file, ("libmvtools.so", "mvtools.so"))),
         ),
     ]
     if trt:
-        specs.append(PluginSpec("vstrt", "trt", None, user_vstrt(paths), ("libvstrt.so",)))
+        specs.append(PluginSpec("vstrt", "trt", None, user_vstrt(paths), (osapi.VSTRT_LIB,)))
     return tuple(specs)
 
 
@@ -311,8 +331,12 @@ def probe_findings(
                     "mpv could not run a VapourSynth script: {why}.",
                     {"why": outcome.error or "unknown"},
                 ),
-                fix=M("Make sure python3-vapoursynth matches the VapourSynth that mpv uses."),
-                commands=("sudo dnf install python3-vapoursynth vapoursynth-tools",),
+                **tool_fix(
+                    M("Make sure python3-vapoursynth matches the VapourSynth that mpv uses."),
+                    "sudo dnf install python3-vapoursynth vapoursynth-tools",
+                    "vapoursynth",
+                    windows=M("Install VapourSynth for Windows; mpv loads it from there."),
+                ),
                 evidence=outcome.cmd.tail() if outcome.cmd else (),
             )
         ]
@@ -335,8 +359,13 @@ def probe_findings(
                 cause=M(
                     "mpv embeds VapourSynth {a}, vspipe is {b}.", {"a": core, "b": vspipe_core}
                 ),
-                fix=M("Update both so they come from the same Fedora release."),
-                commands=("sudo dnf upgrade mpv vapoursynth-tools python3-vapoursynth",),
+                **tool_fix(
+                    M("Update both so they come from the same Fedora release."),
+                    "sudo dnf upgrade mpv vapoursynth-tools python3-vapoursynth",
+                    "vapoursynth",
+                    windows=M("Update VapourSynth; mpv and vspipe then use the same one."),
+                    verb="upgrade",
+                ),
                 evidence=ev,
             )
         )
@@ -371,8 +400,10 @@ def probe_findings(
                 M("{names} did not load inside mpv", {"names": ", ".join(p.name for p in failed)}),
                 code=ErrorCode.PROBE_FAILED,
                 cause=M("The package is installed but mpv's VapourSynth could not load it."),
-                fix=M("Reinstall the plugin package; it must match this Fedora release."),
-                commands=tuple(f"sudo dnf reinstall {p.package}" for p in failed),
+                **platform_fix(
+                    M("Reinstall the plugin package; it must match this Fedora release."),
+                    tuple(f"sudo dnf reinstall {p.package}" for p in failed),
+                ),
                 evidence=evid,
             )
         )

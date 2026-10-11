@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from buttereye.core.doctor import gpufault
-from buttereye.core.doctor.checks_pkgs import MODELS_SUBDIR
+from buttereye.core.doctor.checks_pkgs import MODELS_SUBDIR, tool_fix
 from buttereye.core.doctor.proc import CmdResult, run
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
@@ -144,7 +144,7 @@ async def smoke_test(
             f.title,
             f.cause,
             f.fix,
-            ("sudo dnf install vapoursynth-tools",),
+            tool_fix(M(""), "sudo dnf install vapoursynth-tools", "vapoursynth")["commands"],
             f.evidence,
         )
         return SmokeOutcome(False, None, f, log, faults)

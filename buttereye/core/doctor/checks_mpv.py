@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from buttereye.core import osapi
+from buttereye.core.doctor.checks_pkgs import tool_fix
 from buttereye.core.doctor.proc import run
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
@@ -24,6 +25,7 @@ from buttereye.core.types import Finding, Msg, Paths, Section, Severity
 MIN_MPV = (0, 41, 0)
 _VERSION = re.compile(r"\bmpv\s+v?(\d+)\.(\d+)(?:\.(\d+))?")
 _SANDBOX_MARKERS = ("/var/lib/flatpak/", "/.local/share/flatpak/", "/snap/", "/var/lib/snapd/")
+#: mpvSockets is a Unix-socket script: nothing of it to find on Windows
 MPVSOCKETS_DIR = Path("/tmp/mpvSockets")
 
 
@@ -101,8 +103,14 @@ async def mpv_checks(
                 M("mpv is not installed"),
                 code=ErrorCode.MPV_NOT_FOUND,
                 cause=M("ButterEye controls mpv; no mpv was found on PATH."),
-                fix=M("Install the distro mpv package."),
-                commands=("sudo dnf install mpv",),
+                **tool_fix(
+                    M("Install the distro mpv package."),
+                    "sudo dnf install mpv",
+                    "mpv",
+                    windows=M(
+                        "Install mpv for Windows (shinchiro's build has the VapourSynth filter)."
+                    ),
+                ),
             )
         ], MpvFacts(None, None, False)
 
@@ -148,8 +156,12 @@ async def mpv_checks(
                 M("mpv did not report its version"),
                 code=ErrorCode.MPV_TOO_OLD,
                 cause=M("mpv --version failed or printed something unexpected."),
-                fix=M("Reinstall the distro mpv package."),
-                commands=("sudo dnf reinstall mpv",),
+                **tool_fix(
+                    M("Reinstall the distro mpv package."),
+                    "sudo dnf reinstall mpv",
+                    "mpv",
+                    windows=M("Reinstall mpv."),
+                ),
                 evidence=ver_res.tail(),
             )
         )
@@ -161,8 +173,7 @@ async def mpv_checks(
                 M("mpv {v} is too old", {"v": ".".join(map(str, version))}),
                 code=ErrorCode.MPV_TOO_OLD,
                 cause=M("ButterEye needs mpv 0.41.0 or newer."),
-                fix=M("Update mpv."),
-                commands=("sudo dnf upgrade mpv",),
+                **tool_fix(M("Update mpv."), "sudo dnf upgrade mpv", "mpv", verb="upgrade"),
             )
         )
     else:
@@ -186,8 +197,14 @@ async def mpv_checks(
                 M("mpv has no VapourSynth filter"),
                 code=ErrorCode.MPV_NO_VS_FILTER,
                 cause=M("Your mpv was built without VapourSynth."),
-                fix=M("Install the distro mpv package."),
-                commands=("sudo dnf install mpv",),
+                **tool_fix(
+                    M("Install the distro mpv package."),
+                    "sudo dnf install mpv",
+                    "mpv",
+                    windows=M(
+                        "Install mpv for Windows (shinchiro's build has the VapourSynth filter)."
+                    ),
+                ),
                 evidence=vf_res.tail(3) if not vf_res.ok else (),
             )
         )
@@ -381,7 +398,10 @@ def mpvsockets_finding(
     """BE-1041. The script moves *every* mpv's IPC socket, including the players
     ButterEye starts (user scripts load there too), so an installed script is
     Degraded (errors.md); a leftover socket folder alone is only a fact (INFO).
-    The text never promises attaching while ``Feature.ATTACH`` is unavailable."""
+    The text never promises attaching while ``Feature.ATTACH`` is unavailable.
+    Windows: nothing to check (the script needs Unix sockets)."""
+    if osapi.IS_WINDOWS:
+        return None
     sockets_dir = MPVSOCKETS_DIR if sockets_dir is None else sockets_dir
     scripts = paths.user_mpv_conf.parent / "scripts"
     found_scripts: list[str] = []

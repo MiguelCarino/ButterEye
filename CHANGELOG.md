@@ -19,6 +19,15 @@ release may change behaviour or settings.
 - `tests/windows/` tests the Windows code against the real Windows API, including a
   real `mpv.exe`; `tools/wine-tests.sh` runs them under Wine on Linux.
 
+### Windows port, phase 2 of 4
+
+- **The system checks speak Windows.** On Windows the doctor reads ButterEye's install
+  record instead of rpm, finds GPUs through Vulkan, and every fix is a Windows fix:
+  run the installer again for ButterEye's own pieces, or the `winget` line for mpv,
+  VapourSynth, ffmpeg, mkvtoolnix and 7-Zip. Setup lists those `winget` lines the way
+  it lists `dnf` lines on Fedora. Two things aren't on Windows yet, and the checks say
+  so: the GPU-fault history and the experimental TensorRT path.
+
 ## 0.0.1 — 2026-10-10
 
 The first release. ButterEye is in **alpha**: it works on the machines it was tested

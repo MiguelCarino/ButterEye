@@ -32,7 +32,12 @@ from buttereye.core import ops as _ops_mod
 from buttereye.core import osapi as osapi  # the OS seam, for the GUI's own lock and folder checks
 from buttereye.core import types as _types_mod
 from buttereye.core.capabilities import ProviderRef, unavailable_text
-from buttereye.core.commands import CLI_MISSING_NOTE, cli_available, command_hint
+from buttereye.core.commands import (
+    CLI_MISSING_NOTE,
+    cli_available,
+    command_hint,
+    install_command,
+)
 from buttereye.core.errors import *  # noqa: F403
 from buttereye.core.errors import (
     ButterEyeError,
@@ -846,6 +851,7 @@ __all__ = [
     "builtin_profiles",
     "legal_notices",
     "command_hint",
+    "install_command",
     "cli_available",
     "CLI_MISSING_NOTE",
     "unavailable_text",

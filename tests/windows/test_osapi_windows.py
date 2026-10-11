@@ -335,3 +335,58 @@ async def test_storage_clean_removes_a_junction_not_its_target(tmp_path: Path) -
     assert list(engines.iterdir()) == []
     assert res.freed_bytes == 16
     assert res.skipped == ()
+
+
+# ---------------------------------------------------------------- the doctor (phase 2)
+LINUX_WORDS = ("dnf", "sudo", "rpm ", "usermod", "copr")
+
+
+async def test_doctor_runs_and_speaks_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole doctor on Windows: it finishes, reads the install record in place
+    of rpm, and no advice mentions a Linux tool."""
+    import json
+
+    from buttereye.core.doctor import checks_pkgs as pk
+    from buttereye.core.doctor.run import doctor
+    from buttereye.core.profiles.defaults import default_config
+
+    install = tmp_path / "ButterEye"
+    plugins = install / "vapoursynth"
+    plugins.mkdir(parents=True)
+    for name in ("librife.dll", "mvtools.dll", "libmvgpu.dll"):
+        (plugins / name).write_bytes(b"MZ")
+    models = install / "share" / pk.MODELS_SUBDIR / "rife-v4.22-lite"
+    models.mkdir(parents=True)
+    (install / "licenses").mkdir()
+    (install / "licenses" / "LICENSE").write_text("MIT")
+    components = [
+        {"name": n, "version": "1-1", "license": "MIT", "licence_files": ["licenses/LICENSE"]}
+        for n in (pk.PKG_RIFE, pk.PKG_MVTOOLS, pk.PKG_MODELS, pk.PKG_MVGPU)
+    ]
+    components[0]["provides"] = [["bundled(ncnn)", "20250916"]]
+    (install / pk.INSTALL_MANIFEST).write_text(json.dumps({"version": 1, "components": components}))
+    monkeypatch.setenv("BUTTEREYE_HOME", str(install))
+    if MPV:
+        monkeypatch.setenv("PATH", str(Path(MPV).parent) + os.pathsep + os.environ["PATH"])
+
+    p = _win_paths(tmp_path)
+    assert p.rpm_plugin_dir == plugins
+    report = await doctor(p, default_config(), trt=None, progress=lambda _p: None)
+    by_id = {f.id: f for f in report.findings}
+
+    for f in report.findings:
+        for c in f.commands:
+            assert not any(w in c.lower() for w in LINUX_WORDS), (f.id, c)
+    assert by_id["packages.rife"].severity.value == "ok", by_id["packages.rife"]
+    assert by_id["packages.mvtools"].severity.value == "ok"
+    assert by_id["packages.mvgpu"].severity.value == "ok"
+    assert by_id["packages.licence_files"].severity.value == "ok"
+    assert by_id["gpu_fault.xid"].title.key == "GPU faults aren't checked on Windows"
+    assert by_id["trt.off"].title.key.startswith("Experimental NVIDIA TensorRT isn't available")
+    assert "conflicts.mpvsockets" not in by_id  # a Unix-socket script: nothing to find here
+    if MPV:
+        assert by_id["mpv.version"].severity.value == "ok", by_id["mpv.version"]
+    else:
+        assert any(c.startswith("winget install") for c in by_id["mpv.binary"].commands)

@@ -165,6 +165,19 @@ def locked_dir(directory: Path) -> Iterator[None]:
         os.close(fd)  # closing releases the lock
 
 
+# ======================================================================== libraries
+def plugin_file(linux_name: str) -> str:
+    """A VapourSynth plugin's file name on this system. Plugins are named for Linux
+    (``librife.so``); the Windows builds use the same stem with ``.dll``."""
+    if IS_WINDOWS and linux_name.endswith(".so"):
+        return linux_name[:-3] + ".dll"
+    return linux_name
+
+
+#: vs-mlrt's TensorRT plugin: ``vstrt.dll`` is the name its Windows releases use
+VSTRT_LIB = "vstrt.dll" if IS_WINDOWS else "libvstrt.so"
+
+
 # ======================================================================== processes
 def executable(name: str) -> str | None:
     """``shutil.which`` that prefers the windowed ``.exe`` on Windows: mpv ships
@@ -397,6 +410,7 @@ def ipc_peer(writer: asyncio.StreamWriter) -> tuple[int | None, bool] | None:
 
 __all__ = [
     "IS_WINDOWS",
+    "VSTRT_LIB",
     "O_BINARY",
     "O_CLOEXEC",
     "O_NOFOLLOW",
@@ -415,6 +429,7 @@ __all__ = [
     "open_ipc",
     "owned_by_me",
     "pid_alive",
+    "plugin_file",
     "prepare_endpoint",
     "replace",
     "set_mode",

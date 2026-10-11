@@ -56,6 +56,7 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from buttereye.core import osapi
 from buttereye.core.doctor.proc import CmdResult, run
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
@@ -276,7 +277,10 @@ async def scan_xid(
     timeout_s: float = 3.0,
     journalctl: str = "journalctl",
 ) -> XidScan:
-    """See the module docstring. Read-only; never raises for journal problems."""
+    """See the module docstring. Read-only; never raises for journal problems.
+    Windows has no kernel log to read: the scan is always "not readable" there."""
+    if osapi.IS_WINDOWS:
+        return XidScan(False, (), WINDOWS_NOT_CHECKED)
     argv = [journalctl, "-k", "--no-pager", "-q", "-o", "json", "--grep=NVRM: Xid"]
     if since_wall is not None:
         argv.append(f"--since=@{max(0, int(since_wall) - 1)}")
@@ -447,6 +451,10 @@ def doctor_xid_findings(
     return tuple(out)
 
 
+#: XidScan.error on Windows (see ``xid_finding``)
+WINDOWS_NOT_CHECKED = "Windows keeps no kernel log to scan"
+
+
 def xid_finding(
     scan: XidScan, *, since_text: str, max_evidence: int = 12, blame: bool | None = None
 ) -> Finding:
@@ -456,6 +464,19 @@ def xid_finding(
     pipeline. ``None`` (callers whose scan is already limited to their own
     pids and time window: bench, smoke test, live health) decides from the
     process names."""
+    if not scan.readable and osapi.IS_WINDOWS:
+        return Finding(
+            id="gpu_fault.xid",
+            section=Section.GPU_FAULT,
+            severity=Severity.INFO,
+            code=None,
+            title=M("GPU faults aren't checked on Windows"),
+            cause=M(
+                "On Linux ButterEye counts NVIDIA Xid errors in the kernel log. Windows "
+                "records GPU faults in its event log instead, which ButterEye doesn't read yet."
+            ),
+            fix=M(""),
+        )
     if not scan.readable:
         return Finding(
             id="gpu_fault.xid",

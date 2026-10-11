@@ -4,18 +4,27 @@
 
 ButterEye never runs dnf: missing packages are reported with the exact lines to
 run. ``rpm -q`` output is parsed by pure functions so fixtures can test them.
+
+On Windows there is no package manager to ask: the installer writes an install
+record (``buttereye-install.json``, see ``manifest_db``) next to ButterEye, and
+it takes rpm's place. Fixes there say to run the installer again (Repair), and
+tools ButterEye doesn't ship come with the ``winget`` line that installs them.
 """
 
 from __future__ import annotations
 
 import asyncio
 import glob
+import json
 import re
 import shutil
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
+from buttereye.core import commands as _commands
+from buttereye.core import osapi
 from buttereye.core.doctor.proc import CmdResult, run
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
@@ -45,9 +54,14 @@ OTHER_PKGS = (
     "7zip",
 )
 
-RIFE_SO = "librife.so"
-MVTOOLS_SO = "mvtools.so"
-MVGPU_SO = "libmvgpu.so"
+#: The Windows install record (``manifest_db``), in the install folder.
+INSTALL_MANIFEST = "buttereye-install.json"
+#: winget package ids (shared with ``commands.install_command``)
+WINGET = _commands.WINGET
+
+RIFE_SO = osapi.plugin_file("librife.so")
+MVTOOLS_SO = osapi.plugin_file("mvtools.so")
+MVGPU_SO = osapi.plugin_file("libmvgpu.so")
 MODELS_SUBDIR = "rife-ncnn-models"
 
 _QF = (
@@ -139,7 +153,49 @@ def parse_rpm_query(text: str) -> dict[str, RpmInfo]:
     return out
 
 
+def manifest_db(install: Path) -> RpmDb:
+    """The Windows install record as a package database.
+
+    ``buttereye-install.json``, written by the installer::
+
+        {"version": 1, "components": [
+            {"name": "buttereye-vs-rife-ncnn", "version": "9.33-1", "license": "MIT",
+             "provides": [["bundled(ncnn)", "20250916"]],
+             "licence_files": ["licenses/buttereye-vs-rife-ncnn/LICENSE"]}, ...]}
+
+    ``licence_files`` are relative to the install folder. A missing or unreadable
+    record reads as "can't be checked", like a system without rpm."""
+    path = install / INSTALL_MANIFEST
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return RpmDb(False, {}, f"no install record ({INSTALL_MANIFEST}) in {install}")
+    except (OSError, ValueError) as exc:
+        return RpmDb(False, {}, f"the install record can't be read: {exc}")
+    if not isinstance(data, dict) or not isinstance(data.get("components"), list):
+        return RpmDb(False, {}, "the install record has no component list")
+    out: dict[str, RpmInfo] = {}
+    for c in data["components"]:
+        if not isinstance(c, dict) or not isinstance(c.get("name"), str):
+            continue
+        provides = tuple(
+            (str(x[0]), str(x[1]))
+            for x in c.get("provides") or ()
+            if isinstance(x, list) and len(x) == 2
+        )
+        files = tuple(install / str(f) for f in c.get("licence_files") or () if isinstance(f, str))
+        out[c["name"]] = RpmInfo(
+            c["name"], str(c.get("version", "")), str(c.get("license", "")), provides, (), files
+        )
+    return RpmDb(True, out)
+
+
 async def rpm_query(names: Iterable[str] = BUTTEREYE_PKGS + OTHER_PKGS) -> RpmDb:
+    """What is installed: ``rpm -q`` on Linux, the install record on Windows."""
+    if osapi.IS_WINDOWS:
+        from buttereye.core.paths import install_dir
+
+        return manifest_db(install_dir())
     if shutil.which("rpm") is None:
         return RpmDb(False, {}, "rpm is not installed")
     res = await run(("rpm", "-q", "--qf", _QF, *names), timeout_s=6.0)
@@ -181,6 +237,40 @@ def installed_models(paths: Paths) -> tuple[str, ...]:
 
 def _dnf(*pkgs: str) -> tuple[str, ...]:
     return (COPR_ENABLE, "sudo dnf install " + " ".join(pkgs))
+
+
+#: Windows: ButterEye's own pieces come only from its installer
+REPAIR = M("Run the ButterEye installer again and choose Repair.")
+
+
+class Fix(TypedDict):
+    fix: Msg
+    commands: tuple[str, ...]
+
+
+def platform_fix(fix: Msg, commands: tuple[str, ...], *, windows: Msg = REPAIR) -> Fix:
+    """``fix=``/``commands=`` for a finding: the Fedora advice with its commands, or
+    on Windows ``windows`` (by default the installer's Repair) with nothing to type."""
+    if osapi.IS_WINDOWS:
+        return {"fix": windows, "commands": ()}
+    return {"fix": fix, "commands": commands}
+
+
+def tool_fix(
+    fix: Msg,
+    dnf_line: str,
+    winget_key: str,
+    *,
+    windows: Msg | None = None,
+    verb: str = "install",
+) -> Fix:
+    """``fix=``/``commands=`` for a tool ButterEye uses but doesn't ship: the
+    ``dnf`` line, or on Windows the ``winget`` one (``verb``: install/upgrade),
+    with ``windows`` as the advice there when the Linux words don't fit."""
+    if osapi.IS_WINDOWS:
+        line = f"winget {verb} --exact --id {WINGET[winget_key]}"
+        return {"fix": windows or fix, "commands": (line,)}
+    return {"fix": fix, "commands": (dnf_line,)}
 
 
 def _f(
@@ -232,8 +322,11 @@ def mvgpu_finding(db: RpmDb, paths: Paths) -> Finding:
             "mvgpu smooths 4K at high rates on the GPU where RIFE can't keep up; "
             "without it, ButterEye smooths a smaller picture or uses MVTools there.",
         ),
-        fix=M("Install it from the ButterEye COPR if you want it."),
-        commands=(f"sudo dnf install {PKG_MVGPU}",),
+        **platform_fix(
+            M("Install it from the ButterEye COPR if you want it."),
+            (f"sudo dnf install {PKG_MVGPU}",),
+            windows=M("Run the ButterEye installer again and include it."),
+        ),
     )
 
 
@@ -251,6 +344,14 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                 cause=M("rpm is not available: {why}", {"why": db.error or "unknown"}),
                 fix=M("ButterEye supports Fedora 44 and 45 with its COPR packages."),
             )
+            if not osapi.IS_WINDOWS
+            else _f(
+                "packages.rpm",
+                Severity.INFO,
+                M("ButterEye's install record can't be read"),
+                cause=M("{why}", {"why": db.error or "unknown"}),
+                fix=REPAIR,
+            )
         )
         if not rife_file and not mv_file:
             out.append(
@@ -263,8 +364,10 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                         "Neither {a} nor {b} was found in {d}.",
                         {"a": RIFE_SO, "b": MVTOOLS_SO, "d": str(paths.rpm_plugin_dir)},
                     ),
-                    fix=M("Install the ButterEye plugin packages."),
-                    commands=_dnf(PKG_MVTOOLS, PKG_RIFE, PKG_MODELS),
+                    **platform_fix(
+                        M("Install the ButterEye plugin packages."),
+                        _dnf(PKG_MVTOOLS, PKG_RIFE, PKG_MODELS),
+                    ),
                 )
             )
         out.append(mvgpu_finding(db, paths))
@@ -315,8 +418,10 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                     "Without {pkg}, only MVTools (CPU) interpolation is possible.",
                     {"pkg": PKG_RIFE},
                 ),
-                fix=M("Install the RIFE plugin and its models from the ButterEye COPR."),
-                commands=_dnf(PKG_RIFE, PKG_MODELS),
+                **platform_fix(
+                    M("Install the RIFE plugin and its models from the ButterEye COPR."),
+                    _dnf(PKG_RIFE, PKG_MODELS),
+                ),
             )
         )
 
@@ -338,8 +443,7 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                 M("The MVTools plugin is not installed"),
                 code=ErrorCode.PKG_MISSING,
                 cause=M("MVTools is the CPU fallback when RIFE can't run."),
-                fix=M("Install MVTools from the ButterEye COPR."),
-                commands=_dnf(PKG_MVTOOLS),
+                **platform_fix(M("Install MVTools from the ButterEye COPR."), _dnf(PKG_MVTOOLS)),
             )
         )
 
@@ -366,8 +470,7 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                         "The RIFE plugin needs the packaged models in {d}.",
                         {"d": str(paths.rpm_data_dir / MODELS_SUBDIR)},
                     ),
-                    fix=M("Install the RIFE model package."),
-                    commands=_dnf(PKG_MODELS),
+                    **platform_fix(M("Install the RIFE model package."), _dnf(PKG_MODELS)),
                     evidence=models,
                 )
             )
@@ -382,8 +485,10 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                 M("No interpolation plugin is installed"),
                 code=ErrorCode.PKG_MISSING,
                 cause=M("ButterEye needs RIFE-ncnn or MVTools to interpolate."),
-                fix=M("Enable the ButterEye COPR and install the plugin packages."),
-                commands=_dnf(PKG_MVTOOLS, PKG_RIFE, PKG_MODELS),
+                **platform_fix(
+                    M("Enable the ButterEye COPR and install the plugin packages."),
+                    _dnf(PKG_MVTOOLS, PKG_RIFE, PKG_MODELS),
+                ),
             )
         )
 
@@ -414,10 +519,12 @@ def licence_files_finding(db: RpmDb) -> Finding:
                 "{n} licence file(s) of installed ButterEye packages are not on disk.",
                 {"n": len(missing)},
             ),
-            fix=M("This is a packaging bug or a damaged install; reinstall the packages."),
-            commands=(
-                "sudo dnf reinstall "
-                + " ".join(n for n in BUTTEREYE_PKGS if db.get(n) is not None),
+            **platform_fix(
+                M("This is a packaging bug or a damaged install; reinstall the packages."),
+                (
+                    "sudo dnf reinstall "
+                    + " ".join(n for n in BUTTEREYE_PKGS if db.get(n) is not None),
+                ),
             ),
             evidence=tuple(missing),
         )
@@ -439,6 +546,10 @@ FFMS2_GLOBS = ("/usr/lib64/libffms2.so*", "/usr/lib/libffms2.so*", "/usr/lib64/v
 def ffms2_present(db: RpmDb, globs: Sequence[str] | None = None) -> bool:
     if db.get("ffms2") is not None:
         return True
+    if osapi.IS_WINDOWS and globs is None:
+        from buttereye.core.scriptgen.generator import ScriptConstants
+
+        return ScriptConstants().ffms2_lib.is_file()
     return any(glob.glob(g) for g in (FFMS2_GLOBS if globs is None else globs))
 
 
@@ -512,8 +623,9 @@ def render_findings(
                 section=sec,
                 code=ErrorCode.FFMS2_MISSING,
                 cause=M("Offline render reads your video through ffms2.{tail}", {"tail": not_yet}),
-                fix=M("Install ffms2, then run the checks again."),
-                commands=("sudo dnf install ffms2",),
+                **platform_fix(
+                    M("Install ffms2, then run the checks again."), ("sudo dnf install ffms2",)
+                ),
             )
         )
     if w("mkvmerge"):
@@ -527,8 +639,11 @@ def render_findings(
                 section=sec,
                 code=ErrorCode.PKG_MISSING,
                 cause=M("mkvmerge isn't installed, so ffmpeg will remux.{tail}", {"tail": not_yet}),
-                fix=M("Install mkvtoolnix for the preferred path."),
-                commands=("sudo dnf install mkvtoolnix",),
+                **tool_fix(
+                    M("Install mkvtoolnix for the preferred path."),
+                    "sudo dnf install mkvtoolnix",
+                    "mkvtoolnix",
+                ),
             )
         )
     if encoders.missing:
@@ -540,8 +655,7 @@ def render_findings(
                 section=sec,
                 code=ErrorCode.PKG_MISSING,
                 cause=M("Offline render encodes with ffmpeg."),
-                fix=M("Install ffmpeg."),
-                commands=("sudo dnf install /usr/bin/ffmpeg",),
+                **tool_fix(M("Install ffmpeg."), "sudo dnf install /usr/bin/ffmpeg", "ffmpeg"),
             )
         )
     elif not encoders.ok:
@@ -601,8 +715,11 @@ def render_findings(
                 section=sec,
                 code=ErrorCode.SEVENZIP_MISSING,
                 cause=M("Only needed for experimental TensorRT model archives."),
-                fix=M("Install 7zip if you turn on the experimental TensorRT path."),
-                commands=("sudo dnf install 7zip",),
+                **tool_fix(
+                    M("Install 7zip if you turn on the experimental TensorRT path."),
+                    "sudo dnf install 7zip",
+                    "7zip",
+                ),
             )
         )
     return out
@@ -615,6 +732,13 @@ async def gather_rpm_and_ffmpeg() -> tuple[RpmDb, CmdResult, RpmInfo | None]:
 
 __all__ = [
     "COPR_PROJECT",
+    "INSTALL_MANIFEST",
+    "REPAIR",
+    "WINGET",
+    "Fix",
+    "manifest_db",
+    "platform_fix",
+    "tool_fix",
     "PKG_RIFE",
     "PKG_MVTOOLS",
     "PKG_MVGPU",

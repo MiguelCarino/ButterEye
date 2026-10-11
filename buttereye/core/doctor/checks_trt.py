@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from buttereye.core import osapi
 from buttereye.core.doctor.proc import CmdResult, run
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
@@ -54,7 +55,21 @@ def _f(
     )
 
 
+def trt_windows_finding() -> Finding:
+    return Finding(
+        "trt.off",
+        Section.TRT,
+        Severity.INFO,
+        None,
+        M("Experimental NVIDIA TensorRT isn't available on Windows yet"),
+        M("RIFE runs through Vulkan on every GPU, NVIDIA included."),
+        M(""),
+    )
+
+
 def trt_off_finding() -> Finding:
+    if osapi.IS_WINDOWS:
+        return trt_windows_finding()
     return Finding(
         "trt.off",
         Section.TRT,
@@ -93,6 +108,8 @@ def trt_findings(
     trtexec: str | None,
     models_dir: Path | None = None,
 ) -> list[Finding]:
+    if osapi.IS_WINDOWS:
+        return [trt_windows_finding()]
     out: list[Finding] = []
     dnf_rt = "sudo dnf install libnvinfer-bin"
     nv = [g for g in hw.info.gpus if g.vendor == "NVIDIA"]
@@ -349,4 +366,11 @@ def find_trtexec() -> str | None:
     return str(TRTEXEC_DEFAULT) if TRTEXEC_DEFAULT.is_file() else None
 
 
-__all__ = ["trt_off_finding", "trt_findings", "libnvinfer_version", "ldconfig_p", "find_trtexec"]
+__all__ = [
+    "trt_off_finding",
+    "trt_windows_finding",
+    "trt_findings",
+    "libnvinfer_version",
+    "ldconfig_p",
+    "find_trtexec",
+]

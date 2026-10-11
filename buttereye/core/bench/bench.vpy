@@ -31,6 +31,8 @@ cfg = json.loads(_raw)
 
 
 def load(namespace, filename):
+    if os.name == 'nt' and filename.endswith('.so'):  # Windows builds are .dll
+        filename = filename[:-3] + '.dll'
     if not hasattr(core, namespace):
         core.std.LoadPlugin(os.path.join(cfg['plugin_dir'], filename))
 

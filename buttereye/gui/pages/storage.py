@@ -61,6 +61,7 @@ from buttereye.core.api import (
     StorageEntry,
     StorageKind,
     command_hint,
+    osapi,
     render,
     unavailable_text,
 )
@@ -106,7 +107,9 @@ def kind_name(kind: StorageKind) -> str:
         StorageKind.LOGS: _t("Logs"),
         StorageKind.BENCH: _t("Benchmark results"),
         StorageKind.RUNTIME: _t("Live files"),
-        StorageKind.RPM: _t("Installed by dnf"),
+        StorageKind.RPM: (
+            _t("Installed with ButterEye") if osapi.IS_WINDOWS else _t("Installed by dnf")
+        ),
     }
     return names[kind]
 
@@ -140,6 +143,8 @@ def cleanable(e: StorageEntry) -> bool:
 
 
 def dnf_remove_line(e: StorageEntry) -> str:
+    if osapi.IS_WINDOWS:  # ButterEye's own folder: removed with ButterEye itself
+        return _t("Uninstall ButterEye in Settings › Apps")
     pkgs = RPM_PACKAGES.get(e.path)
     if pkgs:
         return "sudo dnf remove " + " ".join(pkgs)
@@ -159,9 +164,16 @@ class CleanConfirmDialog(FitDialog):
         self.setWindowTitle(_t("Clean selected folders"))
         total = sum(e.bytes or 0 for e in entries)
         self.intro = QLabel(
-            _t(
-                "The contents of these folders will be deleted ({size} in total). "
-                "Files installed by dnf are never touched."
+            (
+                _t(
+                    "The contents of these folders will be deleted ({size} in total). "
+                    "Files installed with ButterEye are never touched."
+                )
+                if osapi.IS_WINDOWS
+                else _t(
+                    "The contents of these folders will be deleted ({size} in total). "
+                    "Files installed by dnf are never touched."
+                )
             ).format(size=human_bytes(total)),
             self,
         )
@@ -241,6 +253,11 @@ class Sha256Dialog(FitDialog):
 
 #: Shown while installing/removing a model archive is not in this build.
 def file_install_unavailable_text() -> str:
+    if osapi.IS_WINDOWS:
+        return _t(
+            "Installing or removing a model from a file isn't in this build yet. "
+            "Packaged models come and go with ButterEye's installer."
+        )
     return _t(
         "Installing or removing a model from a file isn't in this build yet. "
         "Packaged models are installed and removed with dnf."
@@ -302,7 +319,9 @@ class StoragePage(Page):
         self.loc_model.itemChanged.connect(lambda _i: self._sync_clean())
         self.loc_table = flat_view(self.loc_box, self.loc_model, _t("Storage locations"))
         self.loc_table.setAccessibleDescription(
-            _t("Space ticks a folder to clean. Folders installed by dnf can't be ticked.")
+            _t("Space ticks a folder to clean. Folders installed with ButterEye can't be ticked.")
+            if osapi.IS_WINDOWS
+            else _t("Space ticks a folder to clean. Folders installed by dnf can't be ticked.")
         )
         self.loc_table.selectionModel().currentRowChanged.connect(lambda *_a: self._sync_rpm())
         self.rpm_caption = QLabel(_t("For orientation only (ButterEye never runs it):"), self)
@@ -459,7 +478,11 @@ class StoragePage(Page):
                         Qt.CheckState.Checked if e.path in checked else Qt.CheckState.Unchecked
                     )
                 if e.rpm_owned:
-                    deletable = _t("No — installed by dnf")
+                    deletable = (
+                        _t("No — installed with ButterEye")
+                        if osapi.IS_WINDOWS
+                        else _t("No — installed by dnf")
+                    )
                 elif e.deletable:
                     deletable = _t("Yes")
                 else:
@@ -699,7 +722,11 @@ class StoragePage(Page):
             self.remove_note.setText(note)
             self.remove_button.setAccessibleDescription(note)
         elif m is not None and not m.removable:
-            note = _t("{name} was installed by dnf and can't be removed here.").format(name=m.name)
+            note = (
+                _t("{name} came with ButterEye's installer and can't be removed here.")
+                if osapi.IS_WINDOWS
+                else _t("{name} was installed by dnf and can't be removed here.")
+            ).format(name=m.name)
             self.remove_note.setText(note)
             self.remove_button.setAccessibleDescription(note)
         else:

@@ -47,6 +47,7 @@ from buttereye.core.api import (
     RenderProbe,
     Severity,
     builtin_profiles,
+    install_command,
     render,
     unavailable_text,
 )
@@ -62,7 +63,7 @@ from buttereye.gui.widgets.status_badge import BadgeKind, StatusBadge
 
 _log = logging.getLogger(__name__)
 
-MKVTOOLNIX_INSTALL = "sudo dnf install mkvtoolnix"
+MKVTOOLNIX_INSTALL = install_command("mkvtoolnix")
 HDR10_ENCODERS = ("libx265", "libsvtav1")
 #: SCOPE §7.5 defaults, best first, after the configured per-vendor encoders.
 SDR_DEFAULTS = ("hevc_nvenc", "hevc_vaapi", "libsvtav1")

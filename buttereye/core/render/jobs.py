@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 from buttereye.core import capabilities, filelog, osapi
 from buttereye.core.backends import trt
 from buttereye.core.capabilities import ProviderRef
+from buttereye.core.commands import install_command
 from buttereye.core.doctor.checks_pkgs import parse_encoders
 from buttereye.core.doctor.proc import run
 from buttereye.core.errors import ButterEyeError, ErrorCode, InsufficientSpace, RenderRefused
@@ -91,8 +92,9 @@ USER_MODEL_SUBDIR = "models"
 PROBE_TIMEOUT_S = 60.0
 REMUX_TIMEOUT_S = 6 * 3600.0
 RENICE = 10  # §7.6: renders always run at lower CPU priority than the desktop
-INSTALL_FFMS2 = "sudo dnf install ffms2"
-INSTALL_MKVTOOLNIX = "sudo dnf install mkvtoolnix"
+#: ffms2 comes with ButterEye on Windows (its installer), with dnf on Fedora
+INSTALL_FFMS2 = "" if osapi.IS_WINDOWS else "sudo dnf install ffms2"
+INSTALL_MKVTOOLNIX = install_command("mkvtoolnix")
 PROGRESS_INTERVAL_S = 0.5
 
 
@@ -172,9 +174,9 @@ def _tools() -> _Tools:
     ffprobe, ffmpeg = shutil.which("ffprobe"), shutil.which("ffmpeg")
     vspipe = shutil.which("vspipe")
     if ffprobe is None or ffmpeg is None:
-        raise _missing("ffmpeg", "sudo dnf install ffmpeg-free")
+        raise _missing("ffmpeg", install_command("ffmpeg"))
     if vspipe is None:
-        raise _missing("vspipe", "sudo dnf install vapoursynth-tools")
+        raise _missing("vspipe", install_command("vapoursynth"))
     return _Tools(ffprobe, ffmpeg, vspipe, shutil.which("mkvmerge"))
 
 
@@ -235,7 +237,7 @@ def _refusal(code: ErrorCode, title: str, cause: str, fix: str, **params: str) -
         title=Msg(title, params),
         cause=Msg(cause, params),
         fix=Msg(fix, params),
-        commands=(INSTALL_FFMS2,) if code is ErrorCode.FFMS2_MISSING else (),
+        commands=(INSTALL_FFMS2,) if code is ErrorCode.FFMS2_MISSING and INSTALL_FFMS2 else (),
     )
 
 

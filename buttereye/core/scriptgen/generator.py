@@ -16,7 +16,7 @@ import json
 import os
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -54,9 +54,24 @@ MVGPU_CONCURRENT_FRAMES_DEFAULT = 8
 class ScriptConstants:
     """The only values that appear as code in a generated script."""
 
-    plugin_dir: Path = Path("/usr/lib64/buttereye/vapoursynth")
-    # Fedora's ffms2 is not in VapourSynth's autoload directory (SCOPE §7.1)
-    ffms2_lib: Path = Path("/usr/lib64/libffms2.so.5")
+    plugin_dir: Path = field(default_factory=lambda: _default_plugin_dir())
+    # Fedora's ffms2 is not in VapourSynth's autoload directory (SCOPE §7.1); on
+    # Windows the installer puts ffms2.dll with ButterEye's other plugins
+    ffms2_lib: Path = field(default_factory=lambda: _default_ffms2())
+
+
+def _default_plugin_dir() -> Path:
+    if osapi.IS_WINDOWS:
+        from buttereye.core.paths import install_dir
+
+        return install_dir() / "vapoursynth"
+    return Path("/usr/lib64/buttereye/vapoursynth")
+
+
+def _default_ffms2() -> Path:
+    if osapi.IS_WINDOWS:
+        return _default_plugin_dir() / "ffms2.dll"
+    return Path("/usr/lib64/libffms2.so.5")
 
 
 @dataclass(frozen=True, slots=True)

@@ -21,6 +21,8 @@ def _arg(key, default):
 
 
 def _load(namespace, filename):
+    if os.name == "nt" and filename.endswith(".so"):  # Windows builds are .dll
+        filename = filename[:-3] + ".dll"
     if not hasattr(core, namespace):
         core.std.LoadPlugin(os.path.join(_arg("plugin_dir", ""), filename))
 

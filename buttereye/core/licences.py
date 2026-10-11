@@ -23,6 +23,7 @@ from importlib import metadata
 from pathlib import Path
 
 import buttereye
+from buttereye.core import osapi
 from buttereye.core.doctor import checks_pkgs as pk
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
@@ -48,7 +49,12 @@ NO_WARRANTY = M(
 )
 
 _SRC_ROOT = Path(__file__).resolve().parents[2]  # source tree / sdist root
-_DOC_DIRS = (Path("/usr/share/licenses/buttereye"), Path("/usr/share/doc/buttereye"))
+if osapi.IS_WINDOWS:  # the installer puts ButterEye's own notices in <install>\licenses
+    from buttereye.core.paths import install_dir as _install_dir
+
+    _DOC_DIRS: tuple[Path, ...] = (_install_dir() / "licenses" / "buttereye", _install_dir())
+else:
+    _DOC_DIRS = (Path("/usr/share/licenses/buttereye"), Path("/usr/share/doc/buttereye"))
 _SHADERS = Path(__file__).resolve().parents[1] / "data" / "shaders"  # bundled mpv shaders
 
 
@@ -231,8 +237,8 @@ def _licence_finding(
                 "{n} licence file(s) listed by the package are missing. This is a packaging bug.",
                 {"n": len(missing)},
             ),
-            M("Reinstall {pkg}.", {"pkg": c.package or ""}),
-            (f"sudo dnf reinstall {c.package}",) if c.package else (),
+            pk.REPAIR if osapi.IS_WINDOWS else M("Reinstall {pkg}.", {"pkg": c.package or ""}),
+            (f"sudo dnf reinstall {c.package}",) if c.package and not osapi.IS_WINDOWS else (),
             tuple(str(p) for p in missing),
         )
     if c.conveyed and len(files) < c.min_texts:

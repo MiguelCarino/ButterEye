@@ -40,6 +40,7 @@ from buttereye.core.api import (
     OperationCancelled,
     command_hint,
     legal_notices,
+    osapi,
     render,
 )
 from buttereye.gui.a11y import heading, selectable
@@ -364,7 +365,11 @@ class AboutPage(Page):
                 note = render(c.finding.title)
                 if c.finding.code is not None:
                     note += f" ({c.finding.code.code})"
-            shipped = _t("Yes (COPR)") if c.conveyed else no
+            shipped = (
+                (_t("Yes (installer)") if osapi.IS_WINDOWS else _t("Yes (COPR)"))
+                if c.conveyed
+                else no
+            )
             cells = [
                 c.name,
                 c.version or _t("unknown"),

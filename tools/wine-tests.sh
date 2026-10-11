@@ -38,6 +38,7 @@ if [[ -f $win/mpv/mpv.exe ]]; then
 fi
 
 cd "$repo"
-# --noconftest: the root conftest caps memory with systemd-run, which is Linux-only
+# --noconftest: the root conftest caps memory with systemd-run, which is Linux-only.
+# -B: no .pyc from the Windows Python in the tree (Linux would reuse them).
 # BUTTEREYE_TEST_WINDOWED=1 also runs the test that opens a real mpv window
-exec wine "$python" -m pytest tests/windows --noconftest -p no:cacheprovider -q "$@"
+exec wine "$python" -B -m pytest tests/windows --noconftest -p no:cacheprovider -q "$@"

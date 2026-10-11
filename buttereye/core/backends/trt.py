@@ -42,6 +42,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+from buttereye.core import osapi
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ButterEyeError, ErrorCode
 from buttereye.core.ops import process_group
@@ -55,6 +56,7 @@ MODELS_SUBDIR = Path("models") / "vsmlrt"
 ENGINES_SUBDIR = "engines"
 READY = "ready.json"
 LIBNVINFER = Path("/usr/lib64/libnvinfer.so.11")
+WINDOWS_NOT_YET = "the experimental TensorRT path isn't available on Windows yet"
 BUILD_TIMEOUT_S = 900.0
 #: ~1080p and below: 2 CUDA streams fill an RTX 4090 (M0(l)); larger frames gain from 4
 STREAMS_SMALL, STREAMS_LARGE = 2, 4
@@ -87,9 +89,11 @@ class TrtInstall:
 
 def _vstrt_dirs(paths: Paths) -> list[Path]:
     root = paths.data_dir / VSTRT_SUBDIR
-    found = [p.parent for p in root.glob("*/libvstrt.so") if p.is_file()]
+    found = [p.parent for p in root.glob(f"*/{osapi.VSTRT_LIB}") if p.is_file()]
     # newest build first (by modification time, then name)
-    return sorted(found, key=lambda d: ((d / "libvstrt.so").stat().st_mtime, d.name), reverse=True)
+    return sorted(
+        found, key=lambda d: ((d / osapi.VSTRT_LIB).stat().st_mtime, d.name), reverse=True
+    )
 
 
 def python_dirs(paths: Paths) -> tuple[Path, ...]:
@@ -103,6 +107,8 @@ def models_dir(paths: Paths) -> Path:
 
 
 def trt_version() -> str:
+    if osapi.IS_WINDOWS:
+        return ""
     real = os.path.realpath(LIBNVINFER)
     m = re.search(r"\.so\.(\d+(?:\.\d+)*)$", real)
     return m.group(1) if m else ""
@@ -117,6 +123,8 @@ def find_trtexec(which: Callable[[str], str | None] = shutil.which) -> Path | No
 
 def problems(paths: Paths, which: Callable[[str], str | None] = shutil.which) -> tuple[str, ...]:
     """What is missing for the TensorRT path, in plain words (empty = usable)."""
+    if osapi.IS_WINDOWS:  # vstrt is set up with a Linux build script (docs/PLATFORMS.md)
+        return (WINDOWS_NOT_YET,)
     out: list[str] = []
     dirs = _vstrt_dirs(paths)
     if not dirs:
@@ -125,7 +133,7 @@ def problems(paths: Paths, which: Callable[[str], str | None] = shutil.which) ->
             f"{paths.data_dir / VSTRT_SUBDIR})"
         )
     elif not (dirs[0] / "vsmlrt.py").is_file():
-        out.append(f"vsmlrt.py is missing next to {dirs[0] / 'libvstrt.so'}")
+        out.append(f"vsmlrt.py is missing next to {dirs[0] / osapi.VSTRT_LIB}")
     if find_trtexec(which) is None:
         out.append("trtexec isn't installed (libnvinfer-bin from NVIDIA's repository)")
     if not trt_version():

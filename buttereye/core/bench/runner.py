@@ -81,9 +81,9 @@ _CHOOSE_DEVICE = ProviderRef("buttereye.core.hw.detect", "choose_device")
 
 VPY = Path(__file__).with_name("bench.vpy")
 MODEL_SUBDIR = "rife-ncnn-models"
-RIFE_PLUGIN = "librife.so"
-MVTOOLS_PLUGIN = "mvtools.so"
-MVGPU_PLUGIN = "libmvgpu.so"
+RIFE_PLUGIN = osapi.plugin_file("librife.so")
+MVTOOLS_PLUGIN = osapi.plugin_file("mvtools.so")
+MVGPU_PLUGIN = osapi.plugin_file("libmvgpu.so")
 
 # §4.4 / M0(f), RTX 4090, 1080p 2x: plugin gpu_thread 2 gives ~52 fps and 4 gives ~72
 # fps in vspipe. Inside mpv, concurrent-frames 4 reaches ~46 fps and 8 ~56-58 fps

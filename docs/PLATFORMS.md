@@ -13,7 +13,7 @@ macOS build has been made yet.
 
 | Piece | Linux (Fedora 44/45) | Windows | macOS |
 |---|---|---|---|
-| Python core (`buttereye.core`) | supported | platform layer done (phase 1); detection and doctor still to port | needs a smaller platform layer (peer credentials, paths, `/proc`, detection) |
+| Python core (`buttereye.core`) | supported | platform layer, detection and doctor done (phases 1-2) | needs a smaller platform layer (peer credentials, paths, `/proc`, detection) |
 | PySide6 GUI | supported | Qt itself runs; its lock goes through the platform layer; untried on Windows | Qt itself runs; inherits the core's gaps (`fcntl` is available) |
 | mpv control (JSON IPC) | Unix sockets + socketpair | **named pipes**, done; tested under Wine with a real `mpv.exe` | Unix sockets work; `SO_PEERCRED` does not exist |
 | mpv `vapoursynth` filter | distro mpv has it | depends on the mpv build | depends on the mpv build |
@@ -21,9 +21,9 @@ macOS build has been made yet.
 | `buttereye-vs-mvtools` | COPR RPM | upstream code is portable C/C++; needs a Windows build | needs a macOS build |
 | `buttereye-vs-rife-ncnn` | COPR RPM (bundled ncnn) | upstream plugin targets Windows too; needs our patches re-applied and verified | no native Vulkan: only via MoltenVK, unverified |
 | `buttereye-vs-mvgpu` (Vulkan compute) | COPR RPM | plain C++17 + Vulkan + VapourSynth API4: should port with modest work | MoltenVK only; compute-shader limits unverified |
-| TensorRT (experimental) | user-built `vstrt` | vs-mlrt is Windows-first upstream | not possible (no CUDA/TensorRT on macOS) |
+| TensorRT (experimental) | user-built `vstrt` | not yet (vs-mlrt is Windows-first upstream, so it is possible) | not possible (no CUDA/TensorRT on macOS) |
 | Packaging / installs | RPM + COPR | an installer or zip would be new work | an app bundle would be new work |
-| `doctor` checks | `rpm -q`, `dnf` lines, `journalctl -k`, sysfs | must be rewritten for the platform | must be rewritten for the platform |
+| `doctor` checks | `rpm -q`, `dnf` lines, `journalctl -k`, sysfs | done: install record, `winget` lines, Vulkan devices (phase 2) | must be rewritten for the platform |
 
 Short version: **the architecture ports, and on Windows the core's plumbing now does too** (phase 1, below). The core is
 a GUI-free asyncio library with the OS-specific parts concentrated in a handful
@@ -98,7 +98,7 @@ port is done in four phases; each leaves Linux exactly as it was.
 | Phase | What | State |
 |---|---|---|
 | 1 | Core platform layer: processes, mpv's control channel, folders, locks | **done** (`buttereye/core/osapi/`) |
-| 2 | Doctor, hardware detection and setup checks for Windows | to do |
+| 2 | Doctor, hardware detection and setup checks for Windows | **done** |
 | 3 | Windows builds of the four VapourSynth plugins | to do |
 | 4 | Installer (and the GitHub Actions build that makes it) | to do |
 
@@ -120,11 +120,28 @@ missed.
 | storage cleaning | directory file descriptors with `O_NOFOLLOW` | `lstat` walk; links and junctions are removed as links, never followed |
 | render priority | renice the group | below-normal priority class at spawn |
 
-The Linux-only spots that phase 1 leaves for phase 2 are the doctor's checks
-(`rpm`, `dnf`, `journalctl`, sysfs) and hardware detection; they don't crash on
-Windows, but their advice is Fedora advice. The plugin and model folders on
-Windows sit next to the installation (`BUTTEREYE_HOME`, else the folder above the
-package): phase 4 fixes that layout.
+The plugin and model folders on Windows sit next to the installation
+(`BUTTEREYE_HOME`, else the folder above the package): phase 4 fixes that layout.
+
+### Phase 2: checks and setup (done)
+
+The doctor, hardware detection and setup now give Windows answers; no Windows
+finding carries a `dnf`, `sudo` or `rpm` line (a test checks that).
+
+| Check | Linux | Windows |
+|---|---|---|
+| Installed plugins and licences | `rpm -q` | the install record `buttereye-install.json` that the installer writes next to ButterEye (`checks_pkgs.manifest_db`); a missing piece says to run the installer again (Repair) |
+| Plugin files | `librife.so`, `mvtools.so`, `libmvgpu.so` | the same names with `.dll` (`osapi.plugin_file`); the generated scripts map the name themselves |
+| Tools ButterEye doesn't ship | `sudo dnf install …` | `winget install --exact --id …`: mpv `shinchiro.mpv`, VapourSynth `VapourSynth.VapourSynth`, ffmpeg `Gyan.FFmpeg`, mkvtoolnix `MoritzBunkus.MKVToolNix`, 7-Zip `7zip.7zip` (`commands.install_command`) |
+| GPUs | sysfs + `pci.ids`, then Vulkan and `nvidia-smi` | the physical Vulkan devices, then `nvidia-smi`; `vulkaninfo.exe` from the install folder first |
+| Vulkan loader and drivers | `libvulkan.so.1`, ICD folders | `System32\vulkan-1.dll`; drivers are found by the device list (no ICD folders to read); fixes say to update the graphics driver |
+| GPU fault history | NVIDIA Xid lines in `journalctl -k` | not checked (an INFO row says so): Windows logs GPU faults in its event log, which ButterEye doesn't read yet |
+| TensorRT (experimental) | vs-mlrt's vstrt built by `contrib/build-vstrt.sh` | not available on Windows yet (an INFO row; never selected) |
+| mpvSockets conflict | checked | not applicable (the script needs Unix sockets) |
+| Setup's command list | the `dnf` lines | the `winget` lines |
+
+`tests/windows` now also runs the whole doctor against a fake install under
+Wine, with a real `mpv.exe`.
 
 ### Testing the Windows code
 
@@ -138,18 +155,19 @@ tested on real Windows before any release.
 
 ### Remaining phases
 
-1. **Detection and doctor (phase 2).** DXGI/`vulkaninfo`/`nvidia-smi` for GPUs;
-   checks for mpv's `vapoursynth` filter, VapourSynth and the plugins by file
-   instead of rpm; drop the Xid scan, which has no direct analogue.
-2. **Plugins (phase 3).** MVTools and RIFE-ncnn-Vulkan are portable upstream
+1. **Plugins (phase 3).** MVTools and RIFE-ncnn-Vulkan are portable upstream
    projects; our packaging patches would need re-applying and the M0(f)
    GPU-fault spike re-running on Windows drivers. `mvgpu` is plain C++17 against
    Vulkan and the VapourSynth API4 headers with shaders compiled by glslang at
    build time, so a meson build for Windows should be modest work. TensorRT via
    vs-mlrt is better supported upstream on Windows than on Linux.
-3. **Distribution (phase 4).** An installer built on GitHub's Windows runners,
+2. **Distribution (phase 4).** An installer built on GitHub's Windows runners,
    with the AGPL Corresponding Source offer and the plugin licence files carried
-   over (SCOPE §8).
+   over (SCOPE §8). It writes `buttereye-install.json` (the format is in
+   `checks_pkgs.manifest_db`) and ships `vulkaninfo.exe` and `ffms2.dll` next to
+   the plugins.
+3. **Later, not scheduled:** the TensorRT path on Windows (vs-mlrt's Windows
+   releases), and reading GPU faults from the Windows event log.
 
 ## macOS: the realistic path
 

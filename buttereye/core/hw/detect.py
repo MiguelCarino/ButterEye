@@ -4,6 +4,8 @@
 
 Sources, all read-only: ``/sys/class/drm/card*/device`` (+ hwdata ``pci.ids``),
 ``vulkaninfo`` text output (subprocess) and ``nvidia-smi`` (subprocess, optional).
+Windows has no sysfs: there the GPU list comes from the physical Vulkan devices
+(``gpus_from_vulkan``), and nvidia-smi adds what it knows as on Linux.
 No NVIDIA or Vulkan library is ever loaded into this process (§8.1).
 
 CPU Vulkan devices (llvmpipe/lavapipe) are listed but never chosen as the
@@ -26,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from buttereye.core import osapi
 from buttereye.core.doctor.proc import CmdResult, run
 from buttereye.core.types import GpuInfo, HardwareInfo, Paths, VulkanDevice
 
@@ -273,6 +276,23 @@ def read_sysfs_gpus(sys_root: Path | None = None) -> tuple[SysGpu, ...]:
     return tuple(out)
 
 
+def gpus_from_vulkan(vulkan: Sequence[VkParsed]) -> tuple[SysGpu, ...]:
+    """Windows: one entry per physical Vulkan device (not CPU renderers), keyed by
+    its PCI address when the driver reports one, else by its Vulkan UUID. Which
+    GPU drives the screen isn't known this way (``display_connected`` False)."""
+    out: list[SysGpu] = []
+    seen: set[str] = set()
+    for v in vulkan:
+        if v.device.device_type == "cpu":
+            continue
+        key = norm_pci(v.pci) if v.pci else f"vk:{v.device.uuid}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(SysGpu(f"gpu{len(out)}", key, v.vendor_id or 0, 0, None, None, False))
+    return tuple(out)
+
+
 SMI_QUERY = (
     "nvidia-smi",
     "--query-gpu=pci.bus_id,name,driver_version,memory.total,compute_cap,uuid",
@@ -434,6 +454,18 @@ def cpu_threads() -> int:
     return os.process_cpu_count() or 1
 
 
+def vulkaninfo_exe() -> str:
+    """``vulkaninfo``; on Windows the copy ButterEye's installer ships first, since
+    not every driver installs one."""
+    if osapi.IS_WINDOWS:
+        from buttereye.core.paths import install_dir
+
+        bundled = install_dir() / "vulkaninfo.exe"
+        if bundled.is_file():
+            return str(bundled)
+    return "vulkaninfo"
+
+
 async def probe_hardware(
     paths: Paths | None = None,
     *,
@@ -442,9 +474,12 @@ async def probe_hardware(
     timeout_s: float = 6.0,
 ) -> HwProbe:
     """Run the detection subprocesses concurrently and assemble the result."""
-    sysfs = read_sysfs_gpus(sys_root)
-    want_smi = any(g.vendor_id == 0x10DE for g in sysfs) or Path("/dev/nvidia0").exists()
-    vk_task = asyncio.ensure_future(run(("vulkaninfo",), timeout_s=timeout_s))
+    sysfs = () if osapi.IS_WINDOWS else read_sysfs_gpus(sys_root)
+    if osapi.IS_WINDOWS:  # the NVIDIA driver puts nvidia-smi on PATH
+        want_smi = osapi.executable("nvidia-smi") is not None
+    else:
+        want_smi = any(g.vendor_id == 0x10DE for g in sysfs) or Path("/dev/nvidia0").exists()
+    vk_task = asyncio.ensure_future(run((vulkaninfo_exe(),), timeout_s=timeout_s))
     smi_res: CmdResult | None = None
     try:
         if want_smi:
@@ -455,6 +490,8 @@ async def probe_hardware(
             vk_task.cancel()
     vulkan = parse_vulkaninfo(vk_res.stdout) if vk_res.ok else ()
     smi = parse_nvidia_smi(smi_res.stdout) if smi_res is not None and smi_res.ok else ()
+    if osapi.IS_WINDOWS:
+        sysfs = gpus_from_vulkan(vulkan)
     info, display = build_hardware(sysfs, vulkan, smi, cpu_threads=cpu_threads(), override=override)
     return HwProbe(info, vulkan, vk_res, smi_res, sysfs, display)
 
@@ -472,6 +509,7 @@ __all__ = [
     "parse_vulkaninfo",
     "parse_nvidia_smi",
     "read_sysfs_gpus",
+    "gpus_from_vulkan",
     "choose_device",
     "build_hardware",
     "pci_name",

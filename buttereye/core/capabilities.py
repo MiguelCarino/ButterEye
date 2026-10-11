@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
+from buttereye.core import osapi
 from buttereye.core.errors import ErrorCode
 from buttereye.core.types import (
     Capabilities,
@@ -265,7 +266,8 @@ def compute(
                     Feature.RENDER,
                     Reason.MISSING_DEPENDENCY,
                     ErrorCode.FFMS2_MISSING,
-                    commands=_commands(ffms2) or ("sudo dnf install ffms2",),
+                    commands=_commands(ffms2)
+                    or (() if osapi.IS_WINDOWS else ("sudo dnf install ffms2",)),
                 )
         if not states[Feature.RENDER].available:
             states[Feature.RENDER_HDR10] = states[Feature.RENDER]
@@ -335,7 +337,12 @@ _TEXTS: dict[tuple[Feature, Reason], str] = {
     ),
     (Feature.MODEL_DOWNLOADS, Reason.NOTHING_LISTED): (
         "No downloadable models are listed in this release.\n"
-        "Packaged models are installed with dnf. You can install a model archive from a file."
+        + (
+            "Packaged models come with ButterEye's installer."
+            if osapi.IS_WINDOWS
+            else "Packaged models are installed with dnf."
+        )
+        + " You can install a model archive from a file."
     ),
     (Feature.TRT, Reason.OPT_IN_REQUIRED): (
         "Experimental NVIDIA TensorRT: off.\n"

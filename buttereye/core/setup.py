@@ -28,6 +28,7 @@ from typing import Any, TextIO
 from buttereye.core import osapi
 from buttereye.core.backends.select import backends, chosen_device, select
 from buttereye.core.capabilities import ProviderRef, absent_state, resolve
+from buttereye.core.doctor.checks_pkgs import tool_fix
 from buttereye.core.doctor.probe import run_probe
 from buttereye.core.doctor.smoke import smoke_test
 from buttereye.core.doctor.text import M
@@ -63,6 +64,8 @@ _CFG_LOAD = ProviderRef("buttereye.core.profiles.config", "load")
 _CFG_SAVE = ProviderRef("buttereye.core.profiles.config", "save")
 _DEFAULTS = ProviderRef("buttereye.core.profiles.defaults", "default_config")
 _DNF_INSTALL = re.compile(r"^sudo dnf install (.+)$")
+#: Windows: ``winget install --exact --id <Package.Id>`` (checks_pkgs.tool_fix)
+_WINGET_INSTALL = re.compile(r"^winget install (?:--\S+ )*(\S+)$")
 STEPS = 4
 
 
@@ -105,18 +108,19 @@ def _problem(f: Finding) -> bool:
 
 
 def dnf_lines(report: DoctorReport, *, trt: bool) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """(missing package names, exact command lines) from the report's findings."""
+    """(missing package names, exact command lines) from the report's findings:
+    the ``dnf`` lines on Linux, the ``winget`` lines on Windows."""
     lines: list[str] = []
     pkgs: list[str] = []
     for f in report.findings:
         if not _problem(f) or (f.section is Section.TRT and not trt):
             continue
         for c in f.commands:
-            if not c.startswith("sudo dnf"):
+            if not c.startswith(("sudo dnf", "winget install ")):
                 continue
             if c not in lines:
                 lines.append(c)
-            m = _DNF_INSTALL.match(c)
+            m = _DNF_INSTALL.match(c) or _WINGET_INSTALL.match(c)
             if m:
                 for p in m.group(1).split():
                     if p not in pkgs:
@@ -145,6 +149,8 @@ async def plan(paths: Paths, report: DoctorReport, *, trt_experimental: bool) ->
 
 
 def include_line(paths: Paths) -> str:
+    if osapi.IS_WINDOWS:  # mpv's ~/ needs HOME, which Windows doesn't set: full path
+        return "include=" + paths.mpv_include.as_posix()
     home = os.path.expanduser("~")
     try:
         rel = paths.mpv_include.relative_to(home)
@@ -249,8 +255,7 @@ async def apply(
                     ErrorCode.MPV_NOT_FOUND,
                     M("mpv is not installed"),
                     M("The in-mpv probe needs mpv."),
-                    M("Install the distro mpv package."),
-                    ("sudo dnf install mpv",),
+                    **tool_fix(M("Install the distro mpv package."), "sudo dnf install mpv", "mpv"),
                 )
             else:
                 probe = await run_probe(paths, mpv, trt=choices.backend is BackendId.RIFE_TRT)

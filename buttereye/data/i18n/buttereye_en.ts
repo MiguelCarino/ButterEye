@@ -215,6 +215,11 @@
     </message>
     <message>
         <location filename="buttereye/gui/pages/about.py"/>
+        <source>Yes (installer)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/about.py"/>
         <source>You have {installed}. {opens}</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4624,6 +4629,16 @@ It uses no network unless you start a download yourself.</source>
     </message>
     <message>
         <location filename="buttereye/gui/dialogs/setup_wizard.py"/>
+        <source>Copy winget command</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/setup_wizard.py"/>
+        <source>Copy winget command {i} of {n}</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/setup_wizard.py"/>
         <source>Done</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4725,6 +4740,11 @@ It uses no network unless you start a download yourself.</source>
     <message>
         <location filename="buttereye/gui/dialogs/setup_wizard.py"/>
         <source>Retry</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/setup_wizard.py"/>
+        <source>Run these in PowerShell or a Command Prompt, then press Check again. ButterEye never runs winget.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5827,6 +5847,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
+        <source>Installed with ButterEye</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
         <source>Installed {name} (unpinned).</source>
         <translation type="unfinished"></translation>
     </message>
@@ -5838,6 +5863,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
         <source>Installing or removing a model from a file isn't in this build yet. Packaged models are installed and removed with dnf.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
+        <source>Installing or removing a model from a file isn't in this build yet. Packaged models come and go with ButterEye's installer.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5913,6 +5943,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
         <source>No — installed by dnf</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
+        <source>No — installed with ButterEye</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -6007,6 +6042,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
+        <source>Space ticks a folder to clean. Folders installed with ButterEye can't be ticked.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
         <source>Storage</source>
         <translation type="unfinished"></translation>
     </message>
@@ -6027,6 +6067,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
+        <source>The contents of these folders will be deleted ({size} in total). Files installed with ButterEye are never touched.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
         <source>This deletes {path}.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -6038,6 +6083,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
         <source>Tick the folders to clean first.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
+        <source>Uninstall ButterEye in Settings › Apps</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -6063,6 +6113,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
         <source>{location}, {size}, deletable: {deletable}</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
+        <source>{name} came with ButterEye's installer and can't be removed here.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

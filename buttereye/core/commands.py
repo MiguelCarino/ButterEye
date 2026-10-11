@@ -30,6 +30,7 @@ import functools
 import importlib.metadata
 import re
 import shutil
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -207,7 +208,42 @@ def cli_available() -> bool:
     return shutil.which(CLI_SCRIPT) is not None
 
 
+# ---------------------------------------------------------------- installing tools
+#: winget package ids for the tools ButterEye uses but doesn't ship on Windows
+#: (checked against microsoft/winget-pkgs, 2026-10-11)
+WINGET: Mapping[str, str] = MappingProxyType(
+    {
+        "mpv": "shinchiro.mpv",
+        "vapoursynth": "VapourSynth.VapourSynth",
+        "ffmpeg": "Gyan.FFmpeg",
+        "mkvtoolnix": "MoritzBunkus.MKVToolNix",
+        "7zip": "7zip.7zip",
+    }
+)
+#: the Fedora package for each of those tools
+DNF: Mapping[str, str] = MappingProxyType(
+    {
+        "mpv": "mpv",
+        "vapoursynth": "vapoursynth-tools",
+        "ffmpeg": "ffmpeg-free",
+        "mkvtoolnix": "mkvtoolnix",
+        "7zip": "7zip",
+    }
+)
+
+
+def install_command(tool: str, *, verb: str = "install") -> str:
+    """The one line that installs (or upgrades) ``tool`` here: ``sudo dnf …`` on
+    Fedora, ``winget … --exact --id …`` on Windows. ButterEye only shows it."""
+    if sys.platform == "win32":
+        return f"winget {verb} --exact --id {WINGET[tool]}"
+    return f"sudo dnf {verb} {DNF[tool]}"
+
+
 __all__ = [
+    "DNF",
+    "WINGET",
+    "install_command",
     "CommandSpec",
     "COMMANDS",
     "command_hint",

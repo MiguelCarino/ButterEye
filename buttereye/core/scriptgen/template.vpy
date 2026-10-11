@@ -47,6 +47,9 @@ def _settings():
 def _load(namespace, filename):
     # Absolute path from the private, non-autoload directory; skip if a copy of
     # the plugin is already loaded (distro or autoload), which would fail.
+    # Plugins are named for Linux ('librife.so'); the Windows builds are .dll.
+    if os.name == 'nt' and filename.endswith('.so'):
+        filename = filename[:-3] + '.dll'
     if not hasattr(core, namespace):
         core.std.LoadPlugin(os.path.join(PLUGIN_DIR, filename))
 
@@ -299,6 +302,8 @@ def _rife_trt(clip, cfg, props, target):
         raise vs.Error('ButterEye: the TensorRT engine for this size is not built yet')
     sys.dont_write_bytecode = True  # nothing is written next to vsmlrt.py
     # vsmlrt looks for a loaded plugin when it is imported: load vstrt first
+    if not hasattr(core, 'trt') and os.name == 'nt':  # vs-mlrt's Windows build
+        core.std.LoadPlugin(os.path.join(trt['vstrt_dir'], 'vstrt.dll'))
     if not hasattr(core, 'trt'):
         core.std.LoadPlugin(os.path.join(trt['vstrt_dir'], 'libvstrt.so'))
     if trt['vsmlrt_dir'] not in sys.path:
