@@ -1,0 +1,216 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Copyright (C) 2026 The ButterEye contributors
+   butter.carino.systems — Carino Systems visual language (branding.carino.systems):
+   near-black, one Sharp Gold accent, hairline cards, IBM Plex, a Red Hat Display
+   wordmark. No navbar (owner's choice for this page). The hero is top-anchored and
+   every size grows as base + --tall x rate (the fleet hero pattern). */
+
+:root {
+  --bg: #050505;
+  --bg-elev: #0d0d0d;
+  --bg-card: #0b0b0b;
+  --accent: #eab308;
+  --accent-hover: #fbbf24;
+  --accent-faint: rgba(234, 179, 8, 0.05);
+  --accent-glow: rgba(234, 179, 8, 0.15);
+  --accent-dim: rgba(234, 179, 8, 0.3);
+  --border: #262626;
+  --text: #ffffff;
+  --text-sec: #a3a3a3;
+  --text-muted: #666666;
+  --stage-grad: radial-gradient(1200px 520px at 50% -12%, rgba(234, 179, 8, 0.08) 0%, transparent 60%),
+    linear-gradient(180deg, #0b0b0b 0%, #050505 100%);
+  --gold-text: linear-gradient(130deg, #fef08a 0%, #eab308 50%, #b45309 100%);
+  --sans: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --display: 'Red Hat Display', var(--sans);
+  --radius: 10px;
+  --tall: max(0px, 100vh - 900px);
+  --butter: 64px;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: var(--sans); font-size: 16px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); }
+a:hover { color: var(--accent-hover); }
+code, pre { font-family: var(--mono); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+main { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+
+/* ---------------------------------------------------------------- hero */
+.hero {
+  text-align: center;
+  padding: calc(56px + var(--tall) * 0.12) 0 calc(32px + var(--tall) * 0.05);
+  margin-block: 0 auto;
+  background: var(--stage-grad);
+  margin-inline: -24px;
+  padding-inline: 24px;
+  border-bottom: 1px solid var(--border);
+}
+.hero-mark {
+  width: calc(88px + var(--tall) * 0.04); height: auto;
+  filter: drop-shadow(0 0 24px var(--accent-glow));
+}
+.kicker {
+  font-family: var(--mono); font-size: 0.72rem; font-weight: 600;
+  letter-spacing: 0.35em; text-transform: uppercase; color: var(--accent);
+  margin: 18px 0 8px;
+}
+.wordmark {
+  font-family: var(--display); font-weight: 900; text-transform: uppercase;
+  letter-spacing: 1px; line-height: 0.95; margin: 0;
+  font-size: min(calc(clamp(2.6rem, 9vw, 4.4rem) + var(--tall) * 0.01), 5rem);
+  background: var(--gold-text); -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: var(--accent);
+}
+.claim {
+  font-family: var(--display); font-weight: 900; margin: 18px auto 0; max-width: 720px;
+  font-size: min(calc(clamp(1.3rem, 3.6vw, 2rem) + var(--tall) * 0.004), 2.3rem);
+  line-height: 1.2;
+}
+.claim span { display: block; }
+.claim .gold { color: var(--accent); }
+.lede {
+  max-width: 640px; margin: 18px auto 0; color: var(--text-sec);
+  font-family: var(--mono); font-size: 0.88rem; line-height: 1.7;
+}
+.chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 22px 0 0; }
+.chip {
+  font-family: var(--mono); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--accent); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 8px;
+}
+
+/* ---------------------------------------------------------------- sections */
+section { padding: calc(56px + var(--tall) * 0.04) 0 8px; }
+h2 {
+  font-family: var(--display); font-weight: 900; text-transform: uppercase; letter-spacing: 1px;
+  font-size: clamp(1.4rem, 3.4vw, 1.9rem); line-height: 1.1; margin: 0;
+}
+.hint { color: var(--text-sec); font-size: 0.9rem; margin: 10px 0 0; }
+
+/* ---------------------------------------------------------------- the butter rail */
+.rail {
+  position: relative; margin: 34px 0 0; padding: 0 0 6px;
+  --x: 0px;                      /* the butter's position along the track (set by app.js) */
+}
+.track {
+  position: absolute; left: calc(var(--butter) / 2); right: calc(var(--butter) / 2);
+  top: calc(var(--butter) / 2 - 3px); height: 6px; border-radius: 999px;
+  background: var(--bg-elev); border: 1px solid var(--border); overflow: hidden;
+}
+/* the melted butter the knob leaves behind */
+.melt {
+  height: 100%; width: var(--x); border-radius: 999px;
+  background: linear-gradient(90deg, #b45309 0%, #eab308 60%, #fef08a 100%);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+.stops {
+  list-style: none; margin: 0 0 0 calc(var(--butter) + 16px);  /* the butter rests left of them */
+  padding: calc(var(--butter) + 18px) 0 0;
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+}
+.stop {
+  width: 100%; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 14px 10px; border-radius: var(--radius); cursor: pointer;
+  background: var(--bg-card); border: 1px solid var(--border); color: var(--text);
+  font: inherit; transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.stop:hover, .stop.near { border-color: var(--accent); background: var(--accent-faint); }
+.stop.chosen { border-color: var(--accent); box-shadow: 0 0 22px var(--accent-glow); }
+.stop-name { font-family: var(--display); font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; }
+.stop-sub { font-family: var(--mono); font-size: 0.68rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.1em; }
+.stop.soon .stop-name { color: var(--text-sec); }
+
+.butter {
+  position: absolute; left: 0; top: 0; width: var(--butter); height: var(--butter);
+  transform: translateX(var(--x)); cursor: grab; touch-action: none; user-select: none;
+  border-radius: 50%; display: grid; place-items: center;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.6)) drop-shadow(0 0 16px var(--accent-glow));
+}
+.butter img { width: 56px; height: 56px; pointer-events: none; transition: transform 0.15s; }
+.butter:hover img { transform: scale(1.06) rotate(-4deg); }
+.butter.dragging { cursor: grabbing; }
+.butter.dragging img { transform: scale(1.12) rotate(-8deg); }
+.butter.settle { transition: transform 0.35s cubic-bezier(.2, .9, .3, 1.2); }
+.rail.settle .melt { transition: width 0.35s cubic-bezier(.2, .9, .3, 1.2); }
+
+/* ---------------------------------------------------------------- result */
+.result {
+  margin: 26px 0 0; padding: 22px; border-radius: 12px;
+  background: var(--bg-card); border: 1px solid var(--accent-dim);
+  animation: rise 0.25s ease both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.result-title {
+  font-family: var(--display); font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px;
+  margin: 0 0 6px; font-size: 1.2rem; color: var(--accent);
+}
+.result p { color: var(--text-sec); margin: 10px 0; }
+.result strong { color: var(--text); }
+.code { position: relative; margin: 10px 0; }
+.code pre {
+  margin: 0; padding: 14px 92px 14px 14px; overflow-x: auto; white-space: pre;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 0.8rem; line-height: 1.6; color: #fde68a;
+}
+.copy, .btn {
+  font-family: var(--mono); font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; border-radius: 6px; cursor: pointer;
+  padding: 0 14px; height: 34px; border: 1px solid var(--accent);
+  background: var(--accent); color: #050505;
+}
+.copy { position: absolute; top: 8px; right: 8px; }
+.copy:hover, .btn:hover { background: var(--accent-hover); }
+.copy.done { background: transparent; color: var(--accent); }
+details { margin-top: 12px; }
+summary { cursor: pointer; color: var(--text); font-weight: 600; }
+.files { margin: 10px 0; padding-left: 18px; font-family: var(--mono); font-size: 0.8rem; }
+.files li { margin: 4px 0; overflow-wrap: anywhere; }
+.small { font-size: 0.82rem; }
+.result code, .card code { background: #1a1a1a; padding: 1px 5px; border-radius: 3px; color: #fde68a; }
+
+/* ---------------------------------------------------------------- features */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin: 24px 0 0; }
+.card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 22px;
+  transition: 0.22s;
+}
+.card:hover { border-color: var(--accent); background: linear-gradient(145deg, #17120a 0%, #0b0b0b 100%); }
+.card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+.card p { margin: 0; color: var(--text-sec); font-size: 0.92rem; }
+
+/* ---------------------------------------------------------------- footer */
+.foot {
+  max-width: 1040px; margin: 64px auto 0; padding: 22px 24px 36px;
+  border-top: 1px solid var(--border); color: var(--text-muted);
+  font-family: var(--mono); font-size: 0.75rem; text-align: center;
+}
+.foot a { color: var(--text-sec); text-decoration: none; }
+.foot a:hover { color: var(--accent); }
+
+/* ---------------------------------------------------------------- small screens */
+@media (max-width: 640px) {
+  :root { --butter: 52px; }
+  .butter img { width: 46px; height: 46px; }
+  .stops { grid-template-columns: repeat(2, 1fr); }
+  .track { display: none; }   /* the rail is horizontal: on phones the stops are the way */
+  .butter { display: none; }
+  .stops { padding-top: 0; margin-left: 0; }
+  .hint { display: none; }
+  .wide { display: none; }
+}
+@media (min-width: 641px) { .narrow { display: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .butter.settle, .rail.settle .melt, .result, .card, .stop { transition: none; animation: none; }
+}
+
+/* the command block is one piece of text, not inline code */
+.code pre code { background: none; padding: 0; border-radius: 0; color: inherit; }

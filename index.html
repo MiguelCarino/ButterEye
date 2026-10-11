@@ -1,0 +1,95 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026 The ButterEye contributors -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ButterEye</title>
+  <meta name="description" content="ButterEye makes the videos you play in mpv smoother: new in-between frames, live or as a saved copy. Free software for Fedora Linux.">
+  <meta name="theme-color" content="#050505">
+  <link rel="icon" type="image/svg+xml" href="web/buttereye.svg">
+  <link rel="stylesheet" href="web/fonts/carino-fonts.css">
+  <link rel="stylesheet" href="web/style.css">
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <img class="hero-mark" src="web/buttereye.svg" alt="" width="96" height="96">
+      <p class="kicker">Smooth motion for mpv</p>
+      <h1 class="wordmark">ButterEye</h1>
+      <p class="claim"><span>Smoother motion</span> <span class="gold">for the videos you play in mpv.</span></p>
+      <p class="lede">New in-between frames, live while you watch or saved as a copy. RIFE on your GPU,
+        a fast GPU motion engine for 4K and high refresh rates, MVTools on the CPU.
+        Free software for Fedora Linux.</p>
+      <p class="chips"><span class="chip" id="version-chip">v0.0.1</span><span class="chip">Fedora 44 · 45</span><span class="chip">AGPL-3.0</span></p>
+    </header>
+
+    <section class="download" aria-labelledby="dl-title">
+      <p class="kicker">Download</p>
+      <h2 id="dl-title"><span class="wide">Slide the butter to your platform</span><span class="narrow">Pick your platform</span></h2>
+      <p class="hint" id="dl-hint">Drag the butter along the rail, or use the arrow keys and Enter. You can also pick a platform directly.</p>
+
+      <div class="rail" id="rail">
+        <div class="track" aria-hidden="true"><div class="melt" id="melt"></div></div>
+        <ol class="stops" id="stops">
+          <li><button type="button" class="stop" data-platform="fc44">
+            <span class="stop-name">Fedora 44</span><span class="stop-sub">Linux · x86_64</span></button></li>
+          <li><button type="button" class="stop" data-platform="fc45">
+            <span class="stop-name">Fedora 45</span><span class="stop-sub">Linux · x86_64</span></button></li>
+          <li><button type="button" class="stop soon" data-platform="macos">
+            <span class="stop-name">macOS</span><span class="stop-sub">not yet</span></button></li>
+          <li><button type="button" class="stop soon" data-platform="windows">
+            <span class="stop-name">Windows</span><span class="stop-sub">not yet</span></button></li>
+        </ol>
+        <div class="butter" id="butter" role="slider" tabindex="0" aria-label="Butter: slide it to a platform"
+             aria-describedby="dl-hint" aria-valuemin="0" aria-valuemax="4" aria-valuenow="0"
+             aria-valuetext="Start: no platform yet">
+          <img src="web/buttereye.svg" alt="" width="56" height="56" draggable="false">
+        </div>
+      </div>
+
+      <div class="result" id="result" aria-live="polite" hidden></div>
+    </section>
+
+    <section class="features" aria-labelledby="ft-title">
+      <p class="kicker">What it does</p>
+      <h2 id="ft-title">Watch it smooth, or keep a smooth copy</h2>
+      <div class="cards">
+        <article class="card"><h3>Live in mpv</h3><p>Drop a video on the window and it plays in your own mpv with new frames: double, 60 fps, or your display's rate.</p></article>
+        <article class="card"><h3>Picked for your computer</h3><p>A speed test measures each engine once per GPU. Automatic takes the best one that keeps up, and never stutters on purpose.</p></article>
+        <article class="card"><h3>4K and high refresh</h3><p>mvgpu, ButterEye's own Vulkan motion engine, smooths 4K to 120 fps with room to spare on a modern GPU.</p></article>
+        <article class="card"><h3>Smooth copies</h3><p>Save a smoothed file in the background, with the audio, subtitles and chapters kept. HDR10 stays HDR10.</p></article>
+        <article class="card"><h3>Your mpv, untouched</h3><p>ButterEye never edits your mpv.conf. A small line in mpv says what it is doing; Copy log says why if it can't.</p></article>
+        <article class="card"><h3>Explains itself</h3><p>System checks name every missing piece with the command that fixes it. A <code>buttereye</code> command does everything the window does.</p></article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p><span id="foot-version">ButterEye 0.0.1</span> · AGPL-3.0-or-later ·
+      <a href="https://github.com/MiguelCarino/ButterEye">Source</a> ·
+      <a href="https://github.com/MiguelCarino/ButterEye/releases">Releases</a> ·
+      <a href="https://github.com/MiguelCarino/ButterEye/blob/main/CHANGELOG.md">Changelog</a></p>
+  </footer>
+
+  <template id="tpl-fedora">
+    <h3 class="result-title"></h3>
+    <p>Install everything in one command (dnf downloads the files from the release):</p>
+    <div class="code"><pre><code class="cmd"></code></pre><button type="button" class="copy">Copy</button></div>
+    <p>Then open <strong>ButterEye</strong> from your application menu, or run <code>buttereye-gui</code>.</p>
+    <details>
+      <summary>Or download the files</summary>
+      <ul class="files"></ul>
+      <p class="small">Check them against <a class="sums" href="#">SHA256SUMS</a>. The minimum is <code>buttereye</code> and <code>buttereye-vs-mvtools</code>; the others add GPU smoothing.</p>
+    </details>
+  </template>
+  <template id="tpl-soon">
+    <h3 class="result-title"></h3>
+    <p class="soon-text"></p>
+    <p><a href="https://github.com/MiguelCarino/ButterEye/blob/main/docs/PLATFORMS.md">Why, and what a port would take</a></p>
+  </template>
+
+  <script src="web/app.js"></script>
+</body>
+</html>
