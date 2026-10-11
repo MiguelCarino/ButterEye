@@ -105,12 +105,22 @@
     </message>
     <message>
         <location filename="buttereye/gui/pages/about.py"/>
-        <source>Open source &amp;link</source>
+        <source>Open source lin&amp;k</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="buttereye/gui/pages/about.py"/>
         <source>Open source link</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/about.py"/>
+        <source>Opening the releases page in your web browser…</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/about.py"/>
+        <source>Opens the ButterEye releases page in your web browser.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -121,6 +131,16 @@
     <message>
         <location filename="buttereye/gui/pages/about.py"/>
         <source>Press F5 to list the third-party components.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/about.py"/>
+        <source>Releases and &amp;updates</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/about.py"/>
+        <source>Releases and updates</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -191,6 +211,11 @@
     <message>
         <location filename="buttereye/gui/pages/about.py"/>
         <source>Yes (COPR)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/about.py"/>
+        <source>You have {installed}. {opens}</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -560,6 +585,11 @@
     <message>
         <location filename="buttereye/gui/pages/bench.py"/>
         <source>GPU faults couldn't be checked for: {labels}.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/bench.py"/>
+        <source>GPU motion vectors</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2318,6 +2348,16 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>GPU motion vectors</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>GPU motion vectors use no model.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
         <source>HDR class</source>
         <translation type="unfinished"></translation>
     </message>
@@ -3896,6 +3936,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/sessions.py"/>
+        <source>GPU motion vectors</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/sessions.py"/>
         <source>HDR video — smoothing skipped (default)</source>
         <translation type="unfinished"></translation>
     </message>
@@ -5028,6 +5073,16 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Fastest — GPU (motion vectors)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>GPU motion vectors</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Getting ready…</source>
         <translation type="unfinished"></translation>
     </message>
@@ -5748,6 +5803,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
         <source>Freed {size}.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
+        <source>GPU motion vectors</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

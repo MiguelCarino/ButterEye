@@ -7,11 +7,11 @@
 # vspipe the source is a generated moving pattern (no files are read).
 #
 # user_data keys:
-#   backend       "rife" | "mvtools"
-#   plugin_dir    absolute directory holding librife.so / mvtools.so
+#   backend       "rife" | "mvtools" | "mvgpu"
+#   plugin_dir    absolute directory holding librife.so / mvtools.so / libmvgpu.so
 #   model_path    absolute RIFE ncnn model directory (rife only)
 #   gpu_thread    RIFE parallel GPU jobs (rife only)
-#   gpu_id        Vulkan device index or null (rife only)
+#   gpu_id        Vulkan device index or null (rife, mvgpu)
 #   uhd           RIFE uhd mode (rife only)
 #   matrix        YUV<->RGB matrix name, e.g. "709"
 #   src_num/src_den   source frame rate
@@ -91,6 +91,14 @@ elif backend == 'mvtools':
     bv = core.mv.Analyse(sup, isb=True, blksize=16, overlap=4)
     fv = core.mv.Analyse(sup, isb=False, blksize=16, overlap=4)
     out = core.mv.FlowFPS(clip, sup, bv, fv, num=out_num, den=out_den)
+elif backend == 'mvgpu':
+    load('mvgpu', 'libmvgpu.so')
+    # as template.vpy plays it: YUV 4:2:0 straight in, no scene marks (the
+    # pattern has no cuts; the marks cost <= 0.5 %, SCOPE 15.1 P1)
+    args = dict(fps_num=out_num, fps_den=out_den)
+    if cfg.get('gpu_id') is not None:
+        args['device'] = int(cfg['gpu_id'])
+    out = core.mvgpu.Interpolate(clip, **args)
 else:
     raise vs.Error('unknown backend ' + repr(backend))
 

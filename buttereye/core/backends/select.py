@@ -9,7 +9,9 @@
 2. No non-CPU Vulkan device -> only MVTools ("CPU-only: MVTools interpolation,
    RIFE unavailable" + the reason). RIFE is never returned in that case.
 3. Rank: TensorRT (unless ``trt_experimental`` is false, and every TRT check passing),
-   RIFE-ncnn, MVTools. Without the opt-in TensorRT is never ranked.
+   RIFE-ncnn, MVTools. Without the opt-in TensorRT is never ranked. mvgpu (the
+   optional GPU motion-vector engine) has a status for the Profiles editor but
+   is never ranked or offered by Setup: live play picks it per file (§5.3).
 4. A benchmark recommendation (no GPU faults, real time) wins; otherwise the
    §5.3 conservative defaults: RIFE v4.26 on a discrete GPU with >= 16 GiB,
    else v4.22-lite (the packaged models in the report decide what exists).
@@ -221,7 +223,52 @@ def backends(report: DoctorReport, cfg: Config) -> tuple[BackendStatus, ...]:
                 M("TensorRT engine building isn't in this build yet."),
                 st.code,
             )
-    return (rife, mv, trt)
+    return (rife, mv, trt, _mvgpu_status(report, dev))
+
+
+def _mvgpu_status(report: DoctorReport, dev: VulkanDevice | None) -> BackendStatus:
+    """mvgpu needs its optional package and a usable GPU, like RIFE."""
+    pkg = _finding(report, "packages.mvgpu")
+    if report.blocking:
+        return BackendStatus(
+            BackendId.MVGPU,
+            False,
+            False,
+            M("Setup isn't finished: fix the blocking problems first."),
+        )
+    if dev is None:
+        return BackendStatus(
+            BackendId.MVGPU,
+            False,
+            False,
+            M(
+                "CPU-only: GPU motion vectors unavailable ({why})",
+                {"why": _cpu_only_reason(report)},
+            ),
+            next(
+                (
+                    f.code
+                    for f in report.findings
+                    if f.section is Section.VULKAN and _problem(f) and f.code
+                ),
+                None,
+            ),
+        )
+    if pkg is None:
+        return BackendStatus(
+            BackendId.MVGPU, False, False, M("GPU motion vectors were not checked")
+        )
+    if pkg.severity is not Severity.OK:
+        return BackendStatus(
+            BackendId.MVGPU,
+            False,
+            False,
+            M("The GPU motion-vector plugin is not installed"),
+            pkg.code,
+        )
+    return BackendStatus(
+        BackendId.MVGPU, True, False, M("GPU motion vectors on {gpu}", {"gpu": dev.name})
+    )
 
 
 def _profile_for(cfg: Config, backend: BackendId | None, model: str | None) -> str:

@@ -9,8 +9,8 @@
   <description>
     <p>
       ButterEye interpolates video to a frame rate that suits your display, live in mpv or
-      as a saved copy, using RIFE on the GPU (Vulkan, or experimental NVIDIA TensorRT) or
-      MVTools on the CPU. It works with your distribution's own mpv and never edits your
+      as a saved copy, using RIFE on the GPU (Vulkan, or experimental NVIDIA TensorRT), its
+      own GPU motion-vector engine (mvgpu) or MVTools on the CPU. It works with your distribution's own mpv and never edits your
       mpv.conf.
     </p>
     <p>
@@ -32,9 +32,10 @@
     <binary>buttereye-gui</binary>
   </provides>
   <releases>
-    <release version="0.1.0~dev0" date="2026-10-10" type="development">
+    <release version="0.0.1" date="2026-10-10" type="stable">
+      <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.1</url>
       <description>
-        <p>Pre-alpha development build.</p>
+        <p>First release: smooth playback in mpv, smooth copies and HDR10 rendering on Fedora 44 and 45.</p>
       </description>
     </release>
   </releases>

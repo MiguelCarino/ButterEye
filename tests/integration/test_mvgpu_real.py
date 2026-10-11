@@ -56,7 +56,14 @@ want = frame_y(1, STEP / 2).astype(np.float64)
 blend = (frame_y(1).astype(np.float64) + frame_y(2)) / 2
 def err(a, b):
     return float(np.mean(np.abs(a[136:136 + SIDE] - b[136:136 + SIDE])))
+errors = []
+for _ in range(20):  # a failed construction cleans up and fails the same way each time
+    try:
+        core.mvgpu.Interpolate(base, fps_num=48, fps_den=1, device=99)
+    except vs.Error as e:
+        errors.append(str(e))
 print(json.dumps({
+    "version": list(core.mvgpu.version), "errors": sorted(set(errors)), "n_errors": len(errors),
     "len2": x2.num_frames, "len5": x5.num_frames,
     "fps2": [x2.fps.numerator, x2.fps.denominator],
     "mid_err": err(mid, want), "blend_err": err(blend, want),
@@ -78,6 +85,8 @@ def test_mvgpu_moves_a_square_and_keeps_sources(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr[-2000:]
     r = json.loads(proc.stdout.strip().splitlines()[-1])
     assert (r["len2"], r["len5"], r["fps2"]) == (12, 30, [48, 1])
+    assert r["version"] == [0, 1], "0.0.1 is reported as (0, 1) (meson.build)"
+    assert r["n_errors"] == 20 and r["errors"] == ["mvgpu.Interpolate: no Vulkan device 99"]
     assert r["source_kept"], "source positions must be the source frames, untouched"
     assert r["scene_repeat"], "a frame marked _SceneChangeNext is repeated"
     # the square lands where it should: far closer than a blend of the two frames

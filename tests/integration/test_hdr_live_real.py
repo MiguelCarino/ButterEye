@@ -48,6 +48,8 @@ def config_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         _profile("mvhdr", sc.BackendId.MVTOOLS, TargetKind.X2), hdr="passthrough"
     )
     cfg: Config = dataclasses.replace(base, profiles=base.profiles + (skip, smooth))
+    # the on-screen line stays up, so the test never races its 1 s hide timer
+    cfg = dataclasses.replace(cfg, general=dataclasses.replace(cfg.general, osd_seconds=-1))
 
     def load(paths: Paths) -> ConfigLoad:
         return sc.config_load(cfg, revision="rev-hdr")

@@ -126,6 +126,7 @@ def backend_name(b: BackendId) -> str:
         BackendId.RIFE_NCNN: _t("RIFE (Vulkan)"),
         BackendId.MVTOOLS: _t("MVTools (CPU)"),
         BackendId.RIFE_TRT: _t("RIFE · TensorRT (experimental)"),
+        BackendId.MVGPU: _t("GPU motion vectors"),
     }
     return names[b]
 

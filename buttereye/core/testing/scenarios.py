@@ -412,6 +412,7 @@ def backends_devbox() -> tuple[BackendStatus, ...]:
         BackendStatus(
             BackendId.RIFE_TRT, False, True, Msg("Experimental NVIDIA TensorRT: off"), None
         ),
+        BackendStatus(BackendId.MVGPU, False, False, Msg("GPU motion vectors were not checked")),
     )
 
 
@@ -1091,6 +1092,13 @@ def _cpu_only() -> Scenario:
             BackendStatus(BackendId.MVTOOLS, True, False, Msg("MVTools on the CPU")),
             BackendStatus(
                 BackendId.RIFE_TRT, False, True, Msg("Experimental NVIDIA TensorRT: off")
+            ),
+            BackendStatus(
+                BackendId.MVGPU,
+                False,
+                False,
+                Msg("CPU-only: GPU motion vectors unavailable (llvmpipe only)"),
+                ErrorCode.VULKAN_CPU_ONLY,
             ),
         ),
         selection=Selection(

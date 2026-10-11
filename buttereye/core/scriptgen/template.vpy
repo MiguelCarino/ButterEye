@@ -350,6 +350,25 @@ def _mvtools(clip, cfg, target):
     return fps(clip, sup, bv, fv, num=target.numerator, den=target.denominator)
 
 
+def _mvgpu(clip, cfg, target):
+    # ButterEye's GPU block motion-vector engine (Vulkan, mvgpu/). It takes YUV
+    # 4:2:0 at 8-16 bits as it comes (no RGB round trip) and returns source
+    # frames untouched; a frame marked _SceneChangeNext is repeated instead of
+    # interpolated across the cut, like RIFE.
+    _load('mvgpu', 'libmvgpu.so')
+    threshold = cfg.get('sc_threshold')
+    if isinstance(threshold, (int, float)) and threshold > 0:
+        clip = _mark_scene_changes(clip, float(threshold))
+    if clip.format.subsampling_w != 1 or clip.format.subsampling_h != 1:
+        # mpv hands over what it decoded; 4:2:2 and 4:4:4 go to 4:2:0 here
+        fmt = core.query_video_format(vs.YUV, vs.INTEGER, clip.format.bits_per_sample, 1, 1)
+        clip = core.resize.Bicubic(clip, format=fmt.id)
+    opts = {'fps_num': target.numerator, 'fps_den': target.denominator}
+    if cfg.get('gpu_id') is not None:
+        opts['device'] = int(cfg['gpu_id'])
+    return core.mvgpu.Interpolate(clip, **opts)
+
+
 def _shrink(clip, cfg):
     # Smooth at a smaller size when the core asks for one (too demanding at the
     # source size); mpv scales the output to the window like any video.
@@ -374,6 +393,8 @@ def build():
         out = _rife_trt(clip, cfg, props, target)
     elif backend == 'mvtools':
         out = _mvtools(clip, cfg, target)
+    elif backend == 'mvgpu':
+        out = _mvgpu(clip, cfg, target)
     else:
         raise vs.Error('ButterEye: unknown backend')
     return core.std.AssumeFPS(out, fpsnum=target.numerator, fpsden=target.denominator)

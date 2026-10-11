@@ -9,6 +9,7 @@
 #   buttereye-vs-rife-ncnn      plugins/buttereye-vs-rife-ncnn.spec
 #   buttereye-rife-ncnn-models  plugins/buttereye-rife-ncnn-models.spec
 #   buttereye-vs-mvtools        plugins/buttereye-vs-mvtools.spec
+#   buttereye-vs-mvgpu          plugins/buttereye-vs-mvgpu.spec (from mvgpu/)
 #
 # Usage: packaging/build.sh [--srpm-only] [chroot ...]
 #        SPECS="buttereye buttereye-vs-mvtools" packaging/build.sh fedora-44-x86_64
@@ -31,7 +32,7 @@ for a in "$@"; do
     esac
 done
 (( ${#chroots[@]} )) || chroots=(fedora-44-x86_64 fedora-45-x86_64)
-read -ra specs <<<"${SPECS:-buttereye buttereye-vs-mvtools buttereye-vs-rife-ncnn buttereye-rife-ncnn-models}"
+read -ra specs <<<"${SPECS:-buttereye buttereye-vs-mvtools buttereye-vs-mvgpu buttereye-vs-rife-ncnn buttereye-rife-ncnn-models}"
 
 top="${XDG_CACHE_HOME:-$HOME/.cache}/buttereye/packaging"
 mkdir -p "$top/SOURCES" "$top/SRPMS" "$top/results"
@@ -47,16 +48,42 @@ if [[ " ${specs[*]} " == *" buttereye "* ]]; then
     rm -f "$top"/SOURCES/buttereye-[0-9]*.tar.gz
     python3 -m build --sdist --outdir "$top/SOURCES" "$repo" >/dev/null
 fi
+if [[ " ${specs[*]} " == *" buttereye-vs-mvgpu "* ]]; then
+    # mvgpu is ButterEye's own source: packed from the working tree (so it builds
+    # before a commit), reproducibly: only files git tracks or would add (no build
+    # directories, editor or clangd leftovers), sorted names, owner 0, every mtime
+    # pinned to the last commit touching mvgpu/, no name or time in the gzip header.
+    v=$(rpmspec -q --qf '%{version}\n' --srpm "$here/plugins/buttereye-vs-mvgpu.spec")
+    mv=$(sed -n "s/^project('mvgpu'.*version: '\([^']*\)'.*/\1/p" "$repo/mvgpu/meson.build")
+    [[ $mv == "$v" ]] || { echo "mvgpu version mismatch: spec $v, meson.build ${mv:-none}" >&2; exit 1; }
+    git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 \
+        || { echo "buttereye-vs-mvgpu is packed from a git checkout" >&2; exit 1; }
+    epoch=$(git -C "$repo" log -1 --format=%ct -- mvgpu 2>/dev/null || :)
+    git -C "$repo" ls-files -z -co --exclude-standard -- mvgpu COPYING \
+        | (cd "$repo" && while IFS= read -r -d '' f; do [[ -f $f ]] && printf '%s\0' "$f"; done) \
+        | LC_ALL=C sort -z \
+        | tar --mtime="@${epoch:-${SOURCE_DATE_EPOCH:-0}}" --owner=0 --group=0 --numeric-owner \
+            --format=gnu --mode=u+rw,go=rX --exclude='mvgpu/build*' \
+            --transform "s,^mvgpu,buttereye-vs-mvgpu-$v," \
+            --transform "s,^COPYING,buttereye-vs-mvgpu-$v/COPYING," \
+            -C "$repo" --null --no-recursion -T - -cf - \
+        | gzip -n9 >"$top/SOURCES/buttereye-vs-mvgpu-$v.tar.gz"
+fi
 if [[ " ${specs[*]} " == *"rife-ncnn"* && ! -f $top/SOURCES/buttereye-vs-rife-ncnn-r9_mod_v33.tar.gz ]]; then
     "$here/plugins/repack-rife-ncnn.sh" "$top/SOURCES"
 fi
 for s in buttereye-vs-mvtools buttereye-vs-rife-ncnn; do
     [[ " ${specs[*]} " == *" $s "* ]] && spectool -g -C "$top/SOURCES" "$here/plugins/$s.spec" >/dev/null
 done
-sha256sum -c --quiet --ignore-missing <<EOF
-65578c649776ac2da6cfa32b7306841076ae184cac607b914649dfc1237498ce  $top/SOURCES/vapoursynth-mvtools-v29_2.tar.gz
-d0dd1cbea993381fe40657b379835a2c3bedccbed8db6c79ffb8d222b25102db  $top/SOURCES/ncnn-305837fd4a722ebc47c5d72e72d8ec9ae970e932.tar.gz
-0aa8276b27998fbf22f924279d72b5abd48c5802c234b57d5316567b547aa55f  $top/SOURCES/glslang-a9ac7d5f307e5db5b8c4fbf904bdba8fca6283bc.tar.gz
+# every downloaded source present must match (sha256sum --ignore-missing fails
+# when none is present, e.g. SPECS=buttereye-vs-mvgpu, so check them one by one)
+while read -r sum f; do
+    [[ -f $top/SOURCES/$f ]] || continue
+    echo "$sum  $top/SOURCES/$f" | sha256sum -c --quiet
+done <<EOF
+65578c649776ac2da6cfa32b7306841076ae184cac607b914649dfc1237498ce vapoursynth-mvtools-v29_2.tar.gz
+d0dd1cbea993381fe40657b379835a2c3bedccbed8db6c79ffb8d222b25102db ncnn-305837fd4a722ebc47c5d72e72d8ec9ae970e932.tar.gz
+0aa8276b27998fbf22f924279d72b5abd48c5802c234b57d5316567b547aa55f glslang-a9ac7d5f307e5db5b8c4fbf904bdba8fca6283bc.tar.gz
 EOF
 
 # ---------------------------------------------------------------- SRPMs

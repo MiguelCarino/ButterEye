@@ -33,9 +33,33 @@ Needs `vulkan-headers`, `vulkan-loader-devel`, `vapoursynth-devel`, `meson`, `gc
 GLSL → SPIR-V compiler (`glslang` from Fedora, or any `glslang`/`glslangValidator`):
 
 ```sh
-meson setup build [-Dglslang=/path/to/glslang]
+meson setup build [-Dglslang=/path/to/glslang] [-Dplugindir=...]
 ninja -C build            # build/libmvgpu.so
 ```
+
+The version (`meson.build`, now 0.0.1) is also what the plugin reports to VapourSynth:
+0.0.1 as (0, 1), x.y.z as (x, 100·y + z). `plugindir` (default
+`lib64/buttereye/vapoursynth`) is where `meson install` puts `libmvgpu.so`.
+
+Errors are clean VapourSynth errors, never a hang: the GPU must allow 512-invocation compute
+groups and a storage buffer of 16 bytes a pixel ("GPU limit: …" otherwise); a failed render
+gives its readback buffer back, and after a lost device every later frame fails at once.
+
+## Package and use in ButterEye
+
+The COPR package is **`buttereye-vs-mvgpu`** (`packaging/plugins/buttereye-vs-mvgpu.spec`,
+SCOPE §9 package 8), built by `packaging/build.sh` from this directory with
+`-Dplugindir=%{_lib}/buttereye/vapoursynth`, so it lands in ButterEye's private plugin
+directory and is never autoloaded:
+
+```sh
+sudo dnf install buttereye-vs-mvgpu
+```
+
+`buttereye` recommends it. When `libmvgpu.so` is there, ButterEye uses it as the live engine
+`BackendId.MVGPU` ("GPU motion vectors"): Automatic takes it after RIFE where RIFE can't keep
+up at full size or can't reach the display rate (SCOPE §5.3, GUI.md §11.9), the speed test
+measures it, and the simple window offers "Fastest — GPU (motion vectors)".
 
 ## Measured (RTX 4090, 2026-10-10)
 
@@ -52,4 +76,7 @@ the occlusion fallback and 4×4 vectors make it one solid shape with slightly br
 (PSNR about 0.2 dB lower there: averaging scores better than a sharp shape in a slightly
 wrong place, but ghosts are what the eye notices). 4K 10-bit 24 → 120: 370 fps synthetic.
 
-Test: `tests/integration/test_mvgpu_real.py` (a textured square moving 16 px per frame).
+Test: `tests/integration/test_mvgpu_real.py` (a textured square moving 16 px per frame, the
+reported version, clean construction errors), `tests/integration/test_mvgpu_live_real.py`
+(live play in mpv and the speed-test candidate) and `tests/test_mvgpu_live.py` (the live
+decisions, without a GPU).

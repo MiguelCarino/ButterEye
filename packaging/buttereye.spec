@@ -3,16 +3,16 @@
 #
 # ButterEye application package (SCOPE §9 package 1). Built from the sdist
 # (python3 -m build --sdist) plus the desktop and AppStream files in packaging/.
-# The plugins ship as their own packages (buttereye-vs-mvtools,
+# The plugins ship as their own packages (buttereye-vs-mvtools, buttereye-vs-mvgpu,
 # buttereye-vs-rife-ncnn, buttereye-rife-ncnn-models).
 
 %global pypi_name buttereye
-%global pypi_version 0.1.0.dev0
+%global pypi_version 0.0.1
 %global app_id io.github.buttereye.ButterEye
 
 Name:           buttereye
-Version:        0.1.0~dev0
-Release:        0.1%{?dist}
+Version:        0.0.1
+Release:        1%{?dist}
 Summary:        Smoother motion for the videos you play in mpv
 # ButterEye: AGPL-3.0-or-later (generated scripts and configs carry the §7
 # permission in LICENSES/). Bundled mpv shader FSRCNNX x2 8-0-4-1 (igv, release
@@ -45,6 +45,8 @@ Requires:       redhat-display-fonts
 # MVTools is the only path without a GPU
 Requires:       buttereye-vs-mvtools
 Recommends:     buttereye-vs-rife-ncnn
+# the live engine where RIFE can't keep up (4K at high rates)
+Recommends:     buttereye-vs-mvgpu
 Recommends:     buttereye-rife-ncnn-models
 Recommends:     mkvtoolnix
 Recommends:     ffms2
@@ -59,8 +61,9 @@ Provides:       bundled(mpv-shader-fsrcnnx) = 1.1
 %description
 ButterEye interpolates video to a frame rate that suits your display, live in
 mpv or as a saved copy, with RIFE on the GPU (Vulkan, or experimental NVIDIA
-TensorRT built by the user) or MVTools on the CPU. It drives your
-distribution's own mpv and never edits your mpv.conf.
+TensorRT built by the user), its own GPU motion-vector engine (mvgpu) or
+MVTools on the CPU. It drives your distribution's own mpv and never edits your
+mpv.conf.
 
 %prep
 %autosetup -n %{pypi_name}-%{pypi_version}
@@ -100,7 +103,7 @@ EOF
 %files -f %{pyproject_files}
 %license COPYING LICENSES/AdditionRef-ButterEye-generated-output.txt
 %license %{pypi_name}/data/shaders/LGPL-3.0.txt %{pypi_name}/data/shaders/GPL-3.0.txt
-%doc README.md
+%doc README.md CHANGELOG.md THIRD-PARTY.md
 %{_bindir}/buttereye
 %{_bindir}/buttereye-gui
 %{_datadir}/applications/%{app_id}.desktop
@@ -108,5 +111,7 @@ EOF
 %{_datadir}/icons/hicolor/scalable/apps/%{app_id}.svg
 
 %changelog
-* Sat Oct 10 2026 The ButterEye contributors - 0.1.0~dev0-0.1
-- First package of the application (SCOPE §9, milestone M1)
+* Sat Oct 10 2026 The ButterEye contributors - 0.0.1-1
+- First release, 0.0.1 (see CHANGELOG.md); first package of the application
+  (SCOPE §9, milestone M1), replacing the unpublished 0.1.0~dev0 snapshot
+- Ship CHANGELOG.md and THIRD-PARTY.md

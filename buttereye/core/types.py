@@ -79,6 +79,7 @@ class BackendId(StrEnum):
     RIFE_NCNN = "rife-ncnn"
     MVTOOLS = "mvtools"
     RIFE_TRT = "rife-trt"
+    MVGPU = "mvgpu"  # GPU block motion vectors (Vulkan), mvgpu/
 
 
 class HdrClass(StrEnum):

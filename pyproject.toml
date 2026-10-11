@@ -16,7 +16,7 @@ requires-python = ">=3.14"
 authors = [{ name = "The ButterEye contributors" }]
 keywords = ["mpv", "vapoursynth", "frame interpolation", "rife", "mvtools"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Environment :: X11 Applications :: Qt",
     "Intended Audience :: End Users/Desktop",
     "Operating System :: POSIX :: Linux",
@@ -26,6 +26,13 @@ classifiers = [
 ]
 # PySide6-Essentials only (F17); on Fedora the distro python3-pyside6 provides it.
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/MiguelCarino/ButterEye"
+Source = "https://github.com/MiguelCarino/ButterEye"
+Releases = "https://github.com/MiguelCarino/ButterEye/releases"
+Issues = "https://github.com/MiguelCarino/ButterEye/issues"
+Changelog = "https://github.com/MiguelCarino/ButterEye/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 gui = ["PySide6-Essentials>=6.11"]

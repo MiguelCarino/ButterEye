@@ -42,6 +42,11 @@ BUFFERED_FRAMES_DEFAULT = 4
 #: dev box (Ryzen 9 5900X, 24 threads) 8 / 16 / 24 give 128 / 148 / 137 fps at
 #: 1080p 2x and 28 / 35 / 34 at 2160p (spike M0(m)); 16 matches vspipe.
 MVTOOLS_MAX_CONCURRENT = 16
+#: mvgpu in mpv: its GPU work is serialised inside the plugin, so requests in
+#: flight only overlap the CPU copies of frames. 4K 23.976 -> 119.88 untimed on
+#: the dev box (RTX 4090, 2026-10-10): 164 / 171 fps at 4 / 8 concurrent frames
+#: over 1500 frames (120 / 150 / 154 at 2 / 8 / 16 over 600); 8, like RIFE-ncnn.
+MVGPU_CONCURRENT_FRAMES_DEFAULT = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +71,7 @@ class FilterParams:
     matrix: str | None = None  # VapourSynth matrix name ("709", "170m", ...)
     range: str | None = None  # "limited" | "full"
     model_path: Path | None = None  # RIFE-ncnn model directory
-    gpu_id: int | None = None
+    gpu_id: int | None = None  # Vulkan device index (RIFE-ncnn, mvgpu)
     gpu_thread: int | None = None
     uhd: bool = False
     sc_threshold: float | None = None
@@ -89,6 +94,8 @@ def default_frames(backend: BackendId, *, cpu_count: int | None = None) -> tuple
     if backend is BackendId.MVTOOLS:
         n = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
         return BUFFERED_FRAMES_DEFAULT, max(1, min(n, MVTOOLS_MAX_CONCURRENT))
+    if backend is BackendId.MVGPU:
+        return BUFFERED_FRAMES_DEFAULT, MVGPU_CONCURRENT_FRAMES_DEFAULT
     return BUFFERED_FRAMES_DEFAULT, RIFE_CONCURRENT_FRAMES_DEFAULT
 
 
@@ -146,6 +153,8 @@ def user_data(params: FilterParams) -> str:
         data["gpu_id"] = params.gpu_id
         if params.dither is not None:
             data["dither"] = params.dither
+    elif params.backend is BackendId.MVGPU:
+        data["gpu_id"] = params.gpu_id
     elif params.backend is BackendId.MVTOOLS:
         if params.mv_pel is not None:
             data["mv_pel"] = int(params.mv_pel)
@@ -223,6 +232,7 @@ __all__ = [
     "RIFE_CONCURRENT_FRAMES_DEFAULT",
     "RIFE_GPU_THREAD_DEFAULT",
     "BUFFERED_FRAMES_DEFAULT",
+    "MVGPU_CONCURRENT_FRAMES_DEFAULT",
     "ScriptConstants",
     "FilterParams",
     "default_frames",

@@ -84,7 +84,10 @@ async def test_vspipe_runs_the_shipped_script_mvtools(tmp_path: Path) -> None:
     assert run.frames == 48 and run.fps > 0 and run.eval_s is not None
 
 
-async def test_bench_mvtools_real(tmp_path: Path, config_stub: None) -> None:
+async def test_bench_mvtools_real(
+    tmp_path: Path, config_stub: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner, "MVGPU_PLUGIN", "absent-in-this-test.so")
     paths = _paths(tmp_path, ())  # no models -> MVTools only
     core = await ButterEye.open(paths)
     progress: list[Progress] = []
@@ -111,6 +114,7 @@ async def test_bench_rife_one_model_real(
     if not (RPM_MODELS / MODEL).is_dir():
         pytest.skip(f"{MODEL} not installed")
     monkeypatch.setattr(runner, "MVTOOLS_PLUGIN", "absent-in-this-test.so")
+    monkeypatch.setattr(runner, "MVGPU_PLUGIN", "absent-in-this-test.so")
     paths = _paths(tmp_path, (MODEL,))
     core = await ButterEye.open(paths)
     result = await core.bench(BenchRequest(1280, 720, Fraction(24000, 1001))).result()

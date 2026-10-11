@@ -130,7 +130,8 @@ async def plan(paths: Paths, report: DoctorReport, *, trt_experimental: bool) ->
     """In memory only; reads config.toml but never writes."""
     cfg, _, _ = base_config(paths)
     cfg = _with_trt(cfg, trt_experimental)
-    statuses = backends(report, cfg)
+    # mvgpu is never a Setup choice: live play picks it per file (§5.3)
+    statuses = tuple(s for s in backends(report, cfg) if s.id is not BackendId.MVGPU)
     proposed = select(report, cfg, ())
     missing, lines = dnf_lines(report, trt=trt_experimental)
     return SetupPlan(

@@ -8,8 +8,8 @@ The filter is added over IPC once ``video-params`` and ``display-fps`` are known
 (§4.2 step 2), as ``vf add @buttereye:vapoursynth=…`` with a new ``gen`` per change,
 verified in the ``vf`` property. A failed init, a stalled picture or a lost GPU
 device removes the filter (rollback, F4) and is reported; ButterEye never turns
-it back on by itself, except that a stalled or faulting RIFE-ncnn filter is
-replaced by MVTools once per session (GUI.md §11.9). The engine is chosen after
+it back on by itself, except that a stalled or faulting GPU engine (RIFE-ncnn or
+mvgpu) is replaced by MVTools once per session (GUI.md §11.9). The engine is chosen after
 the target, against each engine's benchmark cap with live headroom (§11.9).
 ``detach`` closes the IPC connection only.
 
@@ -231,8 +231,14 @@ class LiveOptions:
 
 TRT_BUILDS = "mpvctl.trt_builds"  # EngineKey -> "building" | "ready" | exception
 TRT_IDENTITY = "mpvctl.trt_identity"  # Vulkan UUID -> (nvidia UUID, driver) | None
-#: Automatic engine order: TensorRT when set up and not turned off
-LIVE_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVTOOLS)
+#: Automatic engine order: TensorRT when set up and not turned off, RIFE-ncnn,
+#: mvgpu (GPU motion vectors: far faster than RIFE, a little less exact on fast
+#: objects), MVTools. The target decides among them (``decide.pick_engine``).
+LIVE_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVGPU, BackendId.MVTOOLS)
+#: GPU engines that MVTools replaces once after a stall, a lost device or a GPU
+#: fault (§11.9), and whose runs are followed by the Xid scan (F1). TensorRT has
+#: its own fallback while its engine builds and is not switched.
+_SWITCHABLE = frozenset({BackendId.RIFE_NCNN, BackendId.MVGPU})
 
 
 class Registry:
@@ -424,8 +430,10 @@ class _Session:
         self.trt_built = False
         self.failure: list[str] = []
         self.device_lost = False
-        self.rife_used = False
-        # §11.9: after RIFE-ncnn stalled or faulted, this session runs MVTools only
+        #: the GPU engine (RIFE-ncnn or mvgpu) that ran last: its failures and the
+        #: session end are followed by a GPU-fault (Xid) scan (F1)
+        self.gpu_used: BackendId | None = None
+        # §11.9: after a GPU engine stalled or faulted, this session runs MVTools only
         # (set once, never cleared: ButterEye never goes back to RIFE by itself)
         self.backend_override: BackendId | None = None
         self.override_notice: Msg | None = None
@@ -775,6 +783,7 @@ class _Session:
             profiles,
             multiplier=self.multiplier,
             skip_lite=self.profile_id == "quality" and await self.lite_no_faster(profiles),
+            running=self.backend,
         )
 
     async def lite_no_faster(self, profiles: Sequence[Profile]) -> bool:
@@ -1097,6 +1106,8 @@ class _Session:
             # fallbacks, used only if the chosen engine can't reach the target
             if choice.backend is BackendId.RIFE_TRT and BackendId.RIFE_NCNN in installed:
                 order.append(BackendId.RIFE_NCNN)
+            if choice.backend in decide.RIFE_BACKENDS and BackendId.MVGPU in installed:
+                order.append(BackendId.MVGPU)
             if choice.backend in decide.GPU_BACKENDS and BackendId.MVTOOLS in installed:
                 order.append(BackendId.MVTOOLS)
         model: str | None = None
@@ -1312,7 +1323,9 @@ class _Session:
             matrix=decide.matrix_name(vp.get("colormatrix"), h),
             range=decide.range_name(vp.get("colorlevels")),
             model_path=model_path if backend is BackendId.RIFE_NCNN else None,
-            gpu_id=self.gpu_index(cfg) if backend is BackendId.RIFE_NCNN else None,
+            gpu_id=(
+                self.gpu_index(cfg) if backend in (BackendId.RIFE_NCNN, BackendId.MVGPU) else None
+            ),
             gpu_thread=RIFE_GPU_THREAD_DEFAULT if backend is BackendId.RIFE_NCNN else None,
             uhd=decide.uhd_mode(*(size or (facts.width, facts.height))),
             sc_threshold=profile.sc_threshold if backend in decide.GPU_BACKENDS else None,
@@ -1359,8 +1372,8 @@ class _Session:
             ok = not self.failure and await self.verify(gen, float(tc.target))
         finally:
             self.busy = False
-        if backend is BackendId.RIFE_NCNN:
-            self.rife_used = True
+        if backend in _SWITCHABLE:
+            self.gpu_used = backend
         if not ok:
             evidence = tuple(self.failure[:10])
             await self.rollback_failed(evidence)
@@ -1442,8 +1455,9 @@ class _Session:
         self.after_failure()
 
     async def stalled(self, verdict: Verdict) -> None:
-        """STALLED: roll back automatically (R12). A RIFE-ncnn filter is replaced by
-        MVTools once (§11.9); otherwise interpolation stays off (never re-enabled)."""
+        """STALLED: roll back automatically (R12). A RIFE-ncnn or mvgpu filter is
+        replaced by MVTools once (§11.9); otherwise interpolation stays off (never
+        re-enabled)."""
         evidence = verdict.evidence + device_lost_lines(self.log_path)
         if self.device_lost or len(evidence) > len(verdict.evidence):
             health, code = Health.DEVICE_LOST, ErrorCode.DEVICE_LOST
@@ -1470,8 +1484,9 @@ class _Session:
         self.after_failure()
 
     def can_switch_to_cpu(self) -> bool:
-        """A running RIFE-ncnn filter that may still be replaced by MVTools (once)."""
-        if self.backend is not BackendId.RIFE_NCNN or self.backend_override is not None:
+        """A running GPU-engine filter (RIFE-ncnn or mvgpu) that may still be
+        replaced by MVTools (once)."""
+        if self.backend not in _SWITCHABLE or self.backend_override is not None:
             return False
         paths = self.ctx.paths
         installed = decide.installed_backends(
@@ -1490,7 +1505,8 @@ class _Session:
         *,
         scan_faults: bool = True,
     ) -> bool:
-        """§11.9: RIFE-ncnn stalled, lost its device or faulted the GPU → this
+        """§11.9: a GPU engine (RIFE-ncnn or mvgpu) stalled, lost its device or
+        faulted the GPU → this
         session switches to MVTools once (an in-session engine override that is
         never lifted). False when that is not possible (then the caller turns
         interpolation off). Health returns to OK when MVTools frames flow; if
@@ -1512,7 +1528,7 @@ class _Session:
             )  # fmt: skip
         )
         if scan_faults:
-            self.after_failure()  # the Xid check for the RIFE run (F1)
+            self.after_failure()  # the Xid check for the GPU engine's run (F1)
         self.backend = self.model = None
         self.failure.clear()
         self.device_lost = False
@@ -1534,9 +1550,13 @@ class _Session:
         return True
 
     def after_failure(self) -> None:
-        if self.rife_used:
+        if self.gpu_used is not None:
             with contextlib.suppress(ButterEyeError):
                 self.ctx.spawn(self.check_gpu_faults(), name=f"mpvctl-{self.sid}-xid")
+
+    def gpu_name(self) -> str:
+        """The GPU engine that ran last, as the user sees it (RIFE before any run)."""
+        return decide.BACKEND_NAMES[self.gpu_used or BackendId.RIFE_NCNN]
 
     async def check_gpu_faults(self) -> None:
         """Xid lines newer than the last reported one (F1); unknown is reported, never OK.
@@ -1553,8 +1573,9 @@ class _Session:
                 self.emit(
                     Notice(
                         Msg(
-                            "GPU faults can't be checked in this build; whether RIFE faulted "
-                            "is unknown."
+                            "GPU faults can't be checked in this build; whether {engine} "
+                            "faulted is unknown.",
+                            {"engine": self.gpu_name()},
                         ),  # fmt: skip
                         None,
                         self.sid,
@@ -1570,20 +1591,21 @@ class _Session:
                 res.newest_monotonic + 1e-6 if res.newest_monotonic is not None else scan_mono
             )
             lines = res.lines
-        reason = Msg("The GPU reported a fault in RIFE-ncnn.")
+        reason = Msg("The GPU reported a fault in {engine}.", {"engine": self.gpu_name()})
         async with self.lock:
-            if self.active_gen is not None and self.backend is not BackendId.RIFE_NCNN:
-                # the fault came from an earlier RIFE run (e.g. before the switch
-                # to CPU smoothing); the engine running now is not to blame
+            if self.active_gen is not None and self.backend not in _SWITCHABLE:
+                # the fault came from an earlier GPU-engine run (e.g. before the
+                # switch to CPU smoothing); the engine running now is not to blame
                 self.emit(
                     Notice(
                         Msg(
-                            "The GPU reported a fault while RIFE-ncnn was running earlier; "
+                            "The GPU reported a fault while {earlier} was running earlier; "
                             "{engine} is running now.",
                             {
+                                "earlier": self.gpu_name(),
                                 "engine": decide.BACKEND_NAMES.get(self.backend, "")
                                 if self.backend
-                                else ""
+                                else "",
                             },
                         ),  # fmt: skip
                         ErrorCode.RIFE_GPU_FAULT,
@@ -1948,7 +1970,7 @@ class _Session:
         if returncode is None:
             with contextlib.suppress(TimeoutError):
                 returncode = await asyncio.wait_for(self.proc.wait(), 1.0)
-        if self.rife_used:
+        if self.gpu_used is not None:
             await self.check_gpu_faults()
         if returncode is not None:
             # mpv is gone: its socket and script are leftovers (discover would re-probe them)

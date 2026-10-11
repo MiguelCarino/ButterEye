@@ -49,6 +49,7 @@ from buttereye.core.ops import _own_group, terminate_group
 from buttereye.core.render import pipeline
 from buttereye.core.render import probe as rprobe
 from buttereye.core.scriptgen.generator import (
+    MVGPU_CONCURRENT_FRAMES_DEFAULT,
     RIFE_CONCURRENT_FRAMES_DEFAULT,
     RIFE_GPU_THREAD_DEFAULT,
     FilterParams,
@@ -353,7 +354,10 @@ def vspipe_requests(engine: BackendId) -> int | None:
     ``gpu_thread`` frames at once; vspipe's default (one per CPU thread, 24 on the
     dev box) only holds RGBS frames waiting for the GPU: 4K 24 → 60 used 18.9 GB
     and ran 7.3 fps by default, 14.5 GB and 7.7 fps with 8. At least
-    gpu_thread + 2. MVTools (CPU-bound) keeps vspipe's default."""
+    gpu_thread + 2. mvgpu serialises its GPU work, so requests beyond its live
+    concurrent-frames only hold frames. MVTools (CPU-bound) keeps vspipe's default."""
+    if engine is BackendId.MVGPU:
+        return MVGPU_CONCURRENT_FRAMES_DEFAULT
     if engine is BackendId.RIFE_NCNN:
         return max(RIFE_CONCURRENT_FRAMES_DEFAULT, RIFE_GPU_THREAD_DEFAULT + 2)
     if engine is BackendId.RIFE_TRT:
@@ -835,11 +839,11 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
             matrix=rprobe.vs_matrix(info),
             range=rprobe.vs_range(info),
             model_path=mc.path if mc is not None else None,
-            gpu_id=_gpu_index(ctx) if engine is BackendId.RIFE_NCNN else None,
+            gpu_id=_gpu_index(ctx) if engine in (BackendId.RIFE_NCNN, BackendId.MVGPU) else None,
             gpu_thread=RIFE_GPU_THREAD_DEFAULT if engine is BackendId.RIFE_NCNN else None,
             uhd=decide.uhd_mode(w, h),
             sc_threshold=(profile.sc_threshold if profile is not None else 0.12)
-            if engine in (BackendId.RIFE_NCNN, BackendId.RIFE_TRT)
+            if engine in decide.GPU_BACKENDS
             else None,
             title=src.name,
             size=(w, h) if (w, h) != (info.width, info.height) else None,

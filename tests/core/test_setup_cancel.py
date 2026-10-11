@@ -6,6 +6,7 @@ last; re-running is idempotent. The smoke test and probe are scripted here."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import shutil
 from collections.abc import Iterator
@@ -156,6 +157,14 @@ async def test_plan_is_in_memory(script: Script, xdg_env: Any) -> None:
     assert "sudo dnf install ffms2" in plan.dnf_lines
     assert {"ffms2", "mkvtoolnix"} <= set(plan.missing_packages)
     assert {b.id for b in plan.backends if b.available} == {BackendId.RIFE_NCNN, BackendId.MVTOOLS}
+    # mvgpu is never a Setup choice, even when installed (live play picks it per file)
+    rep = devbox_report()
+    mvgpu = Finding(
+        "packages.mvgpu", Section.PACKAGES, Severity.OK, None, Msg("mvgpu"), Msg(""), Msg(""), ()
+    )
+    rep = dataclasses.replace(rep, findings=rep.findings + (mvgpu,))
+    plan = await setup.plan(resolve(), rep, trt_experimental=False)
+    assert BackendId.MVGPU not in {b.id for b in plan.backends}
 
 
 @pytest.mark.parametrize("phase", ["smoke", "probe"])

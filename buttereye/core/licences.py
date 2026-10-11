@@ -163,6 +163,9 @@ COMPONENTS: tuple[Component, ...] = (
     Component("MVTools", pk.PKG_MVTOOLS, "GPL-2.0-or-later AND ISC", REL_LOADED, True, min_texts=1),
     Component("RIFE ncnn models", pk.PKG_MODELS, "MIT", REL_DATA, True, min_texts=4),
     Component(
+        "mvgpu", pk.PKG_MVGPU, "AGPL-3.0-or-later", REL_LOADED, True, min_texts=1, always=False
+    ),
+    Component(
         "vsmlrt.py", pk.PKG_VSMLRT, "GPL-3.0-only", REL_IMPORTED, True, min_texts=1, always=False
     ),
     Component(

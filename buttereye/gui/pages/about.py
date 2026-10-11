@@ -57,6 +57,8 @@ COLUMNS = 7
 FALLBACK_COPYRIGHT = "Copyright (C) 2026 The ButterEye contributors"
 FALLBACK_LICENCE = "GNU Affero General Public License v3.0 or later"
 COMPONENT_ROLE = Qt.ItemDataRole.UserRole + 1
+#: Where released versions (RPMs for Fedora 44/45) and their notes are published.
+RELEASES_URL = "https://github.com/MiguelCarino/ButterEye/releases"
 
 
 def _t(text: str) -> str:
@@ -118,6 +120,19 @@ class AboutPage(Page):
         self.banner_box = QVBoxLayout()
         self.missing_banners: list[Banner] = []
 
+        # The installed version (the heading) next to the way to newer ones. No
+        # update check: ButterEye never goes online by itself, the browser does.
+        self.open_releases = QPushButton(_t("Releases and &updates"), tab)
+        self.open_releases.setAccessibleName(_t("Releases and updates"))
+        self.open_releases.setToolTip(RELEASES_URL)
+        self.open_releases.setAutoDefault(False)
+        self.open_releases.clicked.connect(self._open_releases)
+        release_row = QHBoxLayout()
+        release_row.addWidget(self.name_label)
+        release_row.addSpacing(12)
+        release_row.addWidget(self.open_releases)
+        release_row.addStretch(1)
+
         self.view_licence = QPushButton(_t("&View full licence"), tab)
         self.view_licence.setAccessibleName(_t("View full licence"))
         self.view_licence.setAutoDefault(False)
@@ -140,7 +155,7 @@ class AboutPage(Page):
         )
         self.source_note.setWordWrap(True)
         self.source_note.setTextFormat(Qt.TextFormat.PlainText)
-        self.open_source = QPushButton(_t("Open source &link"), tab)
+        self.open_source = QPushButton(_t("Open source lin&k"), tab)
         self.open_source.setAccessibleName(_t("Open source link"))
         self.open_source.setAutoDefault(False)
         self.open_source.clicked.connect(self._open_source)
@@ -149,7 +164,7 @@ class AboutPage(Page):
         # on the Licences tab (two stacked hints read as two separate commands).
         self.version_hint = CliHint(command_hint("version"), tab)
 
-        lay.addWidget(self.name_label)
+        lay.addLayout(release_row)
         lay.addWidget(self.copyright_label)
         lay.addWidget(self.licence_label)
         lay.addWidget(self.warranty_label)
@@ -255,6 +270,7 @@ class AboutPage(Page):
         if n is None:
             # Never gated: the static notice still shows; the files can't be located.
             self.name_label.setText(_t("ButterEye"))
+            self._describe_releases(None)
             self.copyright_label.setText(FALLBACK_COPYRIGHT)
             self.licence_label.setText(_t("Licence: {name}").format(name=FALLBACK_LICENCE))
             self.warranty_label.setText(_t("This program comes with ABSOLUTELY NO WARRANTY."))
@@ -266,6 +282,7 @@ class AboutPage(Page):
             return
         self.name_label.setText(_t("{name} {version}").format(name=n.name, version=n.version))
         self.name_label.setAccessibleName(self.name_label.text())
+        self._describe_releases(self.name_label.text())
         self.copyright_label.setText(n.copyright)
         self.copyright_label.setAccessibleName(n.copyright)
         self.licence_label.setText(_t("Licence: {name}").format(name=n.licence_name))
@@ -316,6 +333,18 @@ class AboutPage(Page):
     def _open_source(self) -> None:
         if self.notices is not None:
             QDesktopServices.openUrl(QUrl(self.notices.source_link))
+
+    def _describe_releases(self, installed: str | None) -> None:
+        opens = _t("Opens the ButterEye releases page in your web browser.")
+        self.open_releases.setAccessibleDescription(
+            _t("You have {installed}. {opens}").format(installed=installed, opens=opens)
+            if installed
+            else opens
+        )
+
+    def _open_releases(self) -> None:
+        QDesktopServices.openUrl(QUrl(RELEASES_URL))
+        self.ctx.status(_t("Opening the releases page in your web browser…"))
 
     def _viewer(self, title: str, files: Sequence[Path]) -> None:
         dlg = TextViewer(title, files, self)

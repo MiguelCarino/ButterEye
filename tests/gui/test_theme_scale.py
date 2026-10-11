@@ -318,7 +318,7 @@ def _fixed_and_heading(qapp: QApplication) -> tuple[Any, QLabel]:
     from buttereye.gui.widgets.copy_field import CopyField
 
     field = CopyField("buttereye doctor", accessible_name="Command")
-    head = a11y.heading(QLabel("ButterEye 0.1.0"))
+    head = a11y.heading(QLabel("ButterEye 0.0.1"))
     return field, head
 
 

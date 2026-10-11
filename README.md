@@ -7,9 +7,13 @@
 
 ButterEye is a free, open-source (AGPL-3.0-or-later) smooth-motion control center for
 [mpv](https://mpv.io) on Linux: it interpolates video to a rate that suits your display with
-RIFE (Vulkan, via VapourSynth) or MVTools, live in mpv or as an offline render. It works
-with your distribution's own mpv and never edits your `mpv.conf`. Status: pre-alpha; the
-design lives in `docs/SCOPE.md` and `docs/design/GUI.md`.
+RIFE (Vulkan, via VapourSynth), its own GPU motion-vector engine (mvgpu) or MVTools, live
+in mpv or as an offline render. It works
+with your distribution's own mpv and never edits your `mpv.conf`. Current release:
+**0.0.1** (alpha, Fedora 44 and 45; see [`CHANGELOG.md`](CHANGELOG.md) and the
+[releases page](https://github.com/MiguelCarino/ButterEye/releases)). The design lives in
+`docs/SCOPE.md` and `docs/design/GUI.md`; third-party components and their licences are
+listed in [`THIRD-PARTY.md`](THIRD-PARTY.md).
 
 Copyright (C) 2026 The ButterEye contributors. This program comes with ABSOLUTELY NO
 WARRANTY; see the GNU Affero General Public License v3.0 or later, full text in
@@ -21,9 +25,51 @@ permission under AGPL section 7, in
 files are shown in About, ship in the sdist and wheel (`license-files`), and must ship
 as `%license` in the RPM.
 
+## Install (Fedora 44 and 45)
+
+Each [GitHub release](https://github.com/MiguelCarino/ButterEye/releases) carries the
+RPMs for Fedora 44 (`.fc44`) and Fedora 45 (`.fc45`), x86_64, plus their source RPMs.
+Download the files for your Fedora version from the release's **Assets** into one
+folder, then install them with dnf, which pulls everything else (mpv, VapourSynth,
+ffmpeg, PySide6, the fonts) from Fedora:
+
+```sh
+cd ~/Downloads/buttereye-0.0.1        # the folder holding the downloaded RPMs
+# Fedora 44 (use fc45 on Fedora 45)
+sudo dnf install ./buttereye-0.0.1-1.fc44.noarch.rpm \
+    ./buttereye-vs-mvtools-*.fc44.x86_64.rpm \
+    ./buttereye-vs-rife-ncnn-*.fc44.x86_64.rpm \
+    ./buttereye-rife-ncnn-models-*.fc44.noarch.rpm \
+    ./buttereye-vs-mvgpu-*.fc44.x86_64.rpm
+```
+
+`buttereye` and `buttereye-vs-mvtools` are the minimum (MVTools is the only engine
+without a GPU); the RIFE plugin and its models add GPU smoothing on any Vulkan GPU, and
+`buttereye-vs-mvgpu` adds the fast GPU motion-vector engine. `mkvtoolnix` (recommended)
+keeps every audio and subtitle track in smooth copies. Then start **ButterEye** from your
+desktop's application menu, or run `buttereye-gui` (`buttereye doctor` checks the setup
+from a terminal). To update, download the newer RPMs and run the same command; to
+remove, `sudo dnf remove 'buttereye*'`. The RPMs are not signed yet: install only files
+downloaded from the releases page above.
+
+The experimental NVIDIA TensorRT path is not in the RPMs (NVIDIA's licence does not allow
+it); see "NVIDIA TensorRT" under [Status](#status) to set it up yourself.
+
+**Coming later:** a COPR repository, so that `sudo dnf copr enable <owner>/buttereye`
+and `sudo dnf install buttereye` install and update everything. It isn't published yet.
+
+**macOS and Windows are not supported in 0.0.1**, and there are no builds for them.
+ButterEye is Linux-specific by design: it talks to mpv over a Unix domain socket (mpv's
+JSON IPC; Windows uses named pipes), its plugins are VapourSynth `.so` files loaded from
+Linux paths and built against Fedora's libraries, its checks read Linux-only sources
+(`/proc`, `journalctl` for GPU faults, `ldconfig`), and it is packaged and tested as
+Fedora RPMs only. Other Linux distributions may work from source (see Development setup)
+but are untested. What a Windows or macOS port would take is written up in
+[docs/PLATFORMS.md](docs/PLATFORMS.md).
+
 ## Status
 
-Pre-alpha, verified on the dev box (Fedora 44, RTX 4090, mpv 0.41.0, VapourSynth R72) on
+Alpha (0.0.1), verified on the dev box (Fedora 44, RTX 4090, mpv 0.41.0, VapourSynth R72) on
 2026-10-07. "Works" means it ran against the real tools, not a fake.
 
 **Works for real**
@@ -40,7 +86,7 @@ Pre-alpha, verified on the dev box (Fedora 44, RTX 4090, mpv 0.41.0, VapourSynth
   in under a second. Setup proposes an engine, runs a real smoke test and only then saves.
 - **Profiles and rules** (Profiles & Rules page): `config.toml` load/validate/save with
   conflict detection and atomic writes; the rule tester explains which rule matched.
-- **Benchmark** (Benchmark page): measures every installed RIFE model plus MVTools in
+- **Benchmark** (Benchmark page): measures every installed RIFE model, mvgpu and MVTools in
   vspipe and inside mpv, counts GPU faults, and can apply the recommendation.
 - **Storage and About**: real folder sizes, packaged models, licence texts.
 - **Lua helper in mpv**: Alt+b toggles the filter, Alt+B shows the status line.
@@ -133,9 +179,14 @@ file. There are four choices:
   playing turn smoothing off.
 - **Target** — *Double (2×)*, *60 fps*, or *Match your display (N Hz)* (the lowest
   refresh/k that at least doubles the video: 60 fps on 180 Hz, 48 on 144 Hz).
-- **Smoothness** — *Auto (recommended)*, *Best quality — GPU*, *Lighter — GPU* or
-  *CPU only*. Auto uses the GPU when the speed test shows it can keep up, and the CPU
-  otherwise. The GPU choices are hidden when RIFE can't run on this computer.
+- **Smoothness** — *Auto (recommended)*, *Best quality — GPU*, *Lighter — GPU*,
+  *Fastest — GPU (motion vectors)* or *CPU only*. Auto uses RIFE on the GPU when the
+  speed test shows it can keep up; where it can't (4K, high rates, "Match your
+  display"), the GPU motion-vector engine at full size; then a smaller picture or the
+  CPU. *Best quality* and *Lighter* are hidden when RIFE can't run on this computer;
+  *Fastest* shows once the system checks find the `buttereye-vs-mvgpu` package and a GPU
+  (with or without RIFE). Installing it later starts one more speed test, so Auto can use
+  it.
 - **Picture** — *Standard*, *Sharper*, *Less banding* or *Sharper, less banding*.
   *Sharper* adds the bundled FSRCNNX shader (LGPL-3.0), which draws crisper edges when
   the video is smaller than the window (+0.5 to +1.25 dB over Lanczos in spike M0(o),
@@ -149,6 +200,15 @@ keep up (4K on most CPUs; spike M0(p)), and converted files use the lighter soft
 presets `libx265` *fast* and `libsvtav1` *8* (about 1.5-2× less CPU than *medium*/*6*,
 for files a few % larger at the same quality setting); conversions keep MVTools at
 `pel=2`. See SCOPE §7.5.
+
+**GPU motion vectors** (`mvgpu/`, package `buttereye-vs-mvgpu`): ButterEye's own Vulkan
+engine, a block motion search plus per-pixel vector selection on the GPU. On the RTX 4090
+it plays 4K 23.976 → 119.88 at about 170 fps in mpv (RIFE manages 4K 2× only through
+TensorRT); the picture is as good as RIFE on pans and anime and a little less exact on
+fast objects, so Automatic uses it only where RIFE can't keep up, after the speed test
+has measured it. Without the package nothing changes (the System checks note it with
+`sudo dnf install buttereye-vs-mvgpu`). Smooth copies keep RIFE unless a profile asks
+for mvgpu.
 
 **TensorRT** (NVIDIA, experimental): once `contrib/build-vstrt.sh` has set it up, ButterEye
 uses it (4–5× the Vulkan engine on the same GPU) unless you turn it off; there's no separate
@@ -208,7 +268,7 @@ build yet.
 
 ## Building the RPMs
 
-`packaging/` holds the specs for the application and its three plugin packages (SCOPE §9;
+`packaging/` holds the specs for the application and its four plugin packages (SCOPE §9;
 details in `packaging/README.md`). One command builds the SRPMs and rebuilds each in mock
 for Fedora 44 and 45 with networking off, as the COPR will:
 

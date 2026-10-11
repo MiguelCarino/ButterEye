@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Release notes and the third-party notice ship in the sdist (and the RPM %doc).
+include CHANGELOG.md THIRD-PARTY.md

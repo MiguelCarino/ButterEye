@@ -30,7 +30,8 @@ PKG_MVTOOLS = "buttereye-vs-mvtools"
 PKG_MODELS = "buttereye-rife-ncnn-models"
 PKG_VSMLRT = "buttereye-vsmlrt-py"
 PKG_ONNXCONV = "buttereye-onnxconverter-common"
-BUTTEREYE_PKGS = (PKG_RIFE, PKG_MVTOOLS, PKG_MODELS, PKG_VSMLRT, PKG_ONNXCONV)
+PKG_MVGPU = "buttereye-vs-mvgpu"
+BUTTEREYE_PKGS = (PKG_RIFE, PKG_MVTOOLS, PKG_MODELS, PKG_VSMLRT, PKG_ONNXCONV, PKG_MVGPU)
 #: Other packages whose versions/licences doctor and the licence pane report.
 OTHER_PKGS = (
     "mpv",
@@ -46,6 +47,7 @@ OTHER_PKGS = (
 
 RIFE_SO = "librife.so"
 MVTOOLS_SO = "mvtools.so"
+MVGPU_SO = "libmvgpu.so"
 MODELS_SUBDIR = "rife-ncnn-models"
 
 _QF = (
@@ -208,6 +210,33 @@ def _f(
     )
 
 
+def mvgpu_finding(db: RpmDb, paths: Paths) -> Finding:
+    """mvgpu, the optional fast GPU engine: OK when its plugin file is in the
+    private plugin directory, a note (INFO) when it isn't; RIFE and MVTools
+    cover everything without it."""
+    so = paths.rpm_plugin_dir / MVGPU_SO
+    if so.is_file():
+        info = db.get(PKG_MVGPU)
+        return _f(
+            "packages.mvgpu",
+            Severity.OK,
+            M("GPU motion-vector plugin (mvgpu) installed"),
+            cause=M("{pkg} {ver}", {"pkg": PKG_MVGPU, "ver": info.evr if info else "found"}),
+            evidence=(str(so),),
+        )
+    return _f(
+        "packages.mvgpu",
+        Severity.INFO,
+        M("The GPU motion-vector plugin (mvgpu) is not installed"),
+        cause=M(
+            "mvgpu smooths 4K at high rates on the GPU where RIFE can't keep up; "
+            "without it, ButterEye smooths a smaller picture or uses MVTools there.",
+        ),
+        fix=M("Install it from the ButterEye COPR if you want it."),
+        commands=(f"sudo dnf install {PKG_MVGPU}",),
+    )
+
+
 def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
     """Pure over the rpm result plus file existence in the private directories."""
     out: list[Finding] = []
@@ -238,6 +267,7 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                     commands=_dnf(PKG_MVTOOLS, PKG_RIFE, PKG_MODELS),
                 )
             )
+        out.append(mvgpu_finding(db, paths))
         return out
 
     rife = db.get(PKG_RIFE)
@@ -341,6 +371,8 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                     evidence=models,
                 )
             )
+
+    out.append(mvgpu_finding(db, paths))
 
     if not rife_ok and not mv_ok:
         out.append(
@@ -585,6 +617,8 @@ __all__ = [
     "COPR_PROJECT",
     "PKG_RIFE",
     "PKG_MVTOOLS",
+    "PKG_MVGPU",
+    "mvgpu_finding",
     "PKG_MODELS",
     "PKG_VSMLRT",
     "BUTTEREYE_PKGS",

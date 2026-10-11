@@ -36,8 +36,10 @@ from buttereye.core.api import (
     Notice,
     Rule,
     RuleMatch,
+    Section,
     SessionEnded,
     SessionId,
+    Severity,
     Target,
     TargetKind,
 )
@@ -122,8 +124,10 @@ def test_profile_mapping() -> None:
     assert sw.target_for("display-max") == Target(TargetKind.DISPLAY_MAX)
     for key in ("x2", "fps60", "display", "display-max"):
         assert sw.target_key(sw.target_for(key)) == key
-    for key in ("auto", "best", "light", "cpu"):
+    for key in ("auto", "best", "light", "fast-gpu", "cpu"):
         assert sw.smoothness_key(sw.simple_profile(key, "x2")) == key
+    fast = sw.simple_profile("fast-gpu", "x2", trt=True)  # TensorRT never applies to it
+    assert (fast.backend, fast.model) == (BackendId.MVGPU, None)
 
 
 def test_text_helpers() -> None:
@@ -145,6 +149,8 @@ def test_row_view_plain_words() -> None:
     assert v.engine == "RIFE v4.26 on the GPU with Vulkan, full size 1920 × 1080"
     cpu = dataclasses.replace(active, backend=BackendId.MVTOOLS, model=None, mv_block=True)
     assert sw.row_view(cpu).engine == "MVTools on the CPU, fast block mode, full size 1920 × 1080"
+    mvgpu = dataclasses.replace(active, backend=BackendId.MVGPU, model=None)
+    assert sw.row_view(mvgpu).engine == "GPU motion vectors, full size 1920 × 1080"
     assert active.source is not None
     trt = dataclasses.replace(
         active,
@@ -589,6 +595,70 @@ def test_gpu_choices_hidden_without_rife(make_simple: Make, qtbot: Any) -> None:
     assert keys == ["auto", "best", "light", "cpu"]
 
 
+def _with_mvgpu(severity: Severity = Severity.OK) -> Any:
+    base = sc.get("all_ready")
+    assert base.report is not None
+    extra = sc.finding("packages.mvgpu", Section.PACKAGES, severity, "mvgpu")
+    rep = dataclasses.replace(base.report, findings=base.report.findings + (extra,))
+    return dataclasses.replace(base, report=rep, doctor_result=rep)
+
+
+def test_fast_gpu_choice_offered_once_mvgpu_is_found(make_simple: Make, qtbot: Any) -> None:
+    assert sw.mvgpu_installed(None) is None
+    win = make_simple(_with_mvgpu())
+    qtbot.waitUntil(lambda: win.mvgpu_available is True and win.gpu_available is True)
+    keys = [win.smooth_combo.itemData(i) for i in range(win.smooth_combo.count())]
+    assert keys == ["auto", "best", "light", "fast-gpu", "cpu"]
+    i = win.smooth_combo.findData("fast-gpu")
+    assert win.smooth_combo.itemText(i) == "Fastest — GPU (motion vectors)"
+    qtbot.waitUntil(lambda: len(calls(win, "save_config")) == 1)
+    pick(win.smooth_combo, "fast-gpu")
+    qtbot.waitUntil(lambda: len(calls(win, "save_config")) == 2)
+    simple = sw.find_simple(saved(win))
+    assert simple is not None and simple.backend is BackendId.MVGPU and simple.model is None
+
+
+def test_fast_gpu_choice_hidden_without_mvgpu(make_simple: Make, qtbot: Any) -> None:
+    win = make_simple(_with_mvgpu(Severity.INFO))
+    qtbot.waitUntil(lambda: win.mvgpu_available is False)
+    keys = [win.smooth_combo.itemData(i) for i in range(win.smooth_combo.count())]
+    assert "fast-gpu" not in keys
+    # a saved choice stays visible, marked as not available here
+    base = _with_mvgpu(Severity.INFO)
+    cfg = sw.simple_config(base.config_load.config, sw.simple_profile("fast-gpu", "x2"))
+    kept = make_simple(dataclasses.replace(base, config_load=sc.config_load(cfg)))
+    qtbot.waitUntil(lambda: kept.mvgpu_available is False)
+    assert kept.smooth_combo.currentData() == "fast-gpu"
+    assert "not available here" in kept.smooth_combo.currentText()
+
+
+def test_fast_gpu_choice_offered_without_rife(make_simple: Make, qtbot: Any) -> None:
+    """mvgpu needs a GPU, not RIFE: a missing or broken RIFE leaves it offered."""
+    base = _with_mvgpu()
+    no_rife = tuple(
+        dataclasses.replace(b, available=False, reason=Msg("The RIFE plugin is not installed"))
+        if b.id is BackendId.RIFE_NCNN
+        else b
+        for b in base.backends
+    )
+    win = make_simple(dataclasses.replace(base, backends=no_rife))
+    qtbot.waitUntil(lambda: win.gpu_available is False and win.mvgpu_available is True)
+    keys = [win.smooth_combo.itemData(i) for i in range(win.smooth_combo.count())]
+    assert keys == ["auto", "fast-gpu", "cpu"]
+
+
+def test_fast_gpu_choice_hidden_on_a_cpu_only_computer(make_simple: Make, qtbot: Any) -> None:
+    base = sc.get("cpu_only")
+    assert base.report is not None
+    extra = sc.finding("packages.mvgpu", Section.PACKAGES, Severity.OK, "mvgpu")
+    rep = dataclasses.replace(base.report, findings=base.report.findings + (extra,))
+    assert sw.mvgpu_installed(rep) is True and sw.mvgpu_usable(rep) is False
+    win = make_simple(dataclasses.replace(base, report=rep, doctor_result=rep))
+    qtbot.waitUntil(lambda: win.mvgpu_available is False and win.gpu_available is False)
+    keys = [win.smooth_combo.itemData(i) for i in range(win.smooth_combo.count())]
+    assert keys == ["auto", "cpu"]
+
+
 def test_blocking_problem_is_one_plain_line(make_simple: Make, qtbot: Any) -> None:
     win = make_simple("blocking_mpv")
     qtbot.waitUntil(lambda: "mpv" in win.problem_text())
@@ -639,6 +709,27 @@ def test_no_bench_when_history_exists(make_simple: Make, qtbot: Any) -> None:
     assert calls(win, "bench") == []
 
 
+def test_mvgpu_installed_after_the_speed_test_is_measured(make_simple: Make, qtbot: Any) -> None:
+    """Results for RIFE and MVTools but none for mvgpu (installed later): Automatic
+    trusts only a measured GPU engine, so the speed test runs again once."""
+    base = _with_mvgpu()
+    assert base.bench_history and sw.mvgpu_unmeasured(base.bench_history)
+    win = make_simple(base, auto_bench=True)
+    qtbot.waitUntil(lambda: bool(calls(win, "bench")), timeout=5000)
+    assert calls(win, "bench")[0].args[0] == sw.FIRST_BENCH
+    # mvgpu already measured: no new speed test
+    (res,) = base.bench_history[:1]
+    mv = dataclasses.replace(
+        res.measurements[0], label="mvgpu", backend=BackendId.MVGPU, model=None
+    )
+    measured = (dataclasses.replace(res, measurements=res.measurements + (mv,)),)
+    assert not sw.mvgpu_unmeasured(measured)
+    done = make_simple(dataclasses.replace(base, bench_history=measured), auto_bench=True)
+    qtbot.waitUntil(lambda: bool(calls(done, "bench_history")))
+    qtbot.wait(100)
+    assert calls(done, "bench") == []
+
+
 def test_new_graphics_card_is_measured_again(make_simple: Make, qtbot: Any) -> None:
     base = sc.get("all_ready")
     assert base.bench_history, "all_ready has results for its GPU"
@@ -683,6 +774,29 @@ def test_details_dialog_tabs(make_simple: Make, qtbot: Any) -> None:
     qtbot.waitUntil(lambda: QApplication.activeWindow() is dlg, timeout=2000)
     qtbot.keyClick(dlg, Qt.Key.Key_Escape)
     qtbot.waitUntil(lambda: not dlg.isVisible())
+
+
+def test_details_about_offers_releases_and_the_version(
+    make_simple: Make, qtbot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from buttereye.core.api import legal_notices
+    from buttereye.gui.pages import about as about_mod
+
+    opened: list[str] = []
+    monkeypatch.setattr(
+        about_mod.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()) or True
+    )
+    win = make_simple("all_ready")
+    win.open_details()
+    dlg = win.details
+    qtbot.waitUntil(dlg.isVisible)
+    dlg.go("about")
+    page = dlg.pages["about"]
+    btn = page.open_releases  # type: ignore[attr-defined]
+    assert btn.isVisibleTo(dlg)
+    assert page.name_label.text() == f"ButterEye {legal_notices().version}"  # type: ignore[attr-defined]
+    btn.click()
+    assert opened == ["https://github.com/MiguelCarino/ButterEye/releases"]
 
 
 def test_app_opens_the_simple_window_and_gates_classic() -> None:

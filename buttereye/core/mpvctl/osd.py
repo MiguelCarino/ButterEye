@@ -60,6 +60,8 @@ def parts(snap: SessionSnapshot, items: Sequence[str]) -> list[str]:
             out.append(f"GPU · RIFE{_model(snap.model)} TensorRT")
         elif snap.backend is BackendId.RIFE_NCNN:
             out.append(f"GPU · RIFE{_model(snap.model)} Vulkan")
+        elif snap.backend is BackendId.MVGPU:
+            out.append("GPU · motion vectors")
         else:
             out.append("CPU · MVTools" + (" block mode" if snap.mv_block else ""))
     if "size" in items:

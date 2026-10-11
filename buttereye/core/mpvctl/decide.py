@@ -63,7 +63,11 @@ BACKEND_NAMES: Mapping[BackendId, str] = {
     BackendId.RIFE_NCNN: "RIFE (Vulkan)",
     BackendId.MVTOOLS: "MVTools (CPU)",
     BackendId.RIFE_TRT: "RIFE · TensorRT",
+    BackendId.MVGPU: "GPU motion vectors",
 }
+
+#: mvgpu's plugin file in the private plugin directory (``buttereye-vs-mvgpu``)
+MVGPU_PLUGIN = "libmvgpu.so"
 
 
 def fps_fraction(value: float | int | None) -> Fraction | None:
@@ -442,7 +446,25 @@ class EnginePick:
 
 
 #: Engines that run on the GPU and need benchmark data before Auto trusts them
-GPU_BACKENDS = frozenset({BackendId.RIFE_TRT, BackendId.RIFE_NCNN})
+GPU_BACKENDS = frozenset({BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVGPU})
+#: The RIFE engines (picture quality first; mvgpu is the fast GPU engine after them)
+RIFE_BACKENDS = frozenset({BackendId.RIFE_TRT, BackendId.RIFE_NCNN})
+
+
+def _display_tier(
+    t: Fraction | None, src: Fraction, display_hz: float | None, kind: TargetKind
+) -> int:
+    """How well ``t`` answers "Match your display" (§5.6, owner decision
+    2026-10-10): 0 = the display rate itself, 1 = 60 fps, 2 = any other rate.
+    Other target kinds: always 0 (only the multiplier rules apply)."""
+    if kind is not TargetKind.DISPLAY or t is None:
+        return 0
+    display = fps_fraction(display_hz)
+    if display is not None and t == display and display / src <= DISPLAY_MULTIPLIER:
+        return 0
+    if t == Fraction(60) and display is not None and src < t < display:
+        return 1
+    return 2
 
 
 def pick_engine(
@@ -457,19 +479,23 @@ def pick_engine(
 ) -> EnginePick:
     """§11.9: the engine is chosen after the target, against each engine's live cap.
 
-    ``options`` are in preference order (RIFE-ncnn, then MVTools).
+    ``options`` are in preference order (TensorRT, RIFE-ncnn, mvgpu, MVTools).
 
-    * ``auto``: RIFE-ncnn is eligible only with benchmark data for it (an
-      unmeasured GPU engine is never trusted with a live target); MVTools is
-      eligible with or without data. The first eligible engine whose target
-      at least doubles the source rate (or equals the best target any engine
-      reaches) wins, so on a display target a GPU engine capped to e.g.
-      24 → 30 fps loses to a CPU engine that reaches 60. When the only
-      installed engine is an unmeasured RIFE-ncnn, it is used uncapped (the
-      health detector still guards it).
+    * ``auto``: GPU engines (RIFE and mvgpu) are eligible only with benchmark
+      data for them (an unmeasured GPU engine is never trusted with a live
+      target); MVTools is eligible with or without data. The first eligible
+      engine whose target at least doubles the source rate (or equals the best
+      target any engine reaches) wins, so on a display target a GPU engine
+      capped to e.g. 24 → 30 fps loses to a CPU engine that reaches 60, and a
+      RIFE that can't keep up at this size loses to mvgpu at full size. On
+      "Match your display" a RIFE pick that misses the display rate (then 60
+      fps) gives way to mvgpu when mvgpu reaches it. When the only installed
+      engine is an unmeasured GPU engine, it is used uncapped (the health
+      detector still guards it).
     * pinned (``options[0]`` is the engine the profile asks for): used when it
-      reaches a target; a pinned RIFE-ncnn that can't falls back to MVTools for
-      this file with ``cpu_fallback_notice``.
+      reaches a target; a pinned GPU engine that can't falls back to the next
+      option that can for this file: mvgpu (after RIFE) with
+      ``gpu_fallback_notice``, MVTools with ``cpu_fallback_notice``.
 
     Nothing reaches a target → ``NO_REALTIME`` with ``no_realtime_notice``;
     with ``forced`` (the user asked to smooth anyway) the first engine then runs
@@ -570,17 +596,28 @@ def _pick_engine(
             )
         best = max(tc.target for _, tc in picks if tc.target is not None)
         enough = min(best, src * 2 * AUTO_DOUBLING_TOLERANCE)
-        for o, tc in picks:
-            if tc.target is not None and tc.target >= enough:
-                return EnginePick(o.backend, tc, None)
-        return EnginePick(picks[-1][0].backend, picks[-1][1], None)  # not reached
+        chosen = next(
+            ((o, tc) for o, tc in picks if tc.target is not None and tc.target >= enough),
+            picks[-1],  # not reached
+        )
+        if chosen[0].backend in RIFE_BACKENDS:
+            # "Match your display": mvgpu at the display rate (then 60) beats a
+            # RIFE that reaches only a lower rate
+            tier = _display_tier(chosen[1].target, src, display_hz, kind)
+            for o, tc in picks:
+                if (
+                    o.backend is BackendId.MVGPU
+                    and _display_tier(tc.target, src, display_hz, kind) < tier
+                ):
+                    return EnginePick(o.backend, tc, None)
+        return EnginePick(chosen[0].backend, chosen[1], None)
     first = options[0]
     tc = target_for(first)
     if tc.bypass is not BypassReason.NO_REALTIME:
         return EnginePick(first.backend if tc.bypass is None else None, tc, None)
     if first.backend in GPU_BACKENDS:
         # a pinned GPU engine that can't keep up: the next engine that can
-        # (TensorRT -> RIFE-ncnn -> MVTools), with a notice
+        # (TensorRT -> RIFE-ncnn -> mvgpu -> MVTools), with a notice
         for o in options[1:]:
             tc2 = target_for(o)
             if tc2.bypass is None and tc2.target is not None:
@@ -627,6 +664,8 @@ def installed_backends(
         found.add(BackendId.RIFE_NCNN)
     if (plugin_dir / "mvtools.so").is_file():
         found.add(BackendId.MVTOOLS)
+    if (plugin_dir / MVGPU_PLUGIN).is_file():
+        found.add(BackendId.MVGPU)
     return frozenset(found)
 
 
@@ -640,7 +679,12 @@ def resolve_backend(
     wanted: BackendId | None,
     installed: frozenset[BackendId],
     *,
-    ranked: Sequence[BackendId] = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVTOOLS),
+    ranked: Sequence[BackendId] = (
+        BackendId.RIFE_TRT,
+        BackendId.RIFE_NCNN,
+        BackendId.MVGPU,
+        BackendId.MVTOOLS,
+    ),
 ) -> BackendChoice:
     """``wanted`` None = automatic (the first installed of ``ranked``)."""
     order = [b for b in ranked if b in installed]
@@ -784,6 +828,7 @@ def step_down_target(
     *,
     multiplier: Fraction | None = None,
     skip_lite: bool = False,
+    running: BackendId | None = None,
 ) -> str | None:
     """§5.3 step 5: the next profile that sheds load, MVTools last.
 
@@ -794,7 +839,13 @@ def step_down_target(
     lower multiplier sheds far more than MVTools costs the CPU (~9.5 cores for
     1920×800 at 60 fps). A chain step that would run the same engine and model
     (lite counts as the full model under ``skip_lite``) at the 2× already running
-    is skipped: it sheds nothing (the "display" rule often lands near 2×)."""
+    is skipped: it sheds nothing (the "display" rule often lands near 2×). A
+    profile on MVTools or mvgpu has no step down, and neither has any profile
+    whose file is ``running`` on mvgpu (a RIFE profile that fell back to it, or
+    Automatic): every other step would fall back to the same mvgpu run or add
+    load."""
+    if running is BackendId.MVGPU:
+        return None
     chain = ("quality", "balanced", "fast", "cpu")
     ids = [p.id for p in profiles]
     by_id = {p.id: p for p in profiles}
@@ -811,7 +862,9 @@ def step_down_target(
             return nxt
         return None
     current = next((p for p in profiles if p.id == profile_id), None)
-    if current is not None and current.backend is BackendId.MVTOOLS:
+    if current is not None and current.backend in (BackendId.MVTOOLS, BackendId.MVGPU):
+        # mvgpu is the lightest engine per frame on a GPU: RIFE ("fast") or
+        # MVTools would only add load, so nothing is offered
         return None
     if multiplier is not None and multiplier > STEP_DOWN_ABOVE and "fast" in ids:
         return "fast"
@@ -824,6 +877,9 @@ __all__ = [
     "DEFAULT_MODELS",
     "MPV_MATRIX",
     "BACKEND_NAMES",
+    "MVGPU_PLUGIN",
+    "GPU_BACKENDS",
+    "RIFE_BACKENDS",
     "TargetChoice",
     "interp_rate",
     "load_rate",

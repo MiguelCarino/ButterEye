@@ -14,7 +14,8 @@ layout(push_constant) uniform P {
     float maxv;     // 2^bits - 1
 } p;
 void main() {
-    uint wi = gl_GlobalInvocationID.x;
+    // 2-D dispatch (x then rows of x) keeps the group count within the device limit
+    uint wi = gl_GlobalInvocationID.y * gl_NumWorkGroups.x * 256u + gl_GlobalInvocationID.x;
     uint per = 4u / p.bytes;
     uint first = wi * per;
     if (first >= p.count) return;

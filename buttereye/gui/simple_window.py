@@ -138,8 +138,10 @@ SMOOTHNESS: dict[str, tuple[BackendId | str, str | None]] = {
     "auto": ("auto", None),
     "best": (BackendId.RIFE_NCNN, MODEL_BEST),
     "light": (BackendId.RIFE_NCNN, MODEL_LIGHT),
+    "fast-gpu": (BackendId.MVGPU, None),
     "cpu": (BackendId.MVTOOLS, None),
 }
+#: The RIFE choices (they use TensorRT when it is turned on and set up)
 GPU_CHOICES = frozenset({"best", "light"})
 DEFAULT_SMOOTHNESS = "auto"
 DEFAULT_TARGET = "x2"
@@ -212,6 +214,8 @@ def smoothness_key(profile: Profile) -> str:
         return "auto"
     if profile.backend is BackendId.MVTOOLS:
         return "cpu"
+    if profile.backend is BackendId.MVGPU:
+        return "fast-gpu"
     if profile.model == MODEL_LIGHT:
         return "light"
     return "best"
@@ -301,6 +305,32 @@ def gpu_smoothing_available(
     return None
 
 
+def mvgpu_installed(report: DoctorReport | None) -> bool | None:
+    """Whether the GPU motion-vector plugin (mvgpu) is installed; ``None`` while
+    unknown (no report yet, or a report without the package check)."""
+    if report is None:
+        return None
+    f = next((f for f in report.findings if f.id == "packages.mvgpu"), None)
+    if f is None:
+        return None
+    return f.severity is Severity.OK
+
+
+def mvgpu_usable(report: DoctorReport | None) -> bool | None:
+    """mvgpu installed and a (non-CPU) Vulkan GPU to run it; ``None`` while
+    unknown. Independent of RIFE: a missing or broken RIFE leaves mvgpu usable."""
+    installed = mvgpu_installed(report)
+    if installed is None or report is None:
+        return None
+    return installed and any(d.device_type != "cpu" for d in report.hardware.vulkan)
+
+
+def mvgpu_unmeasured(results: Sequence[BenchResult]) -> bool:
+    """None of this computer's speed-test results measured mvgpu (installed after
+    them): Automatic trusts only a measured GPU engine, so it is measured."""
+    return not any(m.backend is BackendId.MVGPU for r in results for m in r.measurements)
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class RowView:
     """What one "Now playing" row shows."""
@@ -330,6 +360,8 @@ def engine_words(snap: SessionSnapshot) -> str:
             what = _t("RIFE {model} on the GPU with TensorRT").format(model=model)
         elif snap.backend is BackendId.RIFE_NCNN:
             what = _t("RIFE {model} on the GPU with Vulkan").format(model=model)
+        elif snap.backend is BackendId.MVGPU:
+            what = _t("GPU motion vectors")
         else:
             what = _t("MVTools on the CPU")
         what = " ".join(what.split())  # no double space without a model name
@@ -698,6 +730,7 @@ class SimpleWindow(QMainWindow):
         self.config_load: ConfigLoad | None = None
         self.report: DoctorReport | None = None
         self.gpu_available: bool | None = None
+        self.mvgpu_available: bool | None = None
         self.bench_started = False
         self.trt_bench_started = False
         self._pending_files: list[Path] = []  # from the command line, played when ready
@@ -1098,8 +1131,9 @@ class SimpleWindow(QMainWindow):
             self._updating = False
 
     def _fill_smoothness(self) -> None:
-        """Smoothness items; GPU choices are hidden when RIFE can't run here
-        (a GPU choice already in use stays, marked "not available here")."""
+        """Smoothness items; GPU choices are hidden when RIFE can't run here, and
+        "Fastest — GPU (motion vectors)" until the checks found mvgpu (a choice
+        already in use stays, marked "not available here")."""
         combo = self.smooth_combo
         current = self._smooth_key
         self._updating = True
@@ -1113,8 +1147,16 @@ class SimpleWindow(QMainWindow):
                 else (("best", self.tr("Best quality — GPU")),
                       ("light", self.tr("Lighter — GPU")))
             )  # fmt: skip
-            for key, text in gpu:
-                if self.gpu_available is False:
+            fast = self.tr("Fastest — GPU (motion vectors)")
+            for key, text in (*gpu, ("fast-gpu", fast)):
+                # mvgpu is an optional package: offered once the checks found it
+                # with a GPU, whether or not RIFE can run here
+                missing = (
+                    self.mvgpu_available is not True
+                    if key == "fast-gpu"
+                    else self.gpu_available is False
+                )
+                if missing:
                     if current != key:
                         continue
                     text = self.tr("{choice} (not available here)").format(choice=text)
@@ -1400,6 +1442,10 @@ class SimpleWindow(QMainWindow):
 
     def _note_report(self, report: DoctorReport) -> None:
         self.report = report
+        mvgpu = mvgpu_usable(report)
+        if mvgpu is not None and mvgpu != self.mvgpu_available:
+            self.mvgpu_available = mvgpu
+            self._fill_smoothness()
         blocking = [f for f in report.findings if f.severity is Severity.BLOCKING]
         if blocking:
             title = without_code(render(blocking[0].title))
@@ -1529,8 +1575,12 @@ class SimpleWindow(QMainWindow):
         )
 
     def _on_history(self, history: tuple[BenchResult, ...]) -> None:
-        # measured before on this hardware: never again just because the app opened
-        if current_results(history, self.report) or self.bench_started:
+        # measured before on this hardware: never again just because the app opened,
+        # unless mvgpu arrived after that speed test (Automatic needs its speed)
+        if self.bench_started or self._bench_running:
+            return
+        current = current_results(history, self.report)
+        if current and not (self.mvgpu_available is True and mvgpu_unmeasured(current)):
             return
         self.bench_started = True
         self._bench_running = True

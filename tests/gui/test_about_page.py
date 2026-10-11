@@ -93,6 +93,27 @@ def test_all_f18_items_visible(make_window: Any, qtbot: Any, notices: LegalNotic
     assert len([h for h in about_tab.findChildren(CliHint) if h.isVisibleTo(about_tab)]) == 1
 
 
+def test_releases_button_opens_the_releases_page(
+    make_window: Any, qtbot: Any, notices: LegalNotices, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(
+        about_mod.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()) or True
+    )
+    _win, page = _page(make_window, qtbot)
+    btn = page.open_releases
+    assert btn.isVisibleTo(page) and btn.isEnabled()
+    assert btn.text() == "Releases and &updates"
+    assert btn.accessibleName() == "Releases and updates"
+    assert f"ButterEye {notices.version}" in btn.accessibleDescription()
+    # the installed version sits right beside the button, on the same row
+    assert page.name_label.text() == f"ButterEye {notices.version}"
+    assert abs(page.name_label.geometry().center().y() - btn.geometry().center().y()) < btn.height()
+    btn.click()
+    assert opened == [about_mod.RELEASES_URL]
+    assert about_mod.RELEASES_URL == "https://github.com/MiguelCarino/ButterEye/releases"
+
+
 def test_view_full_licence_shows_shipped_text(
     make_window: Any, qtbot: Any, notices: LegalNotices
 ) -> None:

@@ -22,12 +22,14 @@ from PySide6.QtWidgets import QApplication, QDialog
 
 from buttereye.core.api import (
     BackendId,
+    BackendStatus,
     CapState,
     Config,
     ErrorCode,
     Feature,
     GeneralSettings,
     HdrClass,
+    Msg,
     Profile,
     Reason,
     Rule,
@@ -37,7 +39,7 @@ from buttereye.core.api import (
 )
 from buttereye.core.testing import scenarios
 from buttereye.gui.dialogs.rule_edit import RuleEditDialog, describe_match
-from buttereye.gui.pages.profiles import ProfilesPage
+from buttereye.gui.pages.profiles import ProfilesPage, concurrent_default
 from tests.gui.helpers import click_modal, fake_core
 
 CUSTOM = Profile(
@@ -221,6 +223,53 @@ def test_unavailable_engine_disabled_with_reason(make_window: Any, qtbot: Any) -
     assert not item.isEnabled()
     assert "llvmpipe only" in page.engine_note.text()
     assert "llvmpipe only" in combo.accessibleDescription()
+
+
+def _mvgpu_scenario(available: bool) -> scenarios.Scenario:
+    sc = custom_scenario()
+    status = BackendStatus(
+        BackendId.MVGPU,
+        available,
+        False,
+        Msg("GPU motion vectors on NVIDIA GeForce RTX 4090")
+        if available
+        else Msg("The GPU motion-vector plugin is not installed"),
+    )
+    backends = tuple(b for b in sc.backends if b.id is not BackendId.MVGPU) + (status,)
+    return dataclasses.replace(sc, backends=backends)
+
+
+def test_mvgpu_engine_disabled_with_a_note_when_missing(make_window: Any, qtbot: Any) -> None:
+    _win, page = open_page(make_window, qtbot, _mvgpu_scenario(False))
+    qtbot.waitUntil(lambda: bool(page.engine_note.text()), timeout=3000)
+    select_profile(page, "anime")
+    combo = page.engine_combo
+    item = combo.model().item(combo.findData(BackendId.MVGPU.value))
+    assert not item.isEnabled()
+    why = "The GPU motion-vector plugin is not installed"
+    assert item.data(Qt.ItemDataRole.AccessibleDescriptionRole) == why
+    assert f"GPU motion vectors: not available — {why}" in page.engine_note.text().splitlines()
+    assert why in combo.accessibleDescription()
+
+
+def test_mvgpu_engine_enabled_uses_no_model(make_window: Any, qtbot: Any) -> None:
+    _win, page = open_page(make_window, qtbot, _mvgpu_scenario(True))
+    qtbot.wait(100)
+    select_profile(page, "anime")
+    combo = page.engine_combo
+    i = combo.findData(BackendId.MVGPU.value)
+    assert combo.model().item(i).isEnabled()
+    assert "GPU motion vectors" not in page.engine_note.text()
+    combo.setCurrentIndex(i)
+    combo.activated.emit(i)
+    cfg = page.config()
+    assert cfg is not None
+    p = cfg.profiles[-2]
+    assert p.backend is BackendId.MVGPU and p.model is None
+    assert not page.model_combo.isEnabled()
+    assert page.model_note.text() == "GPU motion vectors use no model."
+    assert concurrent_default(BackendId.MVGPU) == 8
+    assert page.concurrent_auto.text() == "Automatic (8)"
 
 
 def test_hdr_passthrough_offered_after_m0d(make_window: Any, qtbot: Any) -> None:

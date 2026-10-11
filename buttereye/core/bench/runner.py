@@ -3,7 +3,7 @@
 """Benchmark provider (docs/design/GUI.md §11.5; SCOPE F14, §5.3, §5.6, §4.6).
 
 For every installed candidate (each packaged RIFE-ncnn model at ``gpu_thread=4``,
-SCOPE §4.4 / M0(f), and MVTools) at the requested size:
+SCOPE §4.4 / M0(f), mvgpu and MVTools) at the requested size:
 
 1. vspipe on a generated moving pattern: 1 warm-up + 3 timed runs (F14 a);
 2. mpv on ``av://lavfi:testsrc2`` (nv12) through the same script, 3 timed runs (F14 b);
@@ -49,6 +49,7 @@ from buttereye.core.events import Notice
 from buttereye.core.i18n import render as render_msg
 from buttereye.core.ops import OpContext
 from buttereye.core.scriptgen.generator import (
+    MVGPU_CONCURRENT_FRAMES_DEFAULT,
     MVTOOLS_MAX_CONCURRENT,
     RIFE_CONCURRENT_FRAMES_DEFAULT,
     RIFE_GPU_THREAD_DEFAULT,
@@ -82,6 +83,7 @@ VPY = Path(__file__).with_name("bench.vpy")
 MODEL_SUBDIR = "rife-ncnn-models"
 RIFE_PLUGIN = "librife.so"
 MVTOOLS_PLUGIN = "mvtools.so"
+MVGPU_PLUGIN = "libmvgpu.so"
 
 # §4.4 / M0(f), RTX 4090, 1080p 2x: plugin gpu_thread 2 gives ~52 fps and 4 gives ~72
 # fps in vspipe. Inside mpv, concurrent-frames 4 reaches ~46 fps and 8 ~56-58 fps
@@ -158,9 +160,12 @@ def model_label(dirname: str) -> str:
 
 
 def _quality_key(c: Candidate) -> tuple[int, int, int, int]:
-    """Sort key, best first: RIFE before MVTools; full models before lite; newer first."""
-    if c.backend is BackendId.MVTOOLS or c.model is None:
+    """Sort key, best first: RIFE, then mvgpu, then MVTools; full models before
+    lite; newer first."""
+    if c.backend is BackendId.MVGPU:
         return (1, 0, 0, 0)
+    if c.backend is BackendId.MVTOOLS or c.model is None:
+        return (2, 0, 0, 0)
     lite = 1 if "lite" in c.model.lower() else 0
     v = _VERSION.search(c.model)
     major, minor = (int(v.group(1)), int(v.group(2))) if v else (0, 0)
@@ -171,7 +176,8 @@ def discover_candidates(
     plugin_dir: Path, model_dir: Path, *, rife: bool = True, concurrency: int | None = None
 ) -> tuple[Candidate, ...]:
     """Installed configurations, best quality first. RIFE models are the packaged
-    model directories (each holds ``*.param``/``*.bin``)."""
+    model directories (each holds ``*.param``/``*.bin``); mvgpu needs a GPU like
+    RIFE (``rife`` False: no usable GPU)."""
     out: list[Candidate] = []
     if rife and (plugin_dir / RIFE_PLUGIN).is_file() and model_dir.is_dir():
         for d in sorted(model_dir.iterdir()):
@@ -181,6 +187,8 @@ def discover_candidates(
                         model_label(d.name), BackendId.RIFE_NCNN, d.name, d, RIFE_CONCURRENT_FRAMES
                     )
                 )
+    if rife and (plugin_dir / MVGPU_PLUGIN).is_file():
+        out.append(Candidate("mvgpu", BackendId.MVGPU, None, None, MVGPU_CONCURRENT_FRAMES_DEFAULT))
     if (plugin_dir / MVTOOLS_PLUGIN).is_file():
         cpus = concurrency if concurrency is not None else (os.cpu_count() or 1)
         conc = max(1, min(cpus, MVTOOLS_MAX_CONCURRENT))  # as live play uses it
@@ -292,6 +300,14 @@ def size_label(label: str, size: tuple[int, int], req: BenchRequest) -> str:
     return label if size == (req.width, req.height) else f"{label} @ {size[1]}p"
 
 
+#: bench.vpy's name for each engine it measures (TensorRT runs the playback template)
+_SCRIPT_BACKEND = {
+    BackendId.RIFE_NCNN: "rife",
+    BackendId.MVTOOLS: "mvtools",
+    BackendId.MVGPU: "mvgpu",
+}
+
+
 def user_data(
     c: Candidate,
     tools: Tools,
@@ -304,7 +320,7 @@ def user_data(
     gpu_id: int | None,
 ) -> dict[str, Any]:
     return {
-        "backend": "rife" if c.backend is BackendId.RIFE_NCNN else "mvtools",
+        "backend": _SCRIPT_BACKEND[c.backend],
         "plugin_dir": os.fspath(tools.plugin_dir),
         "model_path": os.fspath(c.model_path) if c.model_path is not None else None,
         "gpu_thread": RIFE_GPU_THREAD,
@@ -761,6 +777,8 @@ def bench_config(cfg: Config, result: BenchResult, label: str) -> Config:
         concurrent_frames=(
             RIFE_CONCURRENT_FRAMES
             if m.backend in (BackendId.RIFE_NCNN, BackendId.RIFE_TRT)
+            else MVGPU_CONCURRENT_FRAMES_DEFAULT
+            if m.backend is BackendId.MVGPU
             else None
         ),
         hdr=old.hdr if old is not None else "skip",

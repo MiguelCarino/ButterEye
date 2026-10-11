@@ -38,8 +38,14 @@ constexpr int BLOCK = 8;
 constexpr int LEVELS = 4;
 constexpr int COARSE_RADIUS = 8;
 
+// a failed Vulkan call; ``result`` tells a lost device from a transient failure
+struct VkError : std::runtime_error {
+    VkResult result;
+    VkError(const std::string& what, VkResult r) : std::runtime_error(what), result(r) {}
+};
+
 void check(VkResult r, const char* what) {
-    if (r != VK_SUCCESS) throw std::runtime_error(std::string(what) + " failed (" + std::to_string(r) + ")");
+    if (r != VK_SUCCESS) throw VkError(std::string(what) + " failed (" + std::to_string(r) + ")", r);
 }
 
 struct Buffer {
@@ -66,6 +72,8 @@ class Gpu {
 public:
     Gpu(int w, int h, int bits, int device);
     ~Gpu();
+    Gpu(const Gpu&) = delete;
+    Gpu& operator=(const Gpu&) = delete;
     // upload source frame planes into slot s and build its luma pyramid
     void load(int slot, const VSFrame* f, const VSAPI* api);
     // vectors for the pair (slot a, slot c), then render at t into dst
@@ -80,6 +88,9 @@ public:
     int n_load = 0, n_render = 0;
 
 private:
+    // set once the device is lost or a submitted batch failed: the GPU state is
+    // unknown, so every later call fails at once (ButterEye then rolls back)
+    std::string failed;
     VkInstance inst = VK_NULL_HANDLE;
     VkPhysicalDevice phys = VK_NULL_HANDLE;
     VkDevice dev = VK_NULL_HANDLE;
@@ -128,6 +139,13 @@ private:
     std::array<VkDescriptorSet, 2> ds_render{};
     VkDescriptorSet ds_pack{};
 
+    VkPhysicalDeviceLimits limits{};
+
+    void init(int device);
+    void destroy();
+    void check_limits() const;
+    void dispatch1d(uint32_t groups);
+    void ensure_ok() const;
     uint32_t find_mem(uint32_t bits, VkMemoryPropertyFlags want) const;
     Buffer make(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props);
     void free(Buffer& b);
@@ -165,14 +183,20 @@ Buffer Gpu::make(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFl
     bi.usage = usage;
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     check(vkCreateBuffer(dev, &bi, nullptr, &b.buf), "vkCreateBuffer");
-    VkMemoryRequirements req;
-    vkGetBufferMemoryRequirements(dev, b.buf, &req);
-    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    ai.allocationSize = req.size;
-    ai.memoryTypeIndex = find_mem(req.memoryTypeBits, props);
-    check(vkAllocateMemory(dev, &ai, nullptr, &b.mem), "vkAllocateMemory");
-    check(vkBindBufferMemory(dev, b.buf, b.mem, 0), "vkBindBufferMemory");
-    if (props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) check(vkMapMemory(dev, b.mem, 0, VK_WHOLE_SIZE, 0, &b.map), "vkMapMemory");
+    try {
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(dev, b.buf, &req);
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ai.allocationSize = req.size;
+        ai.memoryTypeIndex = find_mem(req.memoryTypeBits, props);
+        check(vkAllocateMemory(dev, &ai, nullptr, &b.mem), "vkAllocateMemory");
+        check(vkBindBufferMemory(dev, b.buf, b.mem, 0), "vkBindBufferMemory");
+        if (props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+            check(vkMapMemory(dev, b.mem, 0, VK_WHOLE_SIZE, 0, &b.map), "vkMapMemory");
+    } catch (...) {
+        free(b);
+        throw;
+    }
     return b;
 }
 
@@ -186,40 +210,47 @@ void Gpu::free(Buffer& b) {
 Pipe Gpu::pipeline(const uint32_t* code, size_t nbytes, int bindings, uint32_t push, const uint32_t* wg) {
     Pipe p;
     p.bindings = bindings;
-    std::vector<VkDescriptorSetLayoutBinding> b(bindings);
-    for (int i = 0; i < bindings; ++i) {
-        b[i] = {};
-        b[i].binding = i;
-        b[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        b[i].descriptorCount = 1;
-        b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkShaderModule mod = VK_NULL_HANDLE;
+    try {
+        std::vector<VkDescriptorSetLayoutBinding> b(bindings);
+        for (int i = 0; i < bindings; ++i) {
+            b[i] = {};
+            b[i].binding = i;
+            b[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            b[i].descriptorCount = 1;
+            b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        dl.bindingCount = bindings;
+        dl.pBindings = b.data();
+        check(vkCreateDescriptorSetLayout(dev, &dl, nullptr, &p.dsl), "vkCreateDescriptorSetLayout");
+        VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, push};
+        VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pl.setLayoutCount = 1;
+        pl.pSetLayouts = &p.dsl;
+        pl.pushConstantRangeCount = 1;
+        pl.pPushConstantRanges = &pr;
+        check(vkCreatePipelineLayout(dev, &pl, nullptr, &p.layout), "vkCreatePipelineLayout");
+        VkShaderModuleCreateInfo sm{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        sm.codeSize = nbytes;
+        sm.pCode = code;
+        check(vkCreateShaderModule(dev, &sm, nullptr, &mod), "vkCreateShaderModule");
+        VkSpecializationMapEntry entry{0, 0, sizeof(uint32_t)};
+        VkSpecializationInfo spec{1, &entry, sizeof(uint32_t), wg};
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        ci.stage.module = mod;
+        ci.stage.pName = "main";
+        ci.stage.pSpecializationInfo = wg ? &spec : nullptr;
+        ci.layout = p.layout;
+        check(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr, &p.pipe), "vkCreateComputePipelines");
+    } catch (...) {
+        vkDestroyShaderModule(dev, mod, nullptr);  // null handles are ignored
+        vkDestroyPipelineLayout(dev, p.layout, nullptr);
+        vkDestroyDescriptorSetLayout(dev, p.dsl, nullptr);
+        throw;
     }
-    VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    dl.bindingCount = bindings;
-    dl.pBindings = b.data();
-    check(vkCreateDescriptorSetLayout(dev, &dl, nullptr, &p.dsl), "vkCreateDescriptorSetLayout");
-    VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, push};
-    VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    pl.setLayoutCount = 1;
-    pl.pSetLayouts = &p.dsl;
-    pl.pushConstantRangeCount = 1;
-    pl.pPushConstantRanges = &pr;
-    check(vkCreatePipelineLayout(dev, &pl, nullptr, &p.layout), "vkCreatePipelineLayout");
-    VkShaderModuleCreateInfo sm{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    sm.codeSize = nbytes;
-    sm.pCode = code;
-    VkShaderModule mod;
-    check(vkCreateShaderModule(dev, &sm, nullptr, &mod), "vkCreateShaderModule");
-    VkSpecializationMapEntry entry{0, 0, sizeof(uint32_t)};
-    VkSpecializationInfo spec{1, &entry, sizeof(uint32_t), wg};
-    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    ci.stage.module = mod;
-    ci.stage.pName = "main";
-    ci.stage.pSpecializationInfo = wg ? &spec : nullptr;
-    ci.layout = p.layout;
-    check(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr, &p.pipe), "vkCreateComputePipelines");
     vkDestroyShaderModule(dev, mod, nullptr);
     return p;
 }
@@ -248,6 +279,48 @@ VkDescriptorSet Gpu::set(const Pipe& p, std::initializer_list<const Buffer*> buf
 }
 
 Gpu::Gpu(int width, int height, int bitdepth, int device) : w(width), h(height), bits(bitdepth) {
+    // a constructor that throws never runs ~Gpu(): release what init() made
+    try {
+        init(device);
+    } catch (...) {
+        destroy();
+        throw;
+    }
+}
+
+void Gpu::check_limits() const {
+    // the coarse search runs 512 invocations per group; 1-D passes use 256 x rows
+    auto need = [](bool ok, const std::string& what) {
+        if (!ok) throw std::runtime_error("GPU limit: " + what);
+    };
+    need(limits.maxComputeWorkGroupInvocations >= 512 && limits.maxComputeWorkGroupSize[0] >= 512 &&
+             limits.maxComputeWorkGroupSize[1] >= 16,
+         "compute work groups of 512 invocations are not supported");
+    // the largest storage buffer is the per-pixel vector field (16 bytes a pixel)
+    VkDeviceSize field_bytes = VkDeviceSize(w) * h * 16;
+    need(field_bytes <= limits.maxStorageBufferRange,
+         std::to_string(w) + "x" + std::to_string(h) + " needs storage buffers of " +
+             std::to_string(field_bytes >> 20) + " MiB; this GPU allows " +
+             std::to_string(limits.maxStorageBufferRange >> 20) + " MiB");
+    uint64_t samples = uint64_t(w) * h;
+    uint64_t groups = (samples + 255) / 256;
+    uint64_t gx = std::min<uint64_t>(groups, limits.maxComputeWorkGroupCount[0]);
+    need(gx > 0 && (groups + gx - 1) / gx <= limits.maxComputeWorkGroupCount[1],
+         "the frame is too large for this GPU's dispatch size");
+}
+
+void Gpu::dispatch1d(uint32_t groups) {
+    // 1-D passes as rows of at most maxComputeWorkGroupCount[0] groups (65535 on
+    // some drivers; 8K luma alone needs 129,600 groups of 256)
+    uint32_t gx = std::max<uint32_t>(1, std::min(groups, limits.maxComputeWorkGroupCount[0]));
+    vkCmdDispatch(cmd, gx, (groups + gx - 1) / gx, 1);
+}
+
+void Gpu::ensure_ok() const {
+    if (!failed.empty()) throw std::runtime_error(failed);
+}
+
+void Gpu::init(int device) {
     bytes = bits > 8 ? 2 : 1;
     if (const char* occ = std::getenv("MVGPU_OCC")) std::sscanf(occ, "%f,%f", &occ_lo, &occ_hi);
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -276,6 +349,8 @@ Gpu::Gpu(int width, int height, int bitdepth, int device) : w(width), h(height),
     VkPhysicalDeviceProperties pp;
     vkGetPhysicalDeviceProperties(phys, &pp);
     name = pp.deviceName;
+    limits = pp.limits;
+    check_limits();
     vkGetPhysicalDeviceMemoryProperties(phys, &memprops);
     vkGetPhysicalDeviceQueueFamilyProperties(phys, &n, nullptr);
     std::vector<VkQueueFamilyProperties> fams(n);
@@ -387,8 +462,15 @@ Gpu::Gpu(int width, int height, int bitdepth, int device) : w(width), h(height),
     ds_pack = set(p_pack, {&out, &raw_out});
 }
 
-Gpu::~Gpu() {
-    if (!dev) return;
+Gpu::~Gpu() { destroy(); }
+
+void Gpu::destroy() {
+    // safe on a partly built object: every handle is checked (or ignored when null)
+    if (!dev) {
+        if (inst) vkDestroyInstance(inst, nullptr);
+        inst = VK_NULL_HANDLE;
+        return;
+    }
     vkDeviceWaitIdle(dev);
     for (Pipe* p : {&p_unpack, &p_down2, &p_search_coarse, &p_search_fine, &p_median, &p_select, &p_render,
                     &p_pack}) {
@@ -409,6 +491,8 @@ Gpu::~Gpu() {
     vkDestroyCommandPool(dev, pool, nullptr);
     vkDestroyDevice(dev, nullptr);
     vkDestroyInstance(inst, nullptr);
+    dev = VK_NULL_HANDLE;
+    inst = VK_NULL_HANDLE;
 }
 
 void Gpu::begin() {
@@ -419,13 +503,24 @@ void Gpu::begin() {
 }
 
 void Gpu::submit() {
-    check(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
-    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-    check(vkQueueSubmit(queue, 1, &si, fence), "vkQueueSubmit");
-    check(vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX), "vkWaitForFences");
-    vkResetFences(dev, 1, &fence);
+    try {
+        check(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
+        VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        check(vkQueueSubmit(queue, 1, &si, fence), "vkQueueSubmit");
+    } catch (const VkError& e) {
+        // nothing ran: a transient failure (e.g. out of memory) may pass next time
+        if (e.result == VK_ERROR_DEVICE_LOST) failed = e.what();
+        throw;
+    }
+    try {
+        check(vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX), "vkWaitForFences");
+        check(vkResetFences(dev, 1, &fence), "vkResetFences");
+    } catch (const std::exception& e) {
+        failed = e.what();  // the batch ran or is running: its state is unknown
+        throw;
+    }
 }
 
 void Gpu::barrier() {
@@ -449,6 +544,7 @@ double ms(Clock::time_point a, Clock::time_point b) {
 }
 
 void Gpu::load(int s, const VSFrame* f, const VSAPI* api) {
+    ensure_ok();
     auto t0 = Clock::now();
     auto* dst = static_cast<uint8_t*>(up.map);
     for (int i = 0; i < 3; ++i) {
@@ -469,7 +565,7 @@ void Gpu::load(int s, const VSFrame* f, const VSAPI* api) {
         struct { uint32_t count, raw_off, out_off, bytes; float scale; } pc{
             uint32_t(p.w * p.h), p.raw_off, p.float_off, uint32_t(bytes), scale};
         push(p_unpack, ds_unpack[s], &pc, sizeof(pc));
-        vkCmdDispatch(cmd, (pc.count + 255) / 256, 1, 1);
+        dispatch1d((pc.count + 255) / 256);
     }
     barrier();
     // pyramid level 0 is the luma plane: copy it, then halve
@@ -490,6 +586,7 @@ void Gpu::load(int s, const VSFrame* f, const VSAPI* api) {
 }
 
 int Gpu::render(int a, float t, bool new_vectors) {
+    ensure_ok();
     // a free readback buffer (callers hold the GPU lock; deliver() frees them)
     int r = -1;
     {
@@ -501,6 +598,21 @@ int Gpu::render(int a, float t, bool new_vectors) {
         });
         busy[r] = true;
     }
+    // give the buffer back if recording or submitting throws: a leaked buffer
+    // would leave the next render waiting forever while it holds the GPU lock
+    struct Release {
+        Gpu* g;
+        int r;
+        bool armed = true;
+        ~Release() {
+            if (!armed) return;
+            {
+                std::lock_guard<std::mutex> lk(g->ring_lock);
+                g->busy[r] = false;
+            }
+            g->ring_free.notify_one();
+        }
+    } release{this, r};
     auto t0 = Clock::now();
     begin();
     if (new_vectors) {
@@ -552,12 +664,20 @@ int Gpu::render(int a, float t, bool new_vectors) {
             uint32_t(p.w * p.h), p.raw_off, p.float_off, uint32_t(bytes), maxv};
         uint32_t words = (pc.count * bytes + 3) / 4;
         push(p_pack, ds_pack, &pc, sizeof(pc));
-        vkCmdDispatch(cmd, (words + 255) / 256, 1, 1);
+        dispatch1d((words + 255) / 256);
     }
     barrier();
     VkBufferCopy cp{0, 0, raw_bytes};
     vkCmdCopyBuffer(cmd, raw_out.buf, down[r].buf, 1, &cp);
+    // the fence makes device writes available to the device only: deliver()
+    // reads down[r] on the host, so make the copy visible to host reads
+    VkMemoryBarrier hb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    hb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    hb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &hb, 0, nullptr, 0,
+                         nullptr);
     submit();
+    release.armed = false;
     t_gpu += ms(t0, Clock::now());
     return r;
 }
@@ -650,6 +770,13 @@ const VSFrame* VS_CC getFrame(int n, int ar, void* inst, void**, VSFrameContext*
         }
         d->gpu->deliver(r, dst, api);  // outside the GPU lock: copies overlap
     } catch (const std::exception& e) {
+        {
+            // a slot may hold half an upload and the vectors half a search: forget
+            // both, so the next request loads and searches again
+            std::lock_guard<std::mutex> g(d->lock);
+            d->pair = -1;
+            d->slot_frame = {-1, -1};
+        }
         api->freeFrame(fa);
         api->freeFrame(fc);
         api->freeFrame(dst);
@@ -712,7 +839,8 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
     vspapi->configPlugin("io.github.buttereye.mvgpu", "mvgpu", "GPU block motion-vector interpolation (Vulkan)",
-                         VS_MAKE_VERSION(0, 1), VAPOURSYNTH_API_VERSION, 0, plugin);
+                         VS_MAKE_VERSION(MVGPU_VERSION_MAJOR, MVGPU_VERSION_MINOR), VAPOURSYNTH_API_VERSION, 0,
+                         plugin);
     vspapi->registerFunction("Interpolate", "clip:vnode;fps_num:int;fps_den:int:opt;device:int:opt;",
                              "clip:vnode;", create, nullptr, plugin);
 }

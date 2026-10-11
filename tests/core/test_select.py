@@ -254,3 +254,31 @@ def test_gpu_fault_noted_but_available(cfg: Config) -> None:
     st = {b.id: b for b in backends(r, cfg)}
     assert st[BackendId.RIFE_NCNN].available
     assert "GPU faults" in st[BackendId.RIFE_NCNN].reason.params["note"]  # type: ignore[operator]
+
+
+def test_mvgpu_status_follows_its_package_and_the_gpu(cfg: Config) -> None:
+    """mvgpu has a status for the Profiles editor (installed + a GPU), independent
+    of RIFE, and is never ranked: live play picks it per file (§5.3)."""
+    mvgpu = f("packages.mvgpu")
+    ok = {b.id: b for b in backends(report(extra=(mvgpu,)), cfg)}[BackendId.MVGPU]
+    assert ok.available and not ok.experimental
+    assert ok.reason.params == {"gpu": "NVIDIA GeForce RTX 4090"}
+    assert BackendId.MVGPU not in select(report(extra=(mvgpu,)), cfg, ()).ranked
+    no_rife = report(
+        findings=(f("packages.rife", Severity.DEGRADED, ErrorCode.PKG_MISSING), mvgpu),
+        rife_loads=None,
+    )
+    assert {b.id: b for b in backends(no_rife, cfg)}[BackendId.MVGPU].available
+    missing = report(extra=(f("packages.mvgpu", Severity.INFO),))
+    st = {b.id: b for b in backends(missing, cfg)}[BackendId.MVGPU]
+    assert not st.available and st.reason.key == "The GPU motion-vector plugin is not installed"
+    unchecked = {b.id: b for b in backends(report(), cfg)}[BackendId.MVGPU]
+    assert not unchecked.available
+    cpu = {b.id: b for b in backends(report(vulkan=(LVP,), extra=(mvgpu,)), cfg)}
+    assert not cpu[BackendId.MVGPU].available
+    assert "CPU-only" in cpu[BackendId.MVGPU].reason.key
+    assert cpu[BackendId.MVGPU].code is ErrorCode.VULKAN_CPU_ONLY
+    blocked = report(
+        extra=(mvgpu, f("mpv.vf_vapoursynth", Severity.BLOCKING, ErrorCode.MPV_NO_VS_FILTER))
+    )
+    assert not {b.id: b for b in backends(blocked, cfg)}[BackendId.MVGPU].available

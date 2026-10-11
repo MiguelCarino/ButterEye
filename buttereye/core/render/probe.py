@@ -423,7 +423,9 @@ def estimate_bytes(
 
 
 #: Automatic offline order: time is the cost offline, so the fastest GPU engine
-#: first (TensorRT only when opted in and set up, §5.2), then RIFE-ncnn, then MVTools
+#: first (TensorRT only when opted in and set up, §5.2), then RIFE-ncnn, then MVTools.
+#: mvgpu is left out: offline there is no real-time limit, so RIFE's picture wins;
+#: a profile pinned to mvgpu still renders with it (``engine_for``)
 OFFLINE_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVTOOLS)
 
 

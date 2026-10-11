@@ -404,7 +404,8 @@ class FakeCore(ButterEye):
         return SetupPlan(
             report=report,
             proposed=sc.selection,
-            backends=sc.backends,
+            # as core.setup.plan: mvgpu is never a Setup choice
+            backends=tuple(b for b in sc.backends if b.id is not BackendId.MVGPU),
             missing_packages=sc.missing_packages,
             dnf_lines=sc.dnf_lines,
             downloads=sc.trt_downloads if trt_experimental else (),

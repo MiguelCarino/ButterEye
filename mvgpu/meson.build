@@ -1,11 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 The ButterEye contributors
-project('mvgpu', 'cpp', version: '0.1', license: 'AGPL-3.0-or-later',
+project('mvgpu', 'cpp', version: '0.0.1', license: 'AGPL-3.0-or-later',
         default_options: ['cpp_std=c++17', 'buildtype=release', 'warning_level=2'])
 
 vapoursynth = dependency('vapoursynth', version: '>=55')
 vulkan = dependency('vulkan')
 glslang = find_program(get_option('glslang'), 'glslang', 'glslangValidator')
+
+# VapourSynth plugin versions have a major and a minor part only: 0.0.1 is
+# reported as (0, 1) and x.y.z as (x, y * 100 + z), always from this version
+ver = meson.project_version().split('.')
+add_project_arguments(
+  '-DMVGPU_VERSION_MAJOR=' + ver[0],
+  '-DMVGPU_VERSION_MINOR=' + (ver[1].to_int() * 100 + ver[2].to_int()).to_string(),
+  language: 'cpp')
 
 shader_headers = []
 foreach s : ['unpack', 'down2', 'search', 'median', 'select', 'render', 'pack']

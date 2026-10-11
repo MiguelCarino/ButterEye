@@ -188,13 +188,15 @@ def _validate_profile_engine(p: Profile, f: str, out: _Issues, trt_on: bool) -> 
     if p.model is not None:
         if backend is BackendId.MVTOOLS:
             out.add(f"{f}.model", "MVTools uses no model; leave the model empty.")
+        elif backend is BackendId.MVGPU:
+            out.add(f"{f}.model", "GPU motion vectors use no model; leave the model empty.")
         elif not isinstance(p.model, str) or MODEL_NAME_RE.fullmatch(p.model) is None:
             out.add(
                 f"{f}.model",
                 "A model is a model name such as rife-v4.26_ensembleFalse, not a path.",
             )
     if p.scale is not None:
-        if backend in (BackendId.RIFE_NCNN, BackendId.MVTOOLS):
+        if backend in (BackendId.RIFE_NCNN, BackendId.MVTOOLS, BackendId.MVGPU):
             out.add(
                 f"{f}.scale",
                 "Scale applies to TensorRT only. "

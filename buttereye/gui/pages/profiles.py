@@ -143,6 +143,7 @@ def engine_label(backend: BackendId | str) -> str:
         BackendId.RIFE_NCNN: _t("RIFE (Vulkan)"),
         BackendId.RIFE_TRT: _t("RIFE · TensorRT (experimental)"),
         BackendId.MVTOOLS: _t("MVTools (CPU)"),
+        BackendId.MVGPU: _t("GPU motion vectors"),
     }
     try:
         return names[BackendId(backend)]
@@ -158,6 +159,8 @@ def concurrent_default(backend: BackendId | str) -> int | None:
         return 2  # num_streams
     if backend == BackendId.MVTOOLS:
         return min(os.cpu_count() or 1, 8)
+    if backend == BackendId.MVGPU:
+        return 8  # mpv concurrent-frames (§4.4)
     return None
 
 
@@ -1285,7 +1288,7 @@ class ProfilesPage(Page):
             choices: list[BackendId | str] = ["auto", BackendId.RIFE_NCNN]
             if trt_on or (p is not None and p.backend == BackendId.RIFE_TRT):
                 choices.append(BackendId.RIFE_TRT)
-            choices.append(BackendId.MVTOOLS)
+            choices += [BackendId.MVGPU, BackendId.MVTOOLS]
             model = cast(QStandardItemModel, combo.model())
             notes: list[str] = []
             for b in choices:
@@ -1362,6 +1365,8 @@ class ProfilesPage(Page):
                 note = ""
                 if backend == BackendId.MVTOOLS:
                     note = self.tr("MVTools uses no model.")
+                elif backend == BackendId.MVGPU:
+                    note = self.tr("GPU motion vectors use no model.")
             self.model_note.setText(note)
             self.model_note.setVisible(bool(note))
             combo.setAccessibleDescription(note)
@@ -1425,7 +1430,11 @@ class ProfilesPage(Page):
             w.setEnabled(can_edit)
         backend = self._engine()
         self.model_combo.setEnabled(
-            can_edit and (backend != BackendId.MVTOOLS or (p is not None and p.model is not None))
+            can_edit
+            and (
+                backend not in (BackendId.MVTOOLS, BackendId.MVGPU)
+                or (p is not None and p.model is not None)
+            )
         )
         self.scale_spin.setEnabled(
             can_edit and (backend == BackendId.RIFE_TRT or (p is not None and p.scale is not None))
@@ -1501,7 +1510,7 @@ class ProfilesPage(Page):
         changed = dataclasses.replace(
             p,
             backend=backend,
-            model=None if backend == BackendId.MVTOOLS else p.model,
+            model=None if backend in (BackendId.MVTOOLS, BackendId.MVGPU) else p.model,
             scale=p.scale if backend == BackendId.RIFE_TRT else None,
         )
         self._fill_model(changed)
