@@ -31,6 +31,7 @@ import asyncio
 import contextlib
 import hashlib
 import importlib.util
+import ntpath
 import os
 import shutil
 import signal
@@ -40,7 +41,7 @@ import struct
 import subprocess
 import sys
 import time
-from collections.abc import Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -225,26 +226,124 @@ def point_at_runtime(
     env["PATH"] = sep.join(first + rest)
 
 
+#: Windows: with this set, ``CreateProcess`` and ``shutil.which`` stop looking for a
+#: bare program name in the current folder first (a ``vspipe.exe`` or ``mpv.exe``
+#: sitting in Downloads would otherwise win over the bundled one or PATH's)
+NO_CWD_SEARCH = "NoDefaultCurrentDirectoryInExePath"
+
+
 def use_bundled_runtime() -> None:
     """Windows: point every child process at the VapourSynth of the Python that
     runs ButterEye (the installer's bundled runtime), through ``os.environ``
-    (``point_at_runtime``). Nothing anywhere else: Linux uses the system's."""
+    (``point_at_runtime``), and take the current folder out of the program search
+    (``NO_CWD_SEARCH``, inherited by the children). Nothing anywhere else: Linux
+    uses the system's."""
     if not IS_WINDOWS:
         return
+    os.environ[NO_CWD_SEARCH] = "1"
     python_dir, vs_dir = runtime_dirs()
     point_at_runtime(os.environ, python_dir, vs_dir)
+    hold_install_mutex()
+
+
+#: the installer's record, in the folder it installed into (next to ``python``)
+INSTALL_RECORD = "buttereye-install.json"
+
+
+def install_root() -> str | None:
+    """Windows: the folder the installer put this Python in (the parent of the
+    ``python`` folder, with the install record), else None."""
+    python_dir, _ = runtime_dirs()
+    root = os.path.dirname(python_dir)
+    return root if os.path.isfile(os.path.join(root, INSTALL_RECORD)) else None
+
+
+def install_mutex_name(folder: str) -> str:
+    """The named mutex an installed ButterEye holds while it runs from ``folder``
+    (its long path). The installer and uninstaller build the same name from
+    ``$INSTDIR`` (packaging/windows/buttereye.nsi, ``MutexName``) and won't
+    change files a running ButterEye uses: the path in lower case with ``/`` for
+    ``\\``, since a mutex name can't hold a backslash; ``Local\\``: this session."""
+    return "Local\\ButterEye-" + ntpath.normpath(folder).lower().replace("\\", "/")
+
+
+def hold_install_mutex() -> None:
+    """Windows: hold ``install_mutex_name`` of this installation for the life of
+    the process (the GUI's and the command line's core both open through
+    ``use_bundled_runtime``). Nothing outside an installed copy, or on Linux."""
+    if sys.platform == "win32":
+        root = install_root()
+        if root is not None:
+            w.hold_mutex(install_mutex_name(w.long_path(root)))
+
+
+def bundled_vspipe() -> str | None:
+    """Windows: ``vspipe.exe`` of the running Python's VapourSynth package (the
+    installer's), by its full path, else None. Never searched for by name. Linux:
+    None (the distribution's vspipe, from PATH)."""
+    if not IS_WINDOWS:
+        return None
+    _, vs_dir = runtime_dirs()
+    if vs_dir is None:
+        return None
+    exe = os.path.join(vs_dir, "vspipe.exe")
+    return exe if os.path.isabs(exe) and os.path.isfile(exe) else None
+
+
+def vspipe_command() -> str:
+    """What to start as vspipe: the bundled one by its full path on Windows,
+    else plain ``vspipe`` (Linux, unchanged)."""
+    return bundled_vspipe() or "vspipe"
+
+
+def vspipe() -> str | None:
+    """The vspipe to run, as a full path, or None: the bundled one on Windows,
+    else the one on PATH (``executable``)."""
+    return bundled_vspipe() or executable("vspipe")
 
 
 # ======================================================================== processes
+def search_windows_path(
+    name: str, path: str, pathext: str, *, isfile: Callable[[str], bool] = os.path.isfile
+) -> str | None:
+    """Where Windows would find program ``name`` on ``path`` (``;``-separated),
+    as a full path, or None. Unlike ``shutil.which`` (and ``CreateProcess``) it
+    never looks in the current folder, and it skips PATH entries that are not
+    absolute (``.``, ``bin``), which would mean the current folder too. A ``name``
+    with a folder in it counts only when that folder is absolute. ``pathext``:
+    the PATHEXT list, tried when ``name`` has none of those extensions."""
+    exts = [e for e in (pathext or ".COM;.EXE;.BAT;.CMD").split(";") if e]
+    upper = name.upper()
+    names = [name] if any(upper.endswith(e.upper()) for e in exts) else [name + e for e in exts]
+    folder = ntpath.dirname(name)
+    if folder:
+        if not ntpath.isabs(name):
+            return None
+        return next((n for n in names if isfile(n)), None)
+    for d in path.split(";"):
+        d = d.strip().strip('"')
+        if not d or not ntpath.isabs(d):
+            continue
+        for n in names:
+            candidate = ntpath.join(d, n)
+            if isfile(candidate):
+                return candidate
+    return None
+
+
 def executable(name: str) -> str | None:
-    """``shutil.which`` that prefers the windowed ``.exe`` on Windows: mpv ships
-    ``mpv.com`` (a console wrapper) next to ``mpv.exe``, and PATHEXT finds the
-    ``.com`` first."""
-    if IS_WINDOWS and not os.path.splitext(name)[1]:
-        found = shutil.which(name + ".exe")
+    """``shutil.which`` on Linux. On Windows a full path or None, never from the
+    current folder (``search_windows_path``), and preferring the windowed
+    ``.exe``: mpv ships ``mpv.com`` (a console wrapper) next to ``mpv.exe``, and
+    PATHEXT finds the ``.com`` first."""
+    if not IS_WINDOWS:
+        return shutil.which(name)
+    path, pathext = os.environ.get("PATH", ""), os.environ.get("PATHEXT", "")
+    if not os.path.splitext(name)[1]:
+        found = search_windows_path(name + ".exe", path, pathext)
         if found is not None:
             return found
-    return shutil.which(name)
+    return search_windows_path(name, path, pathext)
 
 
 def group_spawn_kwargs(*, low_priority: bool = False) -> dict[str, Any]:
@@ -466,16 +565,22 @@ def ipc_peer(writer: asyncio.StreamWriter) -> tuple[int | None, bool] | None:
 
 
 __all__ = [
+    "INSTALL_RECORD",
     "IS_WINDOWS",
+    "NO_CWD_SEARCH",
     "VSTRT_LIB",
     "O_BINARY",
     "O_CLOEXEC",
     "O_NOFOLLOW",
     "DetachedChild",
+    "bundled_vspipe",
     "executable",
     "fsync_dir",
     "group_alive",
     "group_spawn_kwargs",
+    "hold_install_mutex",
+    "install_mutex_name",
+    "install_root",
     "ipc_address",
     "ipc_peer",
     "is_endpoint",
@@ -491,6 +596,7 @@ __all__ = [
     "prepare_endpoint",
     "replace",
     "runtime_dirs",
+    "search_windows_path",
     "set_mode",
     "shared_mode_bits",
     "signal_group",
@@ -498,4 +604,6 @@ __all__ = [
     "try_lock",
     "unlock",
     "use_bundled_runtime",
+    "vspipe",
+    "vspipe_command",
 ]

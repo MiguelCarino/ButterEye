@@ -165,7 +165,7 @@ async def doctor(
         # Whole boot; doctor_xid_findings splits it at max(marker, RIFE INSTALLTIME).
         marker = gpufault.read_session_marker(paths)
         t_xid = tg.create_task(gpufault.scan_xid())
-        t_vsp = tg.create_task(run(("vspipe", "--version"), timeout_s=4.0))
+        t_vsp = tg.create_task(run((osapi.vspipe_command(), "--version"), timeout_s=4.0))
         t_ld = tg.create_task(checks_trt.ldconfig_p()) if trt else None
 
         hw: HwProbe = await t_hw

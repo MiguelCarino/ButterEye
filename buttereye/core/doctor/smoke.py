@@ -47,7 +47,7 @@ def smoke_argv(
     gpu_index: int,
     size: str = "1280x720",
     frames: int = 48,
-    vspipe: str = "vspipe",
+    vspipe: str | None = None,
     script: Path = SMOKE_VPY,
 ) -> tuple[str, ...]:
     args = {
@@ -60,7 +60,7 @@ def smoke_argv(
         "size": size,
         "frames": str(frames),
     }
-    argv = [vspipe, "-p"]
+    argv = [vspipe or osapi.vspipe_command(), "-p"]
     for k, v in args.items():
         argv += ["-a", f"{k}={v}"]
     return (*argv, str(script), "--")
@@ -88,7 +88,7 @@ async def smoke_test(
     timeout_s: float = TIMEOUT_S,
     size: str = "1280x720",
     frames: int = 48,
-    vspipe: str = "vspipe",
+    vspipe: str | None = None,
     script: Path = SMOKE_VPY,
 ) -> SmokeOutcome:
     if backend is BackendId.RIFE_TRT:

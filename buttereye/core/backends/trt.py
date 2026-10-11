@@ -307,7 +307,7 @@ async def build_engine(
     key: EngineKey,
     *,
     script: Path,
-    vspipe: str = "vspipe",
+    vspipe: str | None = None,
     timeout_s: float = BUILD_TIMEOUT_S,
 ) -> Path:
     """Build the engine for ``key`` and return its folder.
@@ -326,7 +326,15 @@ async def build_engine(
     paths.logs_dir.mkdir(parents=True, exist_ok=True)
     log_path = paths.logs_dir / f"engine-{folder.name}.log"
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-    argv = [vspipe, "-a", f"user_data={user_data}", "-e", "0", os.fspath(script), "--"]
+    argv = [
+        vspipe or osapi.vspipe_command(),
+        "-a",
+        f"user_data={user_data}",
+        "-e",
+        "0",
+        os.fspath(script),
+        "--",
+    ]
     started = time.monotonic()
     _log.info("building TensorRT engine %s", folder.name)
     async with process_group(

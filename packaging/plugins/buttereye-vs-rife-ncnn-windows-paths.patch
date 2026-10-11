@@ -3,7 +3,10 @@ ButterEye: Windows model paths (MinGW builds).
 swprintf(L"%s", wchar_t*) reads a narrow string under MinGW (C99), so the model
 folder was cut to its first character and RIFE silently produced empty frames.
 Build the paths with std::wstring instead; also drop the 256-character limit
-and stop passing a missing file to fclose. Windows-only code (#if _WIN32).
+and stop passing a missing file to fclose. The plugin's check that the model
+exists opened the UTF-8 path with std::ifstream, which Windows reads in the ANSI
+code page: a model folder under a non-ASCII user name ("Núñez") never opened, so
+it is opened by its wide path too. Windows-only code (#if _WIN32).
 
 --- a/RIFE/rife.cpp
 +++ b/RIFE/rife.cpp
@@ -47,3 +50,32 @@ and stop passing a missing file to fclose. Windows-only code (#if _WIN32).
          }
  
          net.load_model(fp);
+--- a/RIFE/plugin.cpp
++++ b/RIFE/plugin.cpp
+@@ -516,10 +516,26 @@
+             }
+         }
+ 
++#ifdef _WIN32
++        // ButterEye: the path is UTF-8; std::ifstream would read it in the ANSI
++        // code page, so a model folder under a non-ASCII user name never opened
++        {
++            const auto paramPath{ modelPath + "/flownet.param" };
++            auto size{ MultiByteToWideChar(CP_UTF8, 0, paramPath.c_str(), -1, nullptr, 0) };
++            std::vector<wchar_t> wparam(size > 0 ? size : 1);
++            if (size <= 0 || !MultiByteToWideChar(CP_UTF8, 0, paramPath.c_str(), -1, wparam.data(), size))
++                throw "failed to load model";
++            FILE* fp = _wfopen(wparam.data(), L"rb");
++            if (!fp)
++                throw "failed to load model";
++            fclose(fp);
++        }
++#else
+         std::ifstream ifs{ modelPath + "/flownet.param" };
+         if (!ifs.is_open())
+             throw "failed to load model";
+         ifs.close();
++#endif
+ 
+         bool rife_v2{};
+         bool rife_v4{};

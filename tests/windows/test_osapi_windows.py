@@ -118,6 +118,25 @@ def test_executable_prefers_the_exe(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert found is not None and found.lower().endswith("tool.exe")
 
 
+def test_executable_never_comes_from_the_current_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    planted = tmp_path / "Downloads"
+    planted.mkdir()
+    (planted / "tool.exe").write_bytes(b"MZ")
+    monkeypatch.chdir(planted)
+    monkeypatch.setenv("PATH", ".")  # a relative entry is the current folder too
+    monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+    assert osapi.executable("tool") is None
+    real = tmp_path / "bin"
+    real.mkdir()
+    (real / "tool.exe").write_bytes(b"MZ")
+    monkeypatch.setenv("PATH", f".;{real}")
+    found = osapi.executable("tool")
+    assert found is not None and os.path.isabs(found)
+    assert os.path.normcase(found) == os.path.normcase(str(real / "tool.exe"))
+
+
 def test_tree_finds_the_grandchild_and_signal_group_ends_it() -> None:
     p = subprocess.Popen(PARENT, **osapi.group_spawn_kwargs())
     try:

@@ -19,8 +19,10 @@ uninstall at the end removes both.
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -99,6 +101,20 @@ def _uninstall_entry() -> dict[str, Any] | None:
         return None
 
 
+def _registered_location() -> str | None:
+    """The uninstall entry's InstallLocation (any entry at all: "" if it has none)."""
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTKEY) as key:
+            try:
+                return str(winreg.QueryValueEx(key, "InstallLocation")[0])
+            except OSError:
+                return ""
+    except OSError:
+        return None
+
+
 def _start_menu_link() -> Path:
     return (
         Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
@@ -135,20 +151,47 @@ class Installed:
         )  # fmt: skip
 
 
+def _nsis(exe: Path | str, *args: str, folder: Path, key: str = "/D") -> str:
+    """An NSIS command line: ``/D=`` (or ``_?=``) must come last and unquoted, even
+    with spaces in it (a quoted one is ignored, and the installer would go to the
+    default folder). A list argument would be quoted by ``subprocess``."""
+    return " ".join([subprocess.list2cmdline([str(exe), *args]), f"{key}={folder}"])
+
+
+def _setup(*args: str, folder: Path) -> int:
+    cmd = _nsis(INSTALLER, *args, folder=folder)
+    return subprocess.run(cmd, timeout=900, check=False).returncode
+
+
+def _uninstall(folder: Path, *, uninstaller: Path | None = None) -> int:
+    """The uninstaller for ``folder``, waiting for it (``_?=``)."""
+    exe = uninstaller or folder / "Uninstall.exe"
+    cmd = _nsis(exe, "/S", folder=folder, key="_?")
+    return subprocess.run(cmd, timeout=300, check=False).returncode
+
+
 @pytest.fixture(scope="module")
 def installed(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Installed]:
     root = tmp_path_factory.mktemp("installer")
-    folder = root / "ButterEye"
+    # spaces and non-ASCII letters, as in many a Windows user name
+    folder = root / "Butter Eye ñ"
+    registered = _registered_location()
+    if registered is not None and os.path.normcase(registered) != os.path.normcase(str(folder)):
+        # one ButterEye per user: this test's copy would be refused, or would take
+        # over the entry and shortcuts of the developer's own and remove them
+        pytest.skip(f"ButterEye is registered for this user in {registered!r}")
     profile = root / "profile"
     (profile / "Roaming").mkdir(parents=True)
     (profile / "Local").mkdir()
-    res = subprocess.run([INSTALLER, "/S", f"/D={folder}"], timeout=900, check=False)
-    assert res.returncode == 0, f"setup.exe /S exited with {res.returncode}"
+    rc = _setup("/S", folder=folder)
+    assert rc == 0, f"setup.exe /S exited with {rc}"
+    assert (folder / "buttereye-install.json").is_file(), "not installed into the chosen folder"
     inst = Installed(folder, profile)
     yield inst
-    uninstaller = folder / "Uninstall.exe"
-    if uninstaller.exists():  # a test failed before the uninstall test: clean up
-        subprocess.run([str(uninstaller), "/S", f"_?={folder}"], timeout=300, check=False)
+    if (folder / "Uninstall.exe").exists():  # a test failed before the uninstall test
+        copy = root / "Uninstall-copy.exe"  # _?= runs it in place: run a copy
+        shutil.copy2(folder / "Uninstall.exe", copy)
+        _uninstall(folder, uninstaller=copy)
 
 
 def test_installs_silently_into_the_chosen_folder(installed: Installed) -> None:
@@ -325,6 +368,110 @@ def test_gui_toolkit_loads(installed: Installed) -> None:
     res = installed.run(str(installed.python), "-c", _QT_PROBE, str(svg))
     assert res.returncode == 0, res.stderr[-1500:]
     assert "qt ok offscreen" in res.stdout
+
+
+def test_refuses_a_second_copy_in_another_folder(installed: Installed, tmp_path: Path) -> None:
+    other = tmp_path / "Other ButterEye"
+    assert _setup("/S", folder=other) == 2
+    assert not (other / "buttereye-install.json").exists()
+    entry = _uninstall_entry()
+    assert entry is not None
+    assert os.path.normcase(entry["InstallLocation"]) == os.path.normcase(str(installed.folder))
+
+
+def test_an_uninstaller_for_another_folder_leaves_the_entry_and_shortcut(
+    installed: Installed, tmp_path: Path
+) -> None:
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    copy = tmp_path / "Uninstall-copy.exe"
+    shutil.copy2(installed.folder / "Uninstall.exe", copy)
+    assert _uninstall(other, uninstaller=copy) == 0
+    entry = _uninstall_entry()
+    assert entry is not None
+    assert os.path.normcase(entry["InstallLocation"]) == os.path.normcase(str(installed.folder))
+    assert _start_menu_link().is_file()
+    assert (installed.folder / "python" / "python.exe").is_file()
+
+
+def _hold_mutex(name: str) -> int:
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined,unused-ignore]
+    k32.CreateMutexW.restype = ctypes.c_void_p
+    k32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    handle = k32.CreateMutexW(None, 0, name)
+    assert handle, ctypes.get_last_error()  # type: ignore[attr-defined,unused-ignore]
+    return int(handle)
+
+
+def _close(handle: int) -> None:
+    k32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined,unused-ignore]
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    k32.CloseHandle(handle)
+
+
+def _blocked(installed: Installed, tmp_path: Path) -> None:
+    """Repair and uninstall both refuse (exit code 4) and change nothing."""
+    f = installed.folder
+    before = sorted(p.name for p in f.iterdir())
+    assert _setup("/S", folder=f) == 4
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    copy = tmp_path / "Uninstall-copy.exe"
+    shutil.copy2(f / "Uninstall.exe", copy)
+    assert _uninstall(f, uninstaller=copy) == 4
+    assert sorted(p.name for p in f.iterdir()) == before
+    assert (f / "python" / "python.exe").is_file()
+    assert (f / "vapoursynth" / "mvtools.dll").is_file()
+    assert _uninstall_entry() is not None
+
+
+def test_a_running_buttereye_blocks_repair_and_uninstall(
+    installed: Installed, tmp_path: Path
+) -> None:
+    from buttereye.core import osapi
+    from buttereye.core.osapi import _win32
+
+    # the name the installer builds from its folder is the one the core holds
+    name = osapi.install_mutex_name(_win32.long_path(str(installed.folder)))
+    handle = _hold_mutex(name)
+    try:
+        _blocked(installed, tmp_path / "mutex")
+    finally:
+        _close(handle)
+    # the installed ButterEye's core holds it itself (and has its files open)
+    hold = (
+        "import sys\n"
+        "from buttereye.core import osapi\n"
+        "osapi.use_bundled_runtime()\n"
+        "print('ready', flush=True)\n"
+        "sys.stdin.read()\n"
+    )
+    env = installed.env()
+    p = subprocess.Popen(
+        [str(installed.python), "-c", hold], env=env, stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, text=True,
+    )  # fmt: skip
+    try:
+        assert p.stdout is not None and p.stdout.readline().strip() == "ready"
+        _blocked(installed, tmp_path / "core")
+    finally:
+        p.communicate("", timeout=60)
+
+
+def test_a_player_using_its_files_blocks_repair(installed: Installed, tmp_path: Path) -> None:
+    # no ButterEye, no mutex: only a process with the bundled Python's files
+    # loaded, as mpv has VapourSynth's while it plays
+    p = subprocess.Popen(
+        [str(installed.python), "-c", "import sys; print('ready', flush=True); sys.stdin.read()"],
+        env=installed.env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )  # fmt: skip
+    try:
+        assert p.stdout is not None and p.stdout.readline().strip() == "ready"
+        _blocked(installed, tmp_path)
+    finally:
+        p.communicate("", timeout=60)
+    # closed: the repair goes through
+    assert _setup("/S", folder=installed.folder) == 0
+    assert (installed.folder / "buttereye-install.json").is_file()
 
 
 def test_uninstalls_silently(installed: Installed) -> None:

@@ -31,7 +31,6 @@ import logging
 import math
 import os
 import re
-import shutil
 import statistics
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -396,7 +395,7 @@ def repeat_faulters(
 
 # ---------------------------------------------------------------- environment
 def find_tools(paths: Paths) -> Tools:
-    vspipe = shutil.which("vspipe")
+    vspipe = osapi.vspipe()
     if vspipe is None:
         fix, commands = _install_fix(
             Msg("Install VapourSynth's tools, then run the benchmark again."), INSTALL_VSPIPE

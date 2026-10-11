@@ -17,10 +17,12 @@ on:
   push:
     branches: [main]
     paths:
-      - packaging/windows/**
-      - buttereye/core/**
+      - packaging/**
+      - buttereye/**
       - tests/windows/**
       - mvgpu/**
+      - pyproject.toml
+      - tools/wine-tests.sh
       - .github/workflows/windows.yml
 
 permissions:
@@ -34,7 +36,9 @@ jobs:
   build:
     name: Build the installer (Fedora MinGW-w64)
     runs-on: ubuntu-latest
-    container: fedora:44
+    # fedora:44 pinned by the digest of its multi-arch index (skopeo inspect
+    # docker://docker.io/library/fedora:44 --format '{{.Digest}}'); bump it for updates
+    container: fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
     timeout-minutes: 150
     env:
       XDG_CACHE_HOME: /github/home/.cache
@@ -165,10 +169,12 @@ jobs:
       - name: Install the test tools
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
-          python -m pip install --disable-pip-version-check -q pytest==9.1.1 pytest-asyncio==1.4.0
+          # every package pinned by its wheel's hash (tests/windows/requirements.txt)
+          python -m pip install --disable-pip-version-check -q --require-hashes --only-binary=:all: `
+            -r tests/windows/requirements.txt
           # the same, for the installed ButterEye's Python (3.14 too), kept apart from it
-          python -m pip install --disable-pip-version-check -q --only-binary=:all: `
-            --target "$env:RUNNER_TEMP\testdeps" pytest==9.1.1 pytest-asyncio==1.4.0 numpy==2.5.4
+          python -m pip install --disable-pip-version-check -q --require-hashes --only-binary=:all: `
+            --target "$env:RUNNER_TEMP\testdeps" -r tests/windows/requirements.txt
           "TESTDEPS=$env:RUNNER_TEMP\testdeps" >> $env:GITHUB_ENV
 
       - name: Cache mpv

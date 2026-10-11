@@ -179,7 +179,7 @@ def _missing(what: str, command: str | None) -> ButterEyeError:
 
 def _tools() -> _Tools:
     ffprobe, ffmpeg = shutil.which("ffprobe"), shutil.which("ffmpeg")
-    vspipe = shutil.which("vspipe")
+    vspipe = osapi.vspipe()
     if ffprobe is None or ffmpeg is None:
         raise _missing("ffmpeg", install_command("ffmpeg"))
     if vspipe is None:

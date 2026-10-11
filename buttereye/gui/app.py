@@ -15,6 +15,7 @@ opens the earlier multi-page window; both are accepted only when
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib
 import logging
 import logging.handlers
@@ -285,6 +286,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     env = os.environ
     ns, qt_args = parse_args(argv[1:], env)
     if ns.version:
+        if sys.platform == "win32":
+            # a redirected stdout gets the ANSI code page on Windows, which can't
+            # spell every folder name (the Source line): UTF-8, like the CLI
+            reconfigure = getattr(sys.stdout, "reconfigure", None)
+            if reconfigure is not None:
+                with contextlib.suppress(ValueError, OSError):
+                    reconfigure(encoding="utf-8", errors="replace")
         try:
             print(version_text())
         except Exception:

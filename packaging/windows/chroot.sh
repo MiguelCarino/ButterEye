@@ -36,14 +36,23 @@ win_mode_from_args() {
         esac
     done
     export BUTTEREYE_WIN_NO_MOCK=$win_direct  # build-installer.sh -> build-plugins.sh
+    win_check_direct
 }
 
-win_init() {
+# --no-mock: refused unless root inside a container, before anything runs (dnf
+# included); every function that writes to / checks again
+win_check_direct() {
     if (( win_direct )); then
         if [[ $(id -u) != 0 ]] || [[ ! -e /.dockerenv && ! -e /run/.containerenv ]]; then
             echo "--no-mock builds right in /, so only as root inside a container" >&2
             exit 1
         fi
+    fi
+}
+
+win_init() {
+    if (( win_direct )); then
+        win_check_direct
         mkdir -p /builddir
     else
         "${win_mock[@]}" --init
@@ -52,6 +61,7 @@ win_init() {
 
 win_install() {
     if (( win_direct )); then
+        win_check_direct
         # tsflags: container images skip docs, and the licence texts the build
         # copies include some of those (fftw's COPYING)
         dnf -y -q install --setopt=install_weak_deps=False --setopt=tsflags= "$@"

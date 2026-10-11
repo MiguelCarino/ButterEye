@@ -119,6 +119,8 @@ _proto(_k32.SetInformationJobObject, BOOL, HANDLE, ctypes.c_int, ctypes.c_void_p
 _proto(_k32.AssignProcessToJobObject, BOOL, HANDLE, HANDLE)
 _proto(_k32.GetNamedPipeServerProcessId, BOOL, HANDLE, ctypes.POINTER(wintypes.ULONG))
 _proto(_k32.LocalFree, ctypes.c_void_p, ctypes.c_void_p)
+_proto(_k32.CreateMutexW, HANDLE, ctypes.c_void_p, BOOL, wintypes.LPCWSTR)
+_proto(_k32.GetLongPathNameW, DWORD, wintypes.LPCWSTR, wintypes.LPWSTR, DWORD)
 _proto(_adv.OpenProcessToken, BOOL, HANDLE, DWORD, ctypes.POINTER(HANDLE))
 _proto(_adv.GetTokenInformation, BOOL, HANDLE, ctypes.c_int, ctypes.c_void_p, DWORD,
        ctypes.POINTER(DWORD))  # fmt: skip
@@ -339,6 +341,31 @@ def ensure_job() -> bool:
     return ok
 
 
+_MUTEXES: list[int] = []
+
+
+def hold_mutex(name: str) -> bool:
+    """Create (or open) the named mutex ``name`` and keep a handle to it for the
+    life of the process; it exists while any process holds one. Not inherited.
+    False if Windows refused (a name too long, say)."""
+    handle = _k32.CreateMutexW(None, False, name)
+    if not handle:
+        return False
+    _MUTEXES.append(handle)
+    return True
+
+
+def long_path(path: str) -> str:
+    """``path`` with every 8.3 short name spelled out (``GetLongPathNameW``), as
+    the installer sees its folder; ``path`` itself when Windows can't tell."""
+    size = _k32.GetLongPathNameW(path, None, 0)
+    if not size:
+        return path
+    buf = ctypes.create_unicode_buffer(size)
+    got = _k32.GetLongPathNameW(path, buf, size)
+    return buf.value if 0 < got < size else path
+
+
 def pipe_server_pid(handle: int) -> int | None:
     pid = wintypes.ULONG()
     if not _k32.GetNamedPipeServerProcessId(handle, ctypes.byref(pid)):
@@ -354,6 +381,8 @@ __all__ = [
     "FILE_ATTRIBUTE_REPARSE_POINT",
     "ensure_job",
     "file_owner_sid",
+    "hold_mutex",
+    "long_path",
     "my_owner_sid",
     "my_sid",
     "pid_alive",

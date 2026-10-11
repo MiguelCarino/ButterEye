@@ -212,6 +212,19 @@ installer put there; settings and history in `%APPDATA%` and `%LOCALAPPDATA%` st
 Running the installer again over an installation repairs it (no file of the earlier
 version survives). It refuses a folder that already holds other files.
 
+One installation per user: the uninstall entry and the shortcuts belong to the folder
+the entry names. The installer refuses a second copy in another folder while the
+first is installed (uninstall it, or choose its folder to repair it), and an
+uninstaller run for another folder leaves the entry and the shortcuts alone. Repair,
+upgrade and uninstall first make sure nothing runs from the folder: a running
+ButterEye holds a named mutex for its install folder (`osapi.install_mutex_name`,
+`Local\ButterEye-` and the folder's long path in lower case, `/` for `\`; the NSIS
+script builds the same name), and a player it started (mpv) still has VapourSynth's
+DLLs loaded, which the installer notices because they can't be opened for writing
+and deleting. It asks to close them and retry; silent (`/S`), it stops with exit code
+4 and changes nothing. Exit codes: 0 done, 2 not here (Windows too old, a folder with
+other files, ButterEye installed in another folder), 4 in use.
+
 How the pieces find each other:
 
 - **VapourSynth.** The VapourSynth package sits inside the bundled Python, where its
@@ -222,6 +235,11 @@ How the pieces find each other:
   Python folder and the VapourSynth folder first on `PATH`
   (`osapi.use_bundled_runtime`). Every child then uses the bundle: mpv's filter, the
   doctor's probe, setup's smoke test, the speed test, and `vspipe` for offline render.
+  `vspipe` is started by the full path of the bundled `vspipe.exe`, never looked up
+  by name. Windows looks for a bare program name in the current folder before `PATH`
+  (a `vspipe.exe` or `mpv.exe` in Downloads would win), so ButterEye sets
+  `NoDefaultCurrentDirectoryInExePath=1` for itself and its children, and
+  `osapi.executable` only returns absolute paths found in absolute `PATH` folders.
   Linux is untouched.
 - **ButterEye's folder.** Python's `._pth` file lists the install folder, so the
   `buttereye` package is importable and `paths.install_dir()` (the folder above the
@@ -250,10 +268,23 @@ stops the build.
 
 **Microsoft's Visual C++ runtime.** VapourSynth needs it (14.50.35719 or newer) and
 it only installs machine-wide, which takes administrator rights once. It can't be
-put next to ButterEye instead: mpv loads VapourSynth into its own process. When it is
-missing or too old, the installer offers to download it from Microsoft (the download
-is accepted only with Microsoft's valid signature) and Windows asks for permission; a
-silent install (`/S`) leaves it alone. Either way the doctor checks it
+put next to ButterEye instead: mpv loads VapourSynth into its own process. Qt uses
+the same system runtime: the PySide6 and Shiboken6 wheels each carry a copy
+(`msvcp140*.dll`, `concrt140.dll`, `vcomp140.dll`, ...), and the installer leaves both
+out, so without the runtime the window doesn't open either (the command line and its
+doctor still run). The only Microsoft DLLs shipped are `python\vcruntime140.dll` and
+`vcruntime140_1.dll`, part of Python's official embeddable build, redistributed under
+the conditions in its `LICENSE.txt` (`licenses\python\MICROSOFT-VCRUNTIME.txt`; the
+install record lists them as `microsoft-vcruntime`); `winstage.py check-imports`
+refuses any other. When it is
+missing or too old, the installer offers to download it from Microsoft and Windows
+asks for permission; a silent install (`/S`) leaves it alone. The file goes to the
+installer's own temporary folder and is held open (readable, not writable or
+deletable) from its check until it has run. The check, by Windows PowerShell started
+by its full path, accepts only a valid Authenticode signature by Microsoft Corporation
+chained to Microsoft's root, on a file whose version information says it is
+Microsoft's x64 Visual C++ redistributable (`VC_redist.x64.exe`); an embedded copy
+(`VCREDIST=`) is checked the same way. Either way the doctor checks it
 (`packages.vcruntime`, with the `winget` line). The redistributable is not bundled:
 Microsoft allows that only to licensed Visual Studio users (`VCREDIST=` in
 `build-installer.sh` embeds it if the owner decides to).
@@ -287,7 +318,15 @@ that ships with Windows from 1903); the installer refuses older versions.
 - `setup.exe /S /D=<folder>` installs; `Uninstall.exe /S` removes the folder, the
   Start-menu entry and the registry entry, and leaves a file of the user's alone;
   installing over an installation removes a stale file; a folder with other files
-  is refused (exit code 2).
+  is refused (exit code 2). The test installs into a folder with a space and a
+  non-ASCII letter (`Butter Eye ñ`, `/D=` last and unquoted), where RIFE loads its
+  model too; it skips when this user already has a ButterEye registered elsewhere.
+- One installation per user: a second copy in another folder is refused (exit code
+  2) and an uninstaller run for another folder leaves the entry and the shortcut.
+  Repair and uninstall stop with exit code 4 and change nothing while the installed
+  ButterEye's core runs, while a process holds its mutex name (the name the NSIS
+  script builds is the one `osapi.install_mutex_name` gives), and while a plain
+  process has the bundled Python's DLLs loaded; once it has ended, the repair works.
 - The installed runtime alone (this test's own Python taken off `PATH`, a fresh
   profile): `buttereye.cmd doctor --json` with stdout a pipe reports the plugins,
   models, licence files, ffms2, the Visual C++ runtime and the RTX 4090 OK, and with

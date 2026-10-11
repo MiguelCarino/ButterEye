@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -69,6 +70,109 @@ def test_linux_environment_is_never_touched(monkeypatch: pytest.MonkeyPatch) -> 
     osapi.use_bundled_runtime()
     assert dict(os.environ) == before
     assert osapi.runtime_dirs()[0] == os.path.dirname(sys.executable)
+
+
+def test_windows_runtime_takes_the_current_folder_out_of_the_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    py, vs = _bundle(tmp_path)
+    monkeypatch.delenv(osapi.NO_CWD_SEARCH, raising=False)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(osapi, "IS_WINDOWS", True)
+    monkeypatch.setattr(osapi, "runtime_dirs", lambda: (py, vs))
+    monkeypatch.setattr(osapi, "point_at_runtime", lambda env, p, v: None)
+    osapi.use_bundled_runtime()
+    assert os.environ[osapi.NO_CWD_SEARCH] == "1"
+
+
+def test_windows_vspipe_is_the_bundled_one_by_its_full_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    py, vs = _bundle(tmp_path)
+    monkeypatch.setattr(osapi, "runtime_dirs", lambda: (py, vs))
+    monkeypatch.setattr(osapi.shutil, "which", lambda name: f"/usr/bin/{name}")
+    # Linux: the distribution's, by name, as before
+    assert osapi.bundled_vspipe() is None
+    assert osapi.vspipe_command() == "vspipe"
+    assert osapi.vspipe() == "/usr/bin/vspipe"
+    monkeypatch.setattr(osapi, "IS_WINDOWS", True)
+    monkeypatch.setattr(osapi, "executable", lambda name: None)
+    assert osapi.bundled_vspipe() is None  # no vspipe.exe in the package: not searched for
+    assert osapi.vspipe() is None and osapi.vspipe_command() == "vspipe"
+    (Path(vs) / "vspipe.exe").write_bytes(b"MZ")
+    exe = os.path.join(vs, "vspipe.exe")
+    assert osapi.bundled_vspipe() == exe
+    assert osapi.vspipe() == exe and osapi.vspipe_command() == exe
+    assert runner.find_tools(_paths(tmp_path)).vspipe == exe
+
+
+def test_install_mutex_name_is_what_the_installer_builds() -> None:
+    # buttereye.nsi MutexName: the long path, lower case, "/" for "\\"
+    name = osapi.install_mutex_name(r"C:\Users\Ana Núñez\AppData\Local\Programs\ButterEye")
+    assert name == "Local\\ButterEye-c:/users/ana núñez/appdata/local/programs/buttereye"
+    assert "\\" not in name.removeprefix("Local\\")
+    assert osapi.install_mutex_name("D:\\Apps\\BE\\") == "Local\\ButterEye-d:/apps/be"
+
+
+def test_install_root_is_the_folder_with_the_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    py, vs = _bundle(tmp_path)
+    monkeypatch.setattr(osapi, "runtime_dirs", lambda: (py, vs))
+    assert osapi.install_root() is None  # a Python that no installer put there
+    (tmp_path / osapi.INSTALL_RECORD).write_text("{}")
+    assert osapi.install_root() == str(tmp_path)
+    osapi.hold_install_mutex()  # Linux: nothing to hold
+
+
+def _paths(tmp_path: Path) -> object:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(rpm_plugin_dir=tmp_path, rpm_data_dir=tmp_path)
+
+
+def test_windows_search_never_uses_the_current_folder() -> None:
+    files = {r"C:\Users\me\Downloads\vspipe.exe", r"C:\BE\vs\vspipe.exe", r"C:\mpv\mpv.com",
+             r"C:\mpv\mpv.exe", r"bin\tool.exe", r"C:\x\tool.exe"}  # fmt: skip
+    lower = {f.lower() for f in files}
+
+    def isfile(p: str) -> bool:  # Windows file names ignore case
+        return p.lower() in lower
+
+    def search(name: str, path: str, pathext: str, *, isfile: Callable[[str], bool]) -> str | None:
+        found = osapi.search_windows_path(name, path, pathext, isfile=isfile)
+        return found and found.lower()
+
+    ext = ".COM;.EXE;.BAT"
+    # relative PATH entries ("." and "bin") would be the current folder: skipped
+    assert search("vspipe", r".;bin;C:\BE\vs", ext, isfile=isfile) == r"c:\be\vs\vspipe.exe"
+    assert search("tool", r"bin;C:\x", ext, isfile=isfile) == r"c:\x\tool.exe"
+    assert search("tool", "bin", ext, isfile=isfile) is None
+    assert search("vspipe", "", ext, isfile=isfile) is None
+    # PATHEXT order, an extension given, quoted entries, a folder in the name
+    assert search("mpv", r'"C:\mpv"', ext, isfile=isfile) == r"c:\mpv\mpv.com"
+    assert search("mpv.exe", r"C:\mpv", ext, isfile=isfile) == r"c:\mpv\mpv.exe"
+    assert search(r"bin\tool", r"C:\x", ext, isfile=isfile) is None
+    assert search(r"C:\x\tool", "", ext, isfile=isfile) == r"c:\x\tool.exe"
+    assert search(r"\x\tool", "", ext, isfile=isfile) is None  # no drive: relative
+
+
+def test_windows_executable_prefers_the_exe_and_is_always_absolute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    found: list[str] = []
+
+    def fake(name: str, path: str, pathext: str) -> str | None:
+        found.append(name)
+        return r"C:\mpv\mpv.exe" if name == "mpv.exe" else None
+
+    monkeypatch.setattr(osapi, "IS_WINDOWS", True)
+    monkeypatch.setattr(osapi, "search_windows_path", fake)
+    assert osapi.executable("mpv") == r"C:\mpv\mpv.exe"
+    assert osapi.executable("vspipe") is None and found[-2:] == ["vspipe.exe", "vspipe"]
+    monkeypatch.setattr(osapi, "IS_WINDOWS", False)
+    monkeypatch.setattr(osapi.shutil, "which", lambda name: "./mpv")
+    assert osapi.executable("mpv") == "./mpv"  # Linux: shutil.which, unchanged
 
 
 # ---------------------------------------------------------------- first run
