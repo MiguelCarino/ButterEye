@@ -29,3 +29,24 @@ Work and results: `~/.cache/buttereye/packaging/` (`SRPMS/`, `results/<chroot>/<
 Needs `mock` (and membership of the `mock` group), `rpm-build`, `rpmdevtools` (`spectool`)
 and `python3 -m build`. Uploading to the COPR (`copr-cli build <owner>/buttereye *.src.rpm`
 in a project created with `--enable-net off`) is the owner's step.
+
+## Windows plugins (docs/PLATFORMS.md, phase 3)
+
+```sh
+packaging/windows/build-plugins.sh    # ~3 minutes; mock chroot with Fedora's MinGW-w64
+tools/wine-tests.sh                   # loads them into VapourSynth for Windows under Wine
+```
+
+The same sources and patches as the Fedora packages (fetched and checked by
+`build.sh --srpm-only`), cross-compiled into self-contained DLLs: the C++ runtime,
+OpenMP, fftw and winpthreads are linked in, and the build fails if a DLL imports
+anything but `KERNEL32.dll`, `msvcrt.dll` or `vulkan-1.dll` (which the GPU driver
+installs). One extra patch, `plugins/buttereye-vs-rife-ncnn-windows-paths.patch`, fixes
+RIFE's Windows model loading for MinGW builds (Windows-only code).
+
+Output in `~/.cache/buttereye/windows/`: `vapoursynth/{mvtools,librife,libmvgpu}.dll`,
+`share/rife-ncnn-models/`, `licenses/<component>/` (including fftw and the MinGW-w64
+runtime, which are linked in), `components.json` (entries for the installer's
+`buttereye-install.json`), `sources/` (the Corresponding Source, with Fedora's
+`mingw-fftw` source package) and `SHA256SUMS`. Needs `mock` and network for the chroot
+packages and the fftw source package.

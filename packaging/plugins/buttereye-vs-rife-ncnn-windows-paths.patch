@@ -1,0 +1,49 @@
+ButterEye: Windows model paths (MinGW builds).
+
+swprintf(L"%s", wchar_t*) reads a narrow string under MinGW (C99), so the model
+folder was cut to its first character and RIFE silently produced empty frames.
+Build the paths with std::wstring instead; also drop the 256-character limit
+and stop passing a missing file to fclose. Windows-only code (#if _WIN32).
+
+--- a/RIFE/rife.cpp
++++ b/RIFE/rife.cpp
+@@ -79,16 +79,19 @@
+ #if _WIN32
+ static void load_param_model(ncnn::Net& net, const std::wstring& modeldir, const wchar_t* name)
+ {
+-    wchar_t parampath[256];
+-    wchar_t modelpath[256];
+-    swprintf(parampath, 256, L"%s/%s.param", modeldir.c_str(), name);
+-    swprintf(modelpath, 256, L"%s/%s.bin", modeldir.c_str(), name);
++    // ButterEye: build the paths as strings. swprintf's "%s" means a wide string
++    // with Microsoft's C library but a narrow one under MinGW (C99), which cut the
++    // folder to its first character; the fixed 256-character buffers also
++    // truncated long paths, and a missing file was passed to fclose.
++    const std::wstring parampath = modeldir + L"/" + name + L".param";
++    const std::wstring modelpath = modeldir + L"/" + name + L".bin";
+ 
+     {
+-        FILE* fp = _wfopen(parampath, L"rb");
++        FILE* fp = _wfopen(parampath.c_str(), L"rb");
+         if (!fp)
+         {
+-            fwprintf(stderr, L"_wfopen %ls failed\n", parampath);
++            fwprintf(stderr, L"_wfopen %ls failed\n", parampath.c_str());
++            return;
+         }
+ 
+         net.load_param(fp);
+@@ -96,10 +99,11 @@
+         fclose(fp);
+     }
+     {
+-        FILE* fp = _wfopen(modelpath, L"rb");
++        FILE* fp = _wfopen(modelpath.c_str(), L"rb");
+         if (!fp)
+         {
+-            fwprintf(stderr, L"_wfopen %ls failed\n", modelpath);
++            fwprintf(stderr, L"_wfopen %ls failed\n", modelpath.c_str());
++            return;
+         }
+ 
+         net.load_model(fp);
