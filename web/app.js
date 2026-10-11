@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 The ButterEye contributors
-// butter.carino.systems: put the butter in a pan (one pan per platform) to get
-// ButterEye for it. Pointer drag anywhere in the kitchen, keyboard (arrows hover the
-// butter over a pan, Enter drops it, Home/Escape take it back) and the pans as
-// buttons all reach choose(). The download list comes from the latest GitHub
-// release when the API answers, else from the built-in 0.0.1 list.
+// butter.carino.systems. A Fedora button is a plain link to the app's RPM (the
+// no-JS path) and also opens the install sheet, since the app's plugins are not
+// in Fedora's repositories. macOS and Windows explain why not yet. Linux readers
+// see both Fedora buttons marked (the browser doesn't say which Fedora). The
+// links follow the latest GitHub release when the API answers.
 'use strict';
 
 const REPO = 'MiguelCarino/ButterEye';
@@ -21,198 +21,96 @@ const FALLBACK = {
 };
 // install order in the command: the app first, then its plugins
 const ORDER = ['buttereye-', 'buttereye-vs-mvtools', 'buttereye-vs-rife-ncnn', 'buttereye-rife-ncnn-models', 'buttereye-vs-mvgpu'];
-const NAMES = { fc44: 'Fedora 44', fc45: 'Fedora 45', macos: 'macOS', windows: 'Windows' };
 const SOON = {
-  macos: 'ButterEye drives mpv over Unix sockets and loads Linux builds of its VapourSynth plugins; '
-    + 'macOS also lacks native Vulkan for the GPU engines. Not in this release.',
-  windows: 'ButterEye drives mpv over Unix sockets, checks a Fedora system and loads Linux builds of '
-    + 'its VapourSynth plugins. A Windows port is possible but not in this release.',
+  macos: ['macOS: not yet', 'ButterEye drives mpv over Unix sockets and loads Linux builds of its VapourSynth plugins; '
+    + 'macOS also lacks native Vulkan for the GPU engines. Not in this release.'],
+  windows: ['Windows: not yet', 'ButterEye drives mpv over Unix sockets, checks a Fedora system and loads Linux builds of '
+    + 'its VapourSynth plugins. A Windows port is possible but not in this release.'],
 };
 
 let release = FALLBACK;
+let platform = 'fc44';
 
-const kitchen = document.getElementById('kitchen');
-const butter = document.getElementById('butter');
-const pans = Array.from(document.querySelectorAll('.pan'));
-const result = document.getElementById('result');
-const reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
-
-let hover = 0;          // pan the butter is over (1-based), 0 = none
-let pos = { x: 0, y: 0 };
-let dragging = null;    // {dx, dy} while dragging
-let timer = 0;
-
-function size() { return butter.getBoundingClientRect().width || 64; }
-let chosen = 0;         // pan that has butter in it (1-based), 0 = none yet
-function home() {       // resting place: above the pans, or on the chosen pan's handle
-  const k = kitchen.getBoundingClientRect();
-  if (!chosen) return { x: (k.width - size()) / 2, y: 6 };
-  const s = pans[chosen - 1].querySelector('svg').getBoundingClientRect();
-  return { x: s.left + s.width * 0.86 - k.left - size() / 2, y: s.top + s.height / 2 - k.top - size() * 0.62 };
-}
-function panCentre(i) { // butter position that centres it over pan i's cooking surface
-  const k = kitchen.getBoundingClientRect();
-  const s = pans[i - 1].querySelector('svg').getBoundingClientRect();
-  // the pan body sits in the left 72 % of the drawing (the handle is the rest)
-  return { x: s.left + s.width * 0.36 - k.left - size() / 2, y: s.top + s.height / 2 - k.top - size() / 2 };
-}
-
-function place(p, { settle = false, scale = 1 } = {}) {
-  pos = p;
-  butter.classList.toggle('settle', settle && !reduce.matches);
-  butter.style.setProperty('--bx', `${p.x}px`);
-  butter.style.setProperty('--by', `${p.y}px`);
-  butter.style.setProperty('--bs', String(scale));
-}
-
-function under(p) {     // the pan under the butter's centre
-  const k = kitchen.getBoundingClientRect();
-  const cx = k.left + p.x + size() / 2;
-  const cy = k.top + p.y + size() / 2;
-  for (let i = 0; i < pans.length; i++) {
-    const r = pans[i].getBoundingClientRect();
-    if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) return i + 1;
-  }
-  return 0;
-}
-
-function mark(i) {
-  hover = i;
-  pans.forEach((p, k) => p.classList.toggle('near', k + 1 === i));
-  butter.setAttribute('aria-valuenow', String(i));
-  butter.setAttribute('aria-valuetext', i ? `Over the ${NAMES[pans[i - 1].dataset.platform]} pan` : 'Not in a pan yet');
-}
-
-function back() {       // a fresh pat of butter at home
-  clearTimeout(timer);
-  butter.classList.remove('melted');
-  place(home(), { settle: true });
-  mark(0);
-}
-
-function choose(i) {
-  clearTimeout(timer);
-  mark(i);
-  place(panCentre(i), { settle: true, scale: 0.7 });
-  butter.classList.add('melted');
-  chosen = i;
-  kitchen.classList.add('cooking');  // the butter no longer needs room above the pans
-  pans.forEach((p, k) => p.classList.toggle('chosen', k + 1 === i));
-  const platform = pans[i - 1].dataset.platform;
-  chips.forEach((c) => c.classList.toggle('recommended', c.dataset.platform === platform));
-  show(platform);
-  // once it has melted, a new pat waits at home for another choice
-  timer = setTimeout(() => {
-    butter.classList.remove('melted', 'settle');
-    place(home());
-    mark(0);
-  }, reduce.matches ? 0 : 900);
-}
-
-// ---------------------------------------------------------------- pointer
-butter.addEventListener('pointerdown', (e) => {
-  clearTimeout(timer);
-  butter.classList.remove('melted');
-  const b = butter.getBoundingClientRect();
-  dragging = { dx: e.clientX - b.left, dy: e.clientY - b.top };
-  butter.setPointerCapture(e.pointerId);
-  butter.classList.add('dragging');
-  e.preventDefault();
-});
-butter.addEventListener('pointermove', (e) => {
-  if (!dragging) return;
-  const k = kitchen.getBoundingClientRect();
-  place({ x: e.clientX - k.left - dragging.dx, y: e.clientY - k.top - dragging.dy });
-  mark(under(pos));
-});
-function drop() {
-  if (!dragging) return;
-  dragging = null;
-  butter.classList.remove('dragging');
-  const i = under(pos);
-  if (i) choose(i); else back();  // not over a pan: the butter slides back
-}
-butter.addEventListener('pointerup', drop);
-butter.addEventListener('pointercancel', drop);
-
-// ---------------------------------------------------------------- keyboard
-function hoverOver(i) {
-  mark(i);
-  if (i) place({ x: panCentre(i).x, y: panCentre(i).y - 40 }, { settle: true });
-  else place(home(), { settle: true });
-}
-butter.addEventListener('keydown', (e) => {
-  const last = pans.length;
-  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') hoverOver(Math.min(hover + 1, last));
-  else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') hoverOver(Math.max(hover - 1, 0));
-  else if (e.key === 'Home' || e.key === 'Escape') back();
-  else if (e.key === 'End') hoverOver(last);
-  else if (e.key === 'Enter' || e.key === ' ') { if (hover) choose(hover); }
-  else return;
-  e.preventDefault();
-});
-
-// ---------------------------------------------------------------- classic buttons
-// A Fedora chip is a real link (the browser downloads the app's RPM) and also
-// drops the butter in that pan, so the panel shows the command with the plugins.
 const chips = Array.from(document.querySelectorAll('.dl-btn'));
-chips.forEach((c) => c.addEventListener('click', () => {
-  choose(pans.findIndex((p) => p.dataset.platform === c.dataset.platform) + 1);
-}));
-function linkChips() {
-  for (const c of chips) {
-    if (c.tagName !== 'A') continue;
-    const app = release.assets.find((a) => /^buttereye-\d/.test(a.name) && a.name.includes(`.${c.dataset.platform}.`) && a.name.endsWith('.rpm'));
-    if (app) c.href = app.url;
-  }
+const install = document.getElementById('installDialog');
+const soon = document.getElementById('soonDialog');
+const seg = Array.from(install.querySelectorAll('.seg button'));
+
+// ---------------------------------------------------------------- which system is this?
+function detectOS() {
+  const s = ((navigator.userAgentData && navigator.userAgentData.platform)
+    || navigator.platform || navigator.userAgent || '').toLowerCase();
+  if (/android/i.test(navigator.userAgent || '') || s.includes('android')) return null;  // a phone: no build
+  if (s.includes('linux') || s.includes('x11')) return 'linux';
+  return null;  // macOS and Windows have no build to point at
 }
+if (detectOS() === 'linux') chips.filter((c) => c.tagName === 'A').forEach((c) => c.classList.add('recommended'));
 
-// ---------------------------------------------------------------- the pans themselves
-pans.forEach((p, k) => p.addEventListener('click', () => choose(k + 1)));
-window.addEventListener('resize', () => { if (!dragging) place(hover ? panCentre(hover) : home()); });
-// the kitchen shrinks when a pan is chosen: put the waiting pat back on its handle after
-kitchen.addEventListener('transitionend', (e) => { if (e.target === kitchen && !dragging && !hover) place(home()); });
-
-// ---------------------------------------------------------------- result
-function show(platform) {
-  result.replaceChildren();
-  if (platform === 'macos' || platform === 'windows') {
-    const t = document.getElementById('tpl-soon').content.cloneNode(true);
-    t.querySelector('.result-title').textContent = `${NAMES[platform]}: not yet`;
-    t.querySelector('.soon-text').textContent = SOON[platform];
-    result.append(t);
-  } else {
-    const t = document.getElementById('tpl-fedora').content.cloneNode(true);
-    const rpms = release.assets
-      .filter((a) => a.name.includes(`.${platform}.`) && a.name.endsWith('.rpm') && !a.name.includes('.src.'))
-      .sort((a, b) => rank(a.name) - rank(b.name));
-    t.querySelector('.result-title').textContent = `${NAMES[platform]} · x86_64 · ${release.tag}`;
-    t.querySelector('.cmd').textContent = ['sudo dnf install \\', ...rpms.map((a, k) => `    ${a.url}${k < rpms.length - 1 ? ' \\' : ''}`)].join('\n');
-    const list = t.querySelector('.files');
-    for (const a of rpms) {
-      const li = document.createElement('li');
-      const link = document.createElement('a');
-      link.href = a.url;
-      link.textContent = a.name;
-      li.append(link);
-      list.append(li);
-    }
-    const sums = release.assets.find((a) => a.name === 'SHA256SUMS');
-    if (sums) t.querySelector('.sums').href = sums.url;
-    const copy = t.querySelector('.copy');
-    copy.addEventListener('click', () => copyText(result.querySelector('.cmd').textContent, copy));
-    result.append(t);
-  }
-  result.hidden = false;
-}
-
+// ---------------------------------------------------------------- the install sheet
 function rank(name) {  // the app first, then the plugins in ORDER
   let best = ORDER.length;
   ORDER.forEach((p, k) => { if (name.startsWith(p) && (k > 0 || /^buttereye-\d/.test(name))) best = k; });
   return best;
 }
+function rpms(p) {
+  return release.assets
+    .filter((a) => a.name.includes(`.${p}.`) && a.name.endsWith('.rpm') && !a.name.includes('.src.'))
+    .sort((a, b) => rank(a.name) - rank(b.name));
+}
+function fill() {
+  seg.forEach((b) => b.setAttribute('aria-checked', String(b.dataset.platform === platform)));
+  const list = rpms(platform);
+  document.getElementById('cmd').textContent = ['sudo dnf install \\', ...list.map((a, k) => `    ${a.url}${k < list.length - 1 ? ' \\' : ''}`)].join('\n');
+  const files = document.getElementById('files');
+  files.replaceChildren(...list.map((a) => {
+    const li = document.createElement('li');
+    const link = document.createElement('a');
+    link.href = a.url;
+    link.textContent = a.name;
+    li.append(link);
+    return li;
+  }));
+  const sums = release.assets.find((a) => a.name === 'SHA256SUMS');
+  if (sums) document.getElementById('sums').href = sums.url;
+  document.getElementById('installTitle').textContent = `Install ButterEye ${release.tag.replace(/^v/, '')}`;
+}
+function openInstall(p) {
+  if (p) platform = p;
+  fill();
+  if (!install.open) install.showModal();
+}
+seg.forEach((b) => b.addEventListener('click', () => { platform = b.dataset.platform; fill(); }));
+seg.forEach((b, k) => b.addEventListener('keydown', (e) => {  // radiogroup: arrows move between the two
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  const next = seg[(k + 1) % seg.length];
+  next.focus();
+  next.click();
+  e.preventDefault();
+}));
+document.getElementById('installBtn').addEventListener('click', () => openInstall());
 
-async function copyText(text, button) {
+// ---------------------------------------------------------------- the buttons
+chips.forEach((c) => c.addEventListener('click', () => {
+  const p = c.dataset.platform;
+  if (SOON[p]) {
+    document.getElementById('soonTitle').textContent = SOON[p][0];
+    document.getElementById('soonText').textContent = SOON[p][1];
+    soon.showModal();
+  } else {
+    // the link downloads the app's RPM; the sheet shows the command that brings its plugins
+    openInstall(p);
+  }
+}));
+
+// close a sheet by clicking its backdrop
+for (const d of [install, soon]) {
+  d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
+}
+
+// ---------------------------------------------------------------- copy
+document.getElementById('copy').addEventListener('click', async (e) => {
+  const button = e.currentTarget;
+  const text = document.getElementById('cmd').textContent;
   try {
     await navigator.clipboard.writeText(text);
   } catch {
@@ -226,24 +124,24 @@ async function copyText(text, button) {
   button.textContent = 'Copied';
   button.classList.add('done');
   setTimeout(() => { button.textContent = 'Copy'; button.classList.remove('done'); }, 1600);
-}
+});
 
 // ---------------------------------------------------------------- latest release
 fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } })
   .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
   .then((data) => {
     if (!data || !Array.isArray(data.assets) || !data.assets.length) return;
-    release = {
-      tag: data.tag_name,
-      assets: data.assets.map((a) => ({ name: a.name, url: a.browser_download_url })),
-    };
-    document.getElementById('version-chip').textContent = release.tag;
-    document.getElementById('foot-version').textContent = `ButterEye ${release.tag.replace(/^v/, '')}`;
-    linkChips();
-    const chosen = pans.findIndex((p) => p.classList.contains('chosen'));
-    if (chosen >= 0) show(pans[chosen].dataset.platform);
+    release = { tag: data.tag_name, assets: data.assets.map((a) => ({ name: a.name, url: a.browser_download_url })) };
+    const v = release.tag.replace(/^v/, '');
+    document.querySelector('#version strong').textContent = v;
+    document.getElementById('foot-version').textContent = `ButterEye ${v}`;
+    for (const c of chips) {
+      if (c.tagName !== 'A') continue;
+      const app = rpms(c.dataset.platform)[0];
+      if (app && rank(app.name) === 0) c.href = app.url;
+    }
+    if (install.open) fill();
   })
-  .catch(() => { /* offline or rate-limited: the built-in list stays */ });
+  .catch(() => { /* offline or rate-limited: the built-in 0.0.1 list stays */ });
 
-place(home());
-mark(0);
+fill();

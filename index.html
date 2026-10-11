@@ -13,113 +13,102 @@
   <link rel="stylesheet" href="web/style.css">
 </head>
 <body>
-  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
-    <defs>
-      <radialGradient id="pan-iron" cx="45%" cy="40%" r="65%">
-        <stop offset="0" stop-color="#2a2a2a"/><stop offset="1" stop-color="#0e0e0e"/>
-      </radialGradient>
-      <radialGradient id="pan-melt" cx="50%" cy="50%" r="50%">
-        <stop offset="0" stop-color="#fef08a"/><stop offset=".55" stop-color="#eab308"/><stop offset="1" stop-color="#b45309" stop-opacity=".0"/>
-      </radialGradient>
-      <!-- a frying pan seen from above: handle, rim, cooking surface, melted butter -->
-      <symbol id="pan" viewBox="0 0 160 120">
-        <!-- styled through custom properties: selectors can't reach inside <use> -->
-        <rect x="104" y="54" width="54" height="12" rx="6" fill="#1c1c1c" stroke="#333" stroke-width="1.5"/>
-        <circle cx="58" cy="60" r="54" fill="#151515" style="stroke: var(--rim, #333); stroke-width: var(--rim-w, 2)"/>
-        <circle cx="58" cy="60" r="44" fill="url(#pan-iron)"/>
-        <ellipse cx="58" cy="60" rx="30" ry="26" fill="url(#pan-melt)"
-                 style="opacity: var(--melt, 0); transform-origin: 58px 60px; transform: scale(calc(0.3 + var(--melt, 0) * 0.7))"/>
-      </symbol>
-    </defs>
-  </svg>
-
-  <main class="page">
-    <section class="intro">
-      <div class="brand">
-        <img class="mark" src="web/buttereye.svg" alt="" width="72" height="72">
-        <div>
-          <p class="kicker">Smooth motion for mpv</p>
-          <h1 class="wordmark">ButterEye</h1>
-        </div>
+  <!-- One screen, laid out like dicom.carino.systems: mark, headline, what it
+       does, the version, the download buttons. No navbar on this page. -->
+  <header class="hero">
+    <div class="wrap">
+      <!-- The mark over a strip of frames: the gold ones are the video's own, the
+           faint ones between them light up in turn, which is what ButterEye adds.
+           Decorative (aria-hidden): the headline says it in words. -->
+      <div class="hero-mark" aria-hidden="true">
+        <img class="mark" src="web/buttereye.svg" alt="" width="96" height="96" decoding="async">
+        <svg class="frames" viewBox="0 0 200 24">
+          <line class="rail" x1="4" y1="12" x2="196" y2="12"/>
+          <circle class="src" cx="10" cy="12" r="5"/>
+          <circle class="mid" cx="34" cy="12" r="3.4" style="--d: 0"/>
+          <circle class="mid" cx="58" cy="12" r="3.4" style="--d: 1"/>
+          <circle class="mid" cx="82" cy="12" r="3.4" style="--d: 2"/>
+          <circle class="src" cx="106" cy="12" r="5"/>
+          <circle class="mid" cx="130" cy="12" r="3.4" style="--d: 3"/>
+          <circle class="mid" cx="154" cy="12" r="3.4" style="--d: 4"/>
+          <circle class="mid" cx="178" cy="12" r="3.4" style="--d: 5"/>
+          <circle class="src" cx="200" cy="12" r="5"/>
+        </svg>
       </div>
-      <p class="claim"><span>Smoother motion</span> <span class="gold">for the videos you play in mpv.</span></p>
-      <p class="lede">New in-between frames, live while you watch or saved as a copy. Free software for Fedora Linux.</p>
-      <ul class="points">
-        <li><b>Live in your own mpv</b> — double, 60 fps or your display's rate; your mpv.conf is never edited.</li>
-        <li><b>Picked for your computer</b> — RIFE on the GPU, mvgpu for 4K and high refresh, MVTools on the CPU; a speed test chooses.</li>
-        <li><b>Smooth copies</b> — in the background, with audio, subtitles and chapters; HDR10 stays HDR10.</li>
-        <li><b>Explains itself</b> — system checks with the fix, a small line in mpv, Copy log when something goes wrong.</li>
+      <p class="kicker">ButterEye</p>
+      <h1><span>Choppy motion in your videos?</span><br><span class="gold">Make it smooth in mpv.</span></h1>
+      <p class="lede"><strong>ButterEye</strong> adds the in-between frames, live while you watch or saved as a copy — on your own GPU or CPU, with your own mpv.</p>
+      <ul class="situations">
+        <li>A 24 fps film on a 60 or 144 Hz screen? It plays at your display's rate, or at 60.</li>
+        <li>Not sure what your computer can do? A speed test picks the engine that keeps up — RIFE, mvgpu for 4K, or MVTools.</li>
+        <li>Want to keep it? Save a smooth copy, with audio, subtitles and chapters; HDR10 stays HDR10.</li>
       </ul>
-      <p class="chips"><span class="chip" id="version-chip">v0.0.1</span><span class="chip">Fedora 44 · 45</span><span class="chip">AGPL-3.0</span></p>
-    </section>
 
-    <section class="stove" aria-labelledby="dl-title">
-      <p class="kicker">Download</p>
-      <h2 id="dl-title">Put the butter in your pan</h2>
-      <p class="hint" id="dl-hint">Drag the butter into the pan for your system. Keyboard: arrows, then Enter. Or pick a pan or a button below.</p>
+      <!-- Above the buttons: it is what they hand you. app.js rewrites it from the
+           latest release so the line and the buttons never disagree. -->
+      <p class="version" id="version">Version <strong>0.0.1</strong> · Fedora Linux · AGPL-3.0</p>
 
-      <div class="kitchen" id="kitchen">
-        <div class="butter" id="butter" role="slider" tabindex="0" aria-label="Butter: put it in a pan"
-             aria-describedby="dl-hint" aria-valuemin="0" aria-valuemax="4" aria-valuenow="0"
-             aria-valuetext="Not in a pan yet">
-          <img src="web/buttereye.svg" alt="" width="56" height="56" draggable="false">
-        </div>
-        <ol class="pans" id="pans">
-          <li><button type="button" class="pan" data-platform="fc44">
-            <svg aria-hidden="true"><use href="#pan"/></svg>
-            <span class="pan-name">Fedora 44</span><span class="pan-sub">Linux · x86_64</span></button></li>
-          <li><button type="button" class="pan" data-platform="fc45">
-            <svg aria-hidden="true"><use href="#pan"/></svg>
-            <span class="pan-name">Fedora 45</span><span class="pan-sub">Linux · x86_64</span></button></li>
-          <li><button type="button" class="pan cold" data-platform="macos">
-            <svg aria-hidden="true"><use href="#pan"/></svg>
-            <span class="pan-name">macOS</span><span class="pan-sub">not yet</span></button></li>
-          <li><button type="button" class="pan cold" data-platform="windows">
-            <svg aria-hidden="true"><use href="#pan"/></svg>
-            <span class="pan-name">Windows</span><span class="pan-sub">not yet</span></button></li>
-        </ol>
-      </div>
-
-      <p class="dl-or">Or download directly</p>
+      <!-- The hrefs are the no-JS path: the app's RPM for each Fedora. It needs
+           its plugins (not in Fedora's repositories), so a click also opens the
+           one-line install that brings them. macOS and Windows are buttons: there
+           is nothing to download yet. -->
       <div class="downloads" id="downloads">
         <a class="dl-btn" data-platform="fc44" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.1/buttereye-0.0.1-1.fc44.noarch.rpm">
-          <span class="rec">chosen</span><b>🐧 Fedora 44</b><span class="fmt">.rpm · x86-64</span></a>
+          <span class="rec">for your system</span><b>🐧 Fedora 44</b><span class="fmt">.rpm · x86-64</span></a>
         <a class="dl-btn" data-platform="fc45" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.1/buttereye-0.0.1-1.fc45.noarch.rpm">
-          <span class="rec">chosen</span><b>🐧 Fedora 45</b><span class="fmt">.rpm · x86-64</span></a>
-        <!-- buttons, not links: there is nothing to download yet -->
+          <span class="rec">for your system</span><b>🐧 Fedora 45</b><span class="fmt">.rpm · x86-64</span></a>
         <button class="dl-btn soon" data-platform="macos" type="button">
-          <span class="rec">chosen</span><b> macOS</b><span class="fmt">not yet</span></button>
+          <b> macOS</b><span class="fmt">not yet</span></button>
         <button class="dl-btn soon" data-platform="windows" type="button">
-          <span class="rec">chosen</span><b>🪟 Windows</b><span class="fmt">not yet</span></button>
+          <b>🪟 Windows</b><span class="fmt">not yet</span></button>
       </div>
 
-      <div class="result" id="result" aria-live="polite" hidden></div>
-    </section>
-  </main>
+      <p class="dl-manual"><button class="btn ghost" type="button" id="installBtn"
+         aria-haspopup="dialog" aria-controls="installDialog">⌨ Install in one command</button></p>
+      <p class="dl-all"><a href="https://github.com/MiguelCarino/ButterEye/releases">All versions and changelogs →</a></p>
+      <p class="dl-note">ButterEye needs mpv, VapourSynth and its plugins; the one-line install brings everything.</p>
+    </div>
+  </header>
 
   <footer class="foot">
     <span id="foot-version">ButterEye 0.0.1</span> · AGPL-3.0-or-later ·
     <a href="https://github.com/MiguelCarino/ButterEye">Source</a> ·
-    <a href="https://github.com/MiguelCarino/ButterEye/releases">Releases</a> ·
     <a href="https://github.com/MiguelCarino/ButterEye/blob/main/CHANGELOG.md">Changelog</a>
   </footer>
 
-  <template id="tpl-fedora">
-    <h3 class="result-title"></h3>
-    <p>Install everything in one command (dnf downloads the files from the release):</p>
-    <div class="code"><pre><code class="cmd"></code></pre><button type="button" class="copy">Copy</button></div>
-    <p>Then open <strong>ButterEye</strong> from your application menu, or run <code>buttereye-gui</code>.</p>
-    <details>
-      <summary>Or download the files</summary>
-      <ul class="files"></ul>
-      <p class="small">Check them against <a class="sums" href="#">SHA256SUMS</a>. The minimum is <code>buttereye</code> and <code>buttereye-vs-mvtools</code>; the others add GPU smoothing.</p>
-    </details>
-  </template>
-  <template id="tpl-soon">
-    <h3 class="result-title"></h3>
-    <p class="soon-text"></p>
-    <p><a href="https://github.com/MiguelCarino/ButterEye/blob/main/docs/PLATFORMS.md">Why, and what a port would take</a></p>
-  </template>
+  <!-- The install sheet: a native <dialog> (focus trap, Escape, backdrop for free).
+       Commands are not translated: a translated command is one that does not run. -->
+  <dialog class="modal" id="installDialog" aria-labelledby="installTitle">
+    <div class="modal-head">
+      <h2 class="modal-title" id="installTitle">Install ButterEye</h2>
+      <form method="dialog"><button class="modal-x" aria-label="Close">✕</button></form>
+    </div>
+    <div class="modal-body">
+      <div class="seg" role="radiogroup" aria-label="Fedora version">
+        <button type="button" role="radio" data-platform="fc44" aria-checked="true">Fedora 44</button>
+        <button type="button" role="radio" data-platform="fc45" aria-checked="false">Fedora 45</button>
+      </div>
+      <p>One command; dnf downloads the files from the release:</p>
+      <div class="code"><pre><code id="cmd"></code></pre><button type="button" class="copy" id="copy">Copy</button></div>
+      <p>Then open <strong>ButterEye</strong> from your application menu, or run <code>buttereye-gui</code>.</p>
+      <details>
+        <summary>Or download the files</summary>
+        <ul class="files" id="files"></ul>
+        <p class="small">Check them against <a id="sums" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.1/SHA256SUMS">SHA256SUMS</a>. The minimum is <code>buttereye</code> and <code>buttereye-vs-mvtools</code>; the others add GPU smoothing.</p>
+      </details>
+    </div>
+  </dialog>
+
+  <dialog class="modal" id="soonDialog" aria-labelledby="soonTitle">
+    <div class="modal-head">
+      <h2 class="modal-title" id="soonTitle">Not yet</h2>
+      <form method="dialog"><button class="modal-x" aria-label="Close">✕</button></form>
+    </div>
+    <div class="modal-body">
+      <p id="soonText"></p>
+      <p><a href="https://github.com/MiguelCarino/ButterEye/blob/main/docs/PLATFORMS.md">Why, and what a port would take →</a></p>
+    </div>
+  </dialog>
 
   <script src="web/app.js"></script>
 </body>
