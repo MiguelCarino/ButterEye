@@ -10,6 +10,7 @@
 # Where each checksum was checked against its publisher (2026-10-11):
 #   Python        python.org release page (the .sigstore bundle is published too)
 #   wheels        PyPI's JSON API digests
+#   Qt sources    download.qt.io's SHA-256 (the .mirrorlist page) and its md5sums.txt
 #   FFmpeg        the release's .asc signature, FFmpeg release key FCF986EA15E6E293A5644F10B4322F04D67658D8
 #   dav1d         the release's .asc signature (VideoLAN release key 2018) and its .sha256
 #   FFMS2, Vulkan-Tools, volk
@@ -26,6 +27,15 @@ PYSIDE_URL=https://files.pythonhosted.org/packages/dc/09/d2662684aee4d3f027ff9b1
 PYSIDE_SHA256=c8a29def77032773a30879f7f24415b5395ad08592d147c170824ef4c735dfc1
 SHIBOKEN_URL=https://files.pythonhosted.org/packages/ce/6b/fee1b4814317e4664e318644c9c007676c65a71e5b2b9d3ac4121a94dc0a/shiboken6-6.11.2-cp310-abi3-win_amd64.whl
 SHIBOKEN_SHA256=6ab0eba1c904455df621f9a6df3ca2bb896bab8670572d2bc4e37804ae91f19a
+
+# Qt's own sources for the PySide6 wheel's Qt (same version): build-installer.sh
+# takes the licence texts of the third-party code inside the shipped Qt binaries
+# from them (qt_attribution.json), and the sources tar carries them
+QT_SRC_URL=https://download.qt.io/official_releases/qt/${PYSIDE_VER%.*}/$PYSIDE_VER/submodules
+QTBASE_URL=$QT_SRC_URL/qtbase-everywhere-src-$PYSIDE_VER.tar.xz
+QTBASE_SHA256=5b2e00eccaf5a4d8c14134ffa0ea8dfd0a35ae1ffc7f8d87fa4305a1ed23cf22
+QTSVG_URL=$QT_SRC_URL/qtsvg-everywhere-src-$PYSIDE_VER.tar.xz
+QTSVG_SHA256=d594337feca84c26fb67fe87b85e6a5c12fda404b611d905f9d138210c311876
 
 VAPOURSYNTH_VER=81
 VAPOURSYNTH_URL=https://files.pythonhosted.org/packages/6c/c1/d1448dd3a34ac2d3f439496167b3ffe14d6c0b7f9647d468c2292a06e4c2/vapoursynth-81-cp312-abi3-win_amd64.whl

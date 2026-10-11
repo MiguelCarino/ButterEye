@@ -292,8 +292,9 @@ class AboutPage(Page):
         self.warranty_label.setAccessibleName(self.warranty_label.text())
         self.source_field.set_text(n.source_link)
         is_url = n.source_link.startswith(("https://", "http://"))
-        self.open_source.setVisible(is_url)
-        self.source_note.setVisible(not is_url)
+        is_file = not is_url and Path(n.source_link).is_absolute()  # Windows: SOURCES.txt
+        self.open_source.setVisible(is_url or is_file)
+        self.source_note.setVisible(not (is_url or is_file))
         self._set_missing(n.missing)
         missing = set(n.missing)
         for btn, path in (
@@ -333,7 +334,9 @@ class AboutPage(Page):
 
     def _open_source(self) -> None:
         if self.notices is not None:
-            QDesktopServices.openUrl(QUrl(self.notices.source_link))
+            link = self.notices.source_link
+            is_url = link.startswith(("https://", "http://"))
+            QDesktopServices.openUrl(QUrl(link) if is_url else QUrl.fromLocalFile(link))
 
     def _describe_releases(self, installed: str | None) -> None:
         opens = _t("Opens the ButterEye releases page in your web browser.")

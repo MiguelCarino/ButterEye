@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import metadata
 from pathlib import Path
 
@@ -69,7 +69,18 @@ def _shipped(rel: str, extra_roots: Sequence[Path] = ()) -> tuple[Path, bool]:
     return candidates[0], False
 
 
-def _source_link() -> str:
+def _source_link(windows: bool = osapi.IS_WINDOWS, install: Path | None = None) -> str:
+    """Where the source is: on Windows the installer's source offer
+    (licenses\\SOURCES.txt: the sources tar of what it built, the upstream sources
+    of what it bundles unchanged), elsewhere the project's source URL."""
+    if windows:
+        if install is None:
+            from buttereye.core.paths import install_dir
+
+            install = install_dir()
+        offer = install / "licenses" / "SOURCES.txt"
+        if offer.is_file():
+            return str(offer)
     try:
         urls = metadata.metadata("buttereye").get_all("Project-URL") or []
     except metadata.PackageNotFoundError:
@@ -127,6 +138,9 @@ class Component:
     #: shipped inside ButterEye itself: its licence texts, and the version shown
     bundled_files: tuple[Path, ...] = ()
     bundled_version: str | None = None
+    #: linked into another package's binary: the provide that names its version
+    #: (``bundled(ffmpeg)``); the version shown is that provide's
+    provide: str | None = None
 
 
 def _has(*words: str) -> Callable[[Path], bool]:
@@ -137,11 +151,29 @@ def _not(*words: str) -> Callable[[Path], bool]:
     return lambda p: not any(w in p.name.lower() for w in words)
 
 
-#: Windows: the installer conveys these too, so the PySide6, VapourSynth and ffms2
-#: rows count as conveyed there (on Fedora they come from the distribution)
-_CONVEYED_ON_WINDOWS = osapi.IS_WINDOWS
+REL_IN_FFMS2 = M("statically linked into ffms2")
+REL_IN_MVTOOLS = M("statically linked into MVTools")
+REL_IN_VULKANINFO = M("statically linked into vulkaninfo")
 
-COMPONENTS: tuple[Component, ...] = (
+
+def components(windows: bool) -> tuple[Component, ...]:
+    """The rows of the Licences tab. ``windows``: what the Windows installer
+    conveys (its install record, buttereye-install.json, lists it like rpm would):
+    PySide6, VapourSynth and ffms2 count as conveyed there (on Fedora they come
+    from the distribution), and FFmpeg is the LGPL build inside ffms2.dll rather
+    than a separate program."""
+    if not windows:
+        return _COMMON + _LINUX + _TAIL
+    rows = _COMMON + _WINDOWS_FFMS2 + _TAIL + _WINDOWS
+    return tuple(
+        replace(c, conveyed=True) if c.package in _CONVEYED_ON_WINDOWS else c for c in rows
+    )
+
+
+#: on Windows the installer conveys these (on Fedora the distribution does)
+_CONVEYED_ON_WINDOWS = ("python3-pyside6", "vapoursynth-libs", "ffms2")
+
+_COMMON: tuple[Component, ...] = (
     Component(
         "RIFE-ncnn-Vulkan",
         pk.PKG_RIFE,
@@ -170,7 +202,15 @@ COMPONENTS: tuple[Component, ...] = (
         min_texts=1,
         pick=_has("glslang"),
     ),
-    Component("MVTools", pk.PKG_MVTOOLS, "GPL-2.0-or-later AND ISC", REL_LOADED, True, min_texts=1),
+    Component(
+        "MVTools",
+        pk.PKG_MVTOOLS,
+        "GPL-2.0-or-later AND ISC",
+        REL_LOADED,
+        True,
+        min_texts=1,
+        pick=_not("fftw"),
+    ),
     Component("RIFE ncnn models", pk.PKG_MODELS, "MIT", REL_DATA, True, min_texts=4),
     Component(
         "mvgpu", pk.PKG_MVGPU, "AGPL-3.0-or-later", REL_LOADED, True, min_texts=1, always=False
@@ -201,7 +241,7 @@ COMPONENTS: tuple[Component, ...] = (
         "python3-pyside6",
         "LGPL-3.0-only OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
         REL_IN_PROCESS,
-        _CONVEYED_ON_WINDOWS,
+        False,
         spdx_from_rpm=True,
     ),
     Component("mpv", "mpv", "GPL-2.0-or-later", REL_SEPARATE, False, spdx_from_rpm=True),
@@ -210,11 +250,17 @@ COMPONENTS: tuple[Component, ...] = (
         "vapoursynth-libs",
         "LGPL-2.1-or-later",
         REL_SEPARATE,
-        _CONVEYED_ON_WINDOWS,
+        False,
         spdx_from_rpm=True,
     ),
+)
+
+_LINUX: tuple[Component, ...] = (
     Component("FFmpeg", "ffmpeg", "GPL-3.0-or-later", REL_SEPARATE, False, spdx_from_rpm=True),
-    Component("ffms2", "ffms2", "MIT", REL_LOADED, _CONVEYED_ON_WINDOWS, spdx_from_rpm=True),
+    Component("ffms2", "ffms2", "MIT", REL_LOADED, False, spdx_from_rpm=True),
+)
+
+_TAIL: tuple[Component, ...] = (
     Component(
         "mkvtoolnix",
         "mkvtoolnix",
@@ -225,29 +271,102 @@ COMPONENTS: tuple[Component, ...] = (
     ),
 )
 
+#: What the Windows installer adds that Fedora provides itself. ffms2.dll links
+#: FFmpeg (an LGPL build), dav1d and zlib; mvtools.dll links fftw; vulkaninfo.exe
+#: links volk: each is a row of its own, its version from the record's provides.
+_WINDOWS_FFMS2: tuple[Component, ...] = (
+    Component("ffms2", "ffms2", "MIT", REL_LOADED, True, min_texts=1, pick=_has("ffms2")),
+    Component(
+        "FFmpeg",
+        "ffms2",
+        "LGPL-2.1-or-later",
+        REL_IN_FFMS2,
+        True,
+        min_texts=2,
+        pick=_has("ffmpeg"),
+        provide="bundled(ffmpeg)",
+    ),
+    Component(
+        "dav1d",
+        "ffms2",
+        "BSD-2-Clause",
+        REL_IN_FFMS2,
+        True,
+        min_texts=1,
+        pick=_has("dav1d"),
+        provide="bundled(dav1d)",
+    ),
+    Component(
+        "zlib",
+        "ffms2",
+        "Zlib",
+        REL_IN_FFMS2,
+        True,
+        min_texts=1,
+        pick=_has("zlib"),
+        provide="bundled(zlib)",
+    ),
+)
 
-if osapi.IS_WINDOWS:
-    # What the Windows installer adds that Fedora provides itself (its install
-    # record, buttereye-install.json, lists them like rpm would)
-    COMPONENTS += (
-        Component("Python", "python3", "PSF-2.0", REL_IN_PROCESS, True, spdx_from_rpm=True),
-        Component(
-            "Vulkan-Tools (vulkaninfo)",
-            "vulkan-tools",
-            "Apache-2.0 AND MIT",
-            REL_SEPARATE,
-            True,
-            spdx_from_rpm=True,
-        ),
-        Component(
-            "MinGW-w64 runtime",
-            "mingw-w64-runtime",
-            "GPL-3.0-or-later WITH GCC-exception-3.1",
-            M("statically linked into the plugins and tools"),
-            True,
-            spdx_from_rpm=True,
-        ),
-    )
+_WINDOWS: tuple[Component, ...] = (
+    Component(
+        "fftw",
+        pk.PKG_MVTOOLS,
+        "GPL-2.0-or-later",
+        REL_IN_MVTOOLS,
+        True,
+        min_texts=1,
+        pick=_has("fftw"),
+        provide="bundled(fftw)",
+    ),
+    Component("Python", "python3", "PSF-2.0", REL_IN_PROCESS, True, spdx_from_rpm=True),
+    Component(
+        "Microsoft Visual C++ runtime (Python's copy)",
+        "microsoft-vcruntime",
+        "LicenseRef-Microsoft-Distributable-Code",
+        REL_IN_PROCESS,
+        True,
+        min_texts=1,
+        spdx_from_rpm=True,
+    ),
+    Component(
+        "Shiboken6",
+        "python3-shiboken6",
+        "LGPL-3.0-only",
+        REL_IN_PROCESS,
+        True,
+        spdx_from_rpm=True,
+    ),
+    Component(
+        "Vulkan-Tools (vulkaninfo)",
+        "vulkan-tools",
+        "Apache-2.0",
+        REL_SEPARATE,
+        True,
+        min_texts=1,
+        pick=_not("volk"),
+    ),
+    Component(
+        "volk",
+        "vulkan-tools",
+        "MIT",
+        REL_IN_VULKANINFO,
+        True,
+        min_texts=1,
+        pick=_has("volk"),
+        provide="bundled(volk)",
+    ),
+    Component(
+        "MinGW-w64 runtime",
+        "mingw-w64-runtime",
+        "GPL-3.0-or-later WITH GCC-exception-3.1",
+        M("statically linked into the plugins and tools"),
+        True,
+        spdx_from_rpm=True,
+    ),
+)
+
+COMPONENTS: tuple[Component, ...] = components(osapi.IS_WINDOWS)
 
 
 def _licence_finding(
@@ -289,11 +408,13 @@ def _licence_finding(
 
 
 def build_third_party(
-    db: pk.RpmDb, ffmpeg_owner: pk.RpmInfo | None
+    db: pk.RpmDb,
+    ffmpeg_owner: pk.RpmInfo | None,
+    rows: Sequence[Component] = COMPONENTS,
 ) -> tuple[ComponentLicence, ...]:
     """Pure over the rpm query result (plus licence-file existence)."""
     out: list[ComponentLicence] = []
-    for c in COMPONENTS:
+    for c in rows:
         if c.bundled_files:
             texts = tuple(p for p in c.bundled_files if p.is_file())
             out.append(
@@ -310,7 +431,7 @@ def build_third_party(
             )
             continue
         info = db.get(c.package) if c.package else None
-        if c.name == "FFmpeg":
+        if c.package == "ffmpeg":
             info = ffmpeg_owner or db.get("ffmpeg") or db.get("ffmpeg-free")
         if info is None and not c.always:
             continue
@@ -321,6 +442,8 @@ def build_third_party(
             version = info.provide("bundled(ncnn)") or version
         if c.name == "glslang" and info is not None:
             version = info.provide("bundled(glslang)") or version
+        if c.provide and info is not None:
+            version = info.provide(c.provide)
         spdx = info.license if (info is not None and c.spdx_from_rpm and info.license) else c.spdx
         finding = _licence_finding(c, files, [p for p in declared if p in files]) if info else None
         out.append(

@@ -15,7 +15,8 @@
 #   share/rife-ncnn-models/      the packaged RIFE models
 #   licenses/<component>/        every licence text the DLLs need
 #   components.json              install-record entries (checks_pkgs.manifest_db)
-#   sources/                     Corresponding Source for the GPL parts
+#   sources/                     Corresponding Source of what was built (with fftw's
+#                                source package), and the models archive
 #   SHA256SUMS
 #
 # ffms2 and vulkaninfo come from pinned upstream releases (pins.sh), built by
@@ -127,16 +128,24 @@ json.dump(data, open(path, "w"), indent=2)
 EOF
 
 # ---------------------------------------------------------------- Corresponding Source
-# GPL parts are linked into the DLLs (MVTools, fftw): ship exactly what was built
+# GPL parts are linked into the DLLs (MVTools, fftw): ship exactly what was built,
+# and the models archive the installer's models come from
 mkdir -p "$out/sources"
 cp "$src"/vapoursynth-mvtools-v*.tar.gz "$src"/buttereye-vs-rife-ncnn-r*.tar.gz \
    "$src"/ncnn-*.tar.gz "$src"/glslang-*.tar.gz "$src"/buttereye-vs-mvgpu-*.tar.gz \
+   "$src"/buttereye-rife-ncnn-models-r*.tar.gz \
    "$specs"/*.patch "$here"/build-plugins.sh "$here"/build-in-chroot.sh "$here"/chroot.sh "$out/sources/"
 # ffms2.dll links FFmpeg (LGPL) statically: its source and the exact build steps
 cp "${tool_srcs[@]}" "$here"/vulkaninfo-mingw-user32.patch "$here"/build-tools-in-chroot.sh \
    "$here"/pins.sh "$out/sources/"
-(cd "$out/sources" && dnf download -q --source "$fftw_nvr") \
-    || echo "warning: could not download the $fftw_nvr source package; add it before release" >&2
+# fftw is GPL and linked into mvtools.dll: its source must go with it, so no
+# source package, no build
+if ! (cd "$out/sources" && dnf download -q --source "$fftw_nvr") \
+    || ! compgen -G "$out/sources/mingw-fftw-*.src.rpm" >/dev/null; then
+    echo "error: could not download the $fftw_nvr source package (Corresponding Source of mvtools.dll)" >&2
+    rm -rf "$out"  # an output without it must not be packed into an installer
+    exit 1
+fi
 
 (cd "$out" && find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) >"$out/SHA256SUMS"
 echo "Windows plugins in $out"

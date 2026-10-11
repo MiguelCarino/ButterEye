@@ -529,9 +529,10 @@ def read_vcruntime() -> tuple[int, int, int] | None:
 
 def vcruntime_finding(version: tuple[int, int, int] | None) -> Finding:
     """Windows: VapourSynth (and so every smoothing path) needs Microsoft's Visual
-    C++ runtime, at least ``VCRUNTIME_MIN``. ButterEye's installer offers to
-    install it; it can't be bundled inside ButterEye's own folder because mpv
-    loads VapourSynth into its own process."""
+    C++ runtime, at least ``VCRUNTIME_MIN``; the window's Qt uses it too (the
+    installer ships no copy of its own but Python's vcruntime140). ButterEye's
+    installer offers to install it; it can't be bundled inside ButterEye's own
+    folder because mpv loads VapourSynth into its own process."""
     need = ".".join(map(str, VCRUNTIME_MIN))
     if version is not None and version >= VCRUNTIME_MIN:
         return _f(

@@ -192,7 +192,7 @@ the one exception (below).
 
 | Folder | What | Size |
 |---|---|---|
-| `python\` | Python 3.14.8 (the official embeddable build) with PySide6-Essentials 6.11.2 and VapourSynth R81 from their official Windows wheels | 91 MiB |
+| `python\` | Python 3.14.8 (the official embeddable build) with PySide6-Essentials 6.11.2 and VapourSynth R81 from their official Windows wheels | 84 MiB |
 | `buttereye\` | ButterEye itself | 3 MiB |
 | `vapoursynth\` | the three plugins (phase 3) and `ffms2.dll` | 39 MiB |
 | `share\rife-ncnn-models\` | the RIFE models | 31 MiB |
@@ -201,10 +201,12 @@ the one exception (below).
 | `buttereye-install.json` | the install record the doctor reads (phase 2) | |
 | `buttereye.cmd` | the command line: `buttereye.cmd doctor`, `buttereye.cmd play VIDEO` | |
 
-165 MiB on disk (the prototype was 370 MiB: Qt is trimmed to the modules ButterEye
-uses, Core, Gui, Widgets and Svg, and VapourSynth's debug symbols are left out); the
-installer is 65 MiB. A Start-menu entry "ButterEye" starts the window without a
-console (`pythonw -m buttereye.gui`); a desktop shortcut is an option. The
+159 MiB on disk (the prototype was 370 MiB: Qt is trimmed to the modules ButterEye
+uses, Core, Gui, Widgets, Svg and SvgWidgets with the Windows platform, style and SVG
+plugins only, without the wheels' copies of Microsoft's C++ runtime, and VapourSynth's
+debug symbols are left out); the installer is 63 MiB. A Start-menu entry "ButterEye"
+starts the window without a console (`pythonw -m buttereye.gui`); a desktop shortcut
+is an option. The
 uninstaller is registered for this user (Settings ▸ Apps) and removes only what the
 installer put there; settings and history in `%APPDATA%` and `%LOCALAPPDATA%` stay.
 Running the installer again over an installation repairs it (no file of the earlier
@@ -257,13 +259,25 @@ Microsoft allows that only to licensed Visual Studio users (`VCREDIST=` in
 `build-installer.sh` embeds it if the owner decides to).
 
 **Licences and source.** `licenses\<component>\` holds the texts of every bundled
-part: ButterEye (`COPYING`, `LICENSES\`), Python, PySide6/Qt (LGPL-3.0 and the GPL-3.0
-it builds on), VapourSynth, the plugins, ffms2 with FFmpeg, dav1d and zlib,
-Vulkan-Tools with volk, and the MinGW-w64 runtime. `licenses\SOURCES.txt` says where
-each part's source is: `ButterEye-<version>-windows-sources.tar`, made next to the
+part: ButterEye (`COPYING`, `LICENSES\`; the FSRCNNX shader's LGPL-3.0 is in
+`buttereye\data\shaders\`), Python, PySide6/Shiboken6/Qt (Qt's LGPL-3.0 and the
+GPL-3.0 it builds on, and in `licenses\pyside6\third-party\` the notices of the
+third-party code inside the shipped Qt binaries, FreeType, HarfBuzz, PCRE2, zlib,
+libpng, md4c, double-conversion and the rest, taken from the pinned qtbase and qtsvg
+sources' `qt_attribution.json`), VapourSynth, the plugins, ffms2 with FFmpeg, dav1d
+and zlib, Vulkan-Tools with volk, and the MinGW-w64 runtime. The wheels' own licence
+file is Qt's commercial licence, which doesn't apply to this copy: the trim replaces
+it with a note saying which licence does. `licenses\SOURCES.txt` says where each
+part's source is: `ButterEye-<version>-windows-sources.tar`, made next to the
 installer, holds the complete source of everything built for it, with the build
-scripts; Python, Qt/PySide6 and VapourSynth are unmodified official builds, listed with
-their source download pages and a written offer.
+scripts (`packaging/`, `mvgpu/`), fftw's Fedora source package and the models
+archive; Python, Qt/PySide6 (Core, Gui, Widgets, Svg, SvgWidgets and the
+`qwindows`, `qoffscreen`, `qminimal`, `qmodernwindowsstyle`, `qsvgicon` and `qsvg`
+plugins, all from qtbase and qtsvg) and VapourSynth are unmodified official builds,
+listed with their source download pages and a written offer. In the app, the
+Licences tab reads the install record: on Windows FFmpeg is the LGPL build inside
+`ffms2.dll`, with rows of their own for dav1d, zlib, fftw and volk, and the About
+tab's source line is `licenses\SOURCES.txt`.
 
 **Minimum Windows:** 64-bit Windows 10 version 1903 or newer (Qt 6.11 uses the ICU
 that ships with Windows from 1903); the installer refuses older versions.

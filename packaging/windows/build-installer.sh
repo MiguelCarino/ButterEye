@@ -8,10 +8,13 @@
 #
 #   1. the plugins, ffms2.dll and vulkaninfo.exe from build-plugins.sh (run if missing)
 #   2. the pinned runtime (pins.sh, SHA-256-checked): Python's embeddable build,
-#      and the PySide6-Essentials, Shiboken6 and VapourSynth wheels for Windows
+#      and the PySide6-Essentials, Shiboken6 and VapourSynth wheels for Windows;
+#      Qt's qtbase and qtsvg sources, for the licence notices of the third-party
+#      code inside the Qt binaries
 #   3. the install folder, staged:
 #        python\                     Python + site-packages (PySide6 trimmed to the
-#                                    Qt modules ButterEye uses, VapourSynth)
+#                                    Qt modules and plugins ButterEye uses, without
+#                                    the wheels' Microsoft C++ runtime; VapourSynth)
 #        buttereye\, buttereye-<v>.dist-info\   ButterEye from this source tree
 #        vapoursynth\*.dll           the plugins and ffms2.dll
 #        share\rife-ncnn-models\     the RIFE models
@@ -65,6 +68,11 @@ if [[ ! -f $win/components.json || ! -f $win/vapoursynth/ffms2.dll || ! -f $win/
 fi
 (cd "$win" && sha256sum --quiet --strict --ignore-missing -c SHA256SUMS) \
     || { echo "$win doesn't match its SHA256SUMS; run build-plugins.sh again" >&2; exit 1; }
+# the Corresponding Source of mvtools.dll's fftw, and the models' archive
+for need in 'sources/mingw-fftw-*.src.rpm' 'sources/buttereye-rife-ncnn-models-r*.tar.gz'; do
+    compgen -G "$win/$need" >/dev/null \
+        || { echo "$win/$need is missing; run build-plugins.sh again" >&2; exit 1; }
+done
 
 # ---------------------------------------------------------------- 2. the runtime
 py_zip=$(fetch "$PYTHON_URL" "$PYTHON_SHA256")
@@ -73,6 +81,7 @@ wheels=(
     "$(fetch "$SHIBOKEN_URL" "$SHIBOKEN_SHA256")"
     "$(fetch "$VAPOURSYNTH_URL" "$VAPOURSYNTH_SHA256")"
 )
+qt_srcs=("$(fetch "$QTBASE_URL" "$QTBASE_SHA256")" "$(fetch "$QTSVG_URL" "$QTSVG_SHA256")")
 
 # ---------------------------------------------------------------- 3. the install folder
 rm -rf "$work"
@@ -91,11 +100,12 @@ python3 -m pip install -q --disable-pip-version-check --no-deps --no-index --no-
 stagepy trim "$site"
 
 # ButterEye itself: the files git knows (committed or not), as a wheel, unpacked
+# (the sources tar gets packaging/ and mvgpu/ too, so it can rebuild the plugins)
 app_src=$work/src/buttereye-$version
 mkdir -p "$app_src"
 git -C "$repo" ls-files -z --cached --others --exclude-standard -- \
         buttereye pyproject.toml README.md COPYING LICENSES MANIFEST.in CHANGELOG.md \
-        THIRD-PARTY.md packaging/windows |
+        THIRD-PARTY.md packaging mvgpu |
     (cd "$repo" && while IFS= read -r -d '' f; do [[ -f $f ]] && printf '%s\0' "$f"; done) |
     (cd "$repo" && tar --null -T - -cf -) | tar -xf - -C "$app_src"
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$epoch" \
@@ -118,18 +128,34 @@ mkdir -p "$lic/buttereye/LICENSES" "$lic/python" "$lic/pyside6" "$lic/vapoursynt
 cp "$repo/COPYING" "$repo/THIRD-PARTY.md" "$lic/buttereye/"
 cp "$repo"/LICENSES/*.txt "$lic/buttereye/LICENSES/"
 cp "$stage/python/LICENSE.txt" "$lic/python/LICENSE.txt"
-# the wheels carry only Qt's commercial notice: the LGPL-3.0 (with the GPL-3.0 it
-# builds on) is the licence ButterEye conveys Qt and PySide6 under
-cp "$repo/buttereye/data/shaders/LGPL-3.0.txt" "$repo/buttereye/data/shaders/GPL-3.0.txt" "$lic/pyside6/"
+# Python's own copies of Microsoft's C++ runtime, the only Microsoft DLLs shipped
+# (check-imports below makes sure): part of the embeddable build, redistributed
+# under the conditions in its LICENSE.txt
+vcver=$(stagepy vc-note "$lic/python/MICROSOFT-VCRUNTIME.txt" "$PYTHON_VER" "$stage/python/vcruntime140.dll")
+# Qt's licences (the wheels carry only Qt's commercial licence; ButterEye conveys Qt,
+# PySide6 and Shiboken6 under the LGPL-3.0, with the GPL-3.0 it builds on) and the
+# notices of the third-party code inside the shipped Qt binaries, from Qt's sources
+mapfile -t qt_out < <(stagepy qt-notices "$lic/pyside6" "${qt_srcs[@]}")
+[[ ${#qt_out[@]} -eq 2 ]] || { echo "qt-notices failed" >&2; exit 1; }
+qt_files=$(cd "$stage" && find licenses/pyside6 -type f | LC_ALL=C sort | paste -sd,)
+pyside_lic=python/Lib/site-packages/pyside6_essentials-$PYSIDE_VER.dist-info/licenses
+shiboken_lic=python/Lib/site-packages/shiboken6-$PYSIDE_VER.dist-info/licenses
 cp "$site/vapoursynth-$VAPOURSYNTH_VER.dist-info/licenses/COPYING.LESSER" "$lic/vapoursynth/"
+zlib_ver=$(python3 -I -c 'import json, sys
+print(next(v for c in json.load(open(sys.argv[1]))["components"]
+           for n, v in c["provides"] if n == "bundled(zlib)"))' "$win/components.json")
 stagepy sources-txt "$lic/SOURCES.txt" version="$version" repo=https://github.com/MiguelCarino/ButterEye \
     ffms2="$FFMS2_VER" ffmpeg="$FFMPEG_VER" dav1d="$DAV1D_VER" vulkan_tools="$VULKAN_TOOLS_VER" \
-    python="$PYTHON_VER" pyside="$PYSIDE_VER" vapoursynth="$VAPOURSYNTH_VER"
+    python="$PYTHON_VER" pyside="$PYSIDE_VER" vapoursynth="$VAPOURSYNTH_VER" zlib="$zlib_ver" \
+    fftw_srpm="$(cd "$win/sources" && echo mingw-fftw-*.src.rpm)" \
+    models="$(cd "$win/sources" && echo buttereye-rife-ncnn-models-r*.tar.gz)"
 
 stagepy record "$win/components.json" "$stage/buttereye-install.json" \
-    "buttereye=$version=AGPL-3.0-or-later=licenses/buttereye/COPYING,licenses/buttereye/LICENSES/AdditionRef-ButterEye-generated-output.txt" \
-    "python3=$PYTHON_VER=PSF-2.0=licenses/python/LICENSE.txt" \
-    "python3-pyside6=$PYSIDE_VER=LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only=licenses/pyside6/LGPL-3.0.txt,licenses/pyside6/GPL-3.0.txt" \
+    "buttereye=$version=AGPL-3.0-or-later AND LGPL-3.0-or-later=licenses/buttereye/COPYING,licenses/buttereye/LICENSES/AdditionRef-ButterEye-generated-output.txt,buttereye/data/shaders/LGPL-3.0.txt,buttereye/data/shaders/GPL-3.0.txt" \
+    "python3=$PYTHON_VER=PSF-2.0 AND 0BSD AND bzip2-1.0.6 AND MIT AND BSD-3-Clause AND Apache-2.0=licenses/python/LICENSE.txt" \
+    "microsoft-vcruntime=$vcver=LicenseRef-Microsoft-Distributable-Code=licenses/python/LICENSE.txt,licenses/python/MICROSOFT-VCRUNTIME.txt" \
+    "python3-pyside6=$PYSIDE_VER=LGPL-3.0-only AND ${qt_out[0]}=$qt_files,$pyside_lic/LicenseRef-Qt-Commercial.txt=bundled(qt6)($PYSIDE_VER),${qt_out[1]}" \
+    "python3-shiboken6=$PYSIDE_VER=LGPL-3.0-only=licenses/pyside6/LGPL-3.0-only.txt,licenses/pyside6/GPL-3.0-only.txt,$shiboken_lic/LicenseRef-Qt-Commercial.txt" \
     "vapoursynth-libs=$VAPOURSYNTH_VER=LGPL-2.1-or-later=licenses/vapoursynth/COPYING.LESSER" \
     "vapoursynth-tools=$VAPOURSYNTH_VER=LGPL-2.1-or-later=licenses/vapoursynth/COPYING.LESSER"
 

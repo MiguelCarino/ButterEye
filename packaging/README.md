@@ -58,7 +58,8 @@ Output in `~/.cache/buttereye/windows/`: `vapoursynth/{mvtools,librife,libmvgpu,
 `vulkaninfo.exe`, `share/rife-ncnn-models/`, `licenses/<component>/` (including fftw,
 FFmpeg, dav1d, zlib, volk and the MinGW-w64 runtime, which are linked in),
 `components.json` (entries for the installer's `buttereye-install.json`), `sources/`
-(the Corresponding Source, with Fedora's `mingw-fftw` source package) and `SHA256SUMS`.
+(the Corresponding Source, with Fedora's `mingw-fftw` source package, without which
+the build fails, and the models archive) and `SHA256SUMS`.
 Needs `mock` and network for the chroot packages and the downloads.
 
 ## Windows installer (docs/PLATFORMS.md, phase 4)
@@ -72,15 +73,18 @@ Runs `build-plugins.sh` first if its output is missing, checks it against its
 `SHA256SUMS`, fetches the pinned runtime (Python 3.14.8's embeddable build and the
 PySide6-Essentials, Shiboken6 and VapourSynth R81 wheels for Windows; `pip` only unpacks
 them, `--no-index`), stages the install folder in `~/.cache/buttereye/windows-installer/`
-(Qt trimmed to Core, Gui, Widgets and Svg, with a check that every bundled DLL a
-binary imports is still there; `winstage.py`), and makes the icon and the installer in
+(Qt trimmed to Core, Gui, Widgets, Svg and SvgWidgets and the platform, style and SVG
+plugins, without the wheels' copies of Microsoft's C++ runtime, with a check that
+every bundled DLL a binary imports is still there and that no Microsoft DLL but
+Python's own `vcruntime140*.dll` is; the notices of the third-party code inside Qt
+from the pinned qtbase and qtsvg sources; `winstage.py`), and makes the icon and the installer in
 the chroot (`rsvg-convert`, `icotool`, Fedora's `makensis` from `mingw32-nsis`;
 `windows/buttereye.nsi`). Output in `~/.cache/buttereye/windows/`:
 
 | File | What |
 |---|---|
-| `ButterEye-<version>-setup.exe` | the installer (65 MiB; installs 165 MiB per user, no administrator rights) |
-| `ButterEye-<version>-windows-sources.tar` | the Corresponding Source of everything built for it: ButterEye, the plugin and tool sources and patches, the build scripts |
+| `ButterEye-<version>-setup.exe` | the installer (63 MiB; installs 159 MiB per user, no administrator rights) |
+| `ButterEye-<version>-windows-sources.tar` | the Corresponding Source of everything built for it: ButterEye with `packaging/` and `mvgpu/`, the plugin and tool sources and patches, fftw's Fedora source package, the models archive, the build scripts |
 | `SHA256SUMS` | every file above and the plugin build's |
 
 Publish the sources tar next to the setup.exe: the installed `licenses\SOURCES.txt`
@@ -89,8 +93,10 @@ offer) for Python, Qt/PySide6 and VapourSynth, which are bundled unmodified. But
 version comes from `buttereye/__init__.py`. The output is reproducible in its inputs
 (everything pinned), not byte for byte (NSIS and the PE files carry build times).
 
-Microsoft's Visual C++ runtime is not bundled: the installer offers to download it from
-Microsoft when it is missing. Microsoft lets only licensed Visual Studio users
+Microsoft's Visual C++ runtime is not bundled (but for the two `vcruntime140*.dll`
+that are part of Python's embeddable build, under Python's `LICENSE.txt`): the
+installer offers to download it from Microsoft when it is missing, and Qt and
+VapourSynth use it. Microsoft lets only licensed Visual Studio users
 redistribute `vc_redist.x64.exe`; with that licence,
 `VCREDIST=/path/to/vc_redist.x64.exe packaging/windows/build-installer.sh` embeds it.
 The installer is not code-signed, so Windows SmartScreen will warn about it.

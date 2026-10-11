@@ -10,7 +10,7 @@
 ; Per user, no administrator rights: everything goes to
 ; %LOCALAPPDATA%\Programs\ButterEye (or /D=<folder>), the uninstaller is
 ; registered under HKCU. The one exception is Microsoft's Visual C++ runtime,
-; which VapourSynth needs and which only installs machine-wide: when it is
+; which VapourSynth and Qt need and which only installs machine-wide: when it is
 ; missing or too old the installer offers to download it from Microsoft
 ; (signature checked) and Windows asks for permission once. -DVCREDIST embeds
 ; a copy instead (only if you may redistribute it, see packaging/README.md).
@@ -220,7 +220,7 @@ Function VcRuntime
   ${If} $R0 != "ok"
     DetailPrint "Microsoft's Visual C++ runtime is still missing ($R5); install it with: ${VCWINGET}"
     ${IfNot} ${Silent}
-      MessageBox MB_ICONINFORMATION|MB_OK "ButterEye is installed, but it can't smooth video until Microsoft's Visual C++ runtime is installed.$\n$\nGet it from ${VCURL}$\nor run: ${VCWINGET}$\n$\nButterEye's checks will remind you."
+      MessageBox MB_ICONINFORMATION|MB_OK "ButterEye is installed, but its window can't open and it can't smooth video until Microsoft's Visual C++ runtime is installed.$\n$\nGet it from ${VCURL}$\nor run: ${VCWINGET}$\n$\nThe command line's checks (buttereye.cmd doctor) will remind you."
     ${EndIf}
   ${EndIf}
 FunctionEnd

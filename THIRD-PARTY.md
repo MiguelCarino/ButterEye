@@ -36,13 +36,17 @@ repository: `buttereye-vsmlrt-py` (vsmlrt.py from vs-mlrt, unmodified, GPL-3.0-o
 
 The Windows installer (`docs/PLATFORMS.md`, phase 4) conveys, besides ButterEye, the
 plugins and the models above (built for Windows), the parts Fedora would otherwise
-provide. Their licence texts are installed in `licenses\<component>\`, and
+provide. Their licence texts are installed in `licenses\<component>\`,
+`buttereye-install.json` lists them (the Licences tab reads it), and
 `licenses\SOURCES.txt` says where each part's source is.
 
 | Component | Version | Licence | How ButterEye uses it |
 |---|---|---|---|
-| Python (embeddable build, unmodified) | 3.14.8 | PSF-2.0 (and the licences in its `LICENSE.txt`) | runs ButterEye |
-| PySide6 / Shiboken6 / Qt 6 (Core, Gui, Widgets, Svg; unmodified) | 6.11.2 | LGPL-3.0-only (conveyed under it) | the window, in-process |
+| Python (embeddable build, unmodified) | 3.14.8 | PSF-2.0 AND 0BSD AND bzip2-1.0.6 AND MIT AND BSD-3-Clause AND Apache-2.0 (the parts its `LICENSE.txt` lists: bzip2, libffi, Zstandard, OpenSSL) | runs ButterEye |
+| Microsoft Visual C++ runtime, Python's copy (`python\vcruntime140.dll`, `vcruntime140_1.dll`) | 14.51 | Microsoft Distributable Code, under the "Additional Conditions for this Windows binary build" in Python's `LICENSE.txt`; not free software | part of Python's embeddable build, unmodified |
+| PySide6 / Qt 6 (Core, Gui, Widgets, Svg, SvgWidgets; the plugins `qwindows`, `qoffscreen`, `qminimal`, `qmodernwindowsstyle`, `qsvgicon` and `qsvg`; all from qtbase and qtsvg, unmodified) | 6.11.2 | LGPL-3.0-only (conveyed under it) | the window, in-process |
+| Third-party code inside those Qt binaries (FreeType, HarfBuzz, PCRE2, zlib, libpng, md4c, double-conversion, TinyCBOR, BLAKE2, Unicode data, Vulkan and D3D12 memory allocators, XSVG and others; the list is `licenses\pyside6\third-party\README.txt`) | as in Qt 6.11.2 | each its own (MIT, BSD, Zlib, FTL, Libpng, Unicode-3.0, CC0-1.0, Apache-2.0, ...), notices from Qt's `qt_attribution.json` | inside Qt |
+| Shiboken6 | 6.11.2 | LGPL-3.0-only (conveyed under it) | PySide6's binding runtime, in-process |
 | VapourSynth (official wheel, unmodified) | R81 | LGPL-2.1-or-later | `vspipe` and mpv's filter |
 | FFMS2 (`ffms2.dll`) | 5.0 | MIT | loaded by vspipe (smooth copies) |
 | FFmpeg, decoders only, in `ffms2.dll` | 8.1.3 | LGPL-2.1-or-later | statically linked into ffms2 |
@@ -51,8 +55,12 @@ provide. Their licence texts are installed in `licenses\<component>\`, and
 | fftw (in `mvtools.dll`) | 3.3.8 | GPL-2.0-or-later | statically linked into MVTools |
 | MinGW-w64 runtime (GCC runtime libraries, winpthreads, CRT start-up code) | GCC 16.2.1, mingw-w64 13.0.0 | GPL-3.0-or-later WITH GCC-exception-3.1 AND BSD-3-Clause AND MIT AND ZPL-2.1 | statically linked into the plugins and tools |
 
-Microsoft's Visual C++ runtime is not shipped: the installer downloads it from
-Microsoft when you agree.
+The rest of Microsoft's Visual C++ runtime (`msvcp140.dll` and the others Qt and
+VapourSynth need) is not shipped: the PySide6 and Shiboken6 wheels' copies are left
+out, and the system's is used, installed from Microsoft's own redistributable (the
+installer offers to download it from Microsoft when you agree; `buttereye doctor`
+checks it). Qt's image-format plugins other than SVG (JPEG, TIFF, WebP, GIF, ...) are
+not shipped either: ButterEye draws only SVG icons.
 
 ## Used from your system, not shipped
 

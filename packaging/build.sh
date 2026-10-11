@@ -56,10 +56,14 @@ if [[ " ${specs[*]} " == *" buttereye-vs-mvgpu "* ]]; then
     v=$(rpmspec -q --qf '%{version}\n' --srpm "$here/plugins/buttereye-vs-mvgpu.spec")
     mv=$(sed -n "s/^project('mvgpu'.*version: '\([^']*\)'.*/\1/p" "$repo/mvgpu/meson.build")
     [[ $mv == "$v" ]] || { echo "mvgpu version mismatch: spec $v, meson.build ${mv:-none}" >&2; exit 1; }
-    git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 \
-        || { echo "buttereye-vs-mvgpu is packed from a git checkout" >&2; exit 1; }
-    epoch=$(git -C "$repo" log -1 --format=%ct -- mvgpu 2>/dev/null || :)
-    git -C "$repo" ls-files -z -co --exclude-standard -- mvgpu COPYING \
+    if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+        epoch=$(git -C "$repo" log -1 --format=%ct -- mvgpu 2>/dev/null || :)
+        list_mvgpu() { git -C "$repo" ls-files -z -co --exclude-standard -- mvgpu COPYING; }
+    else  # an unpacked source tar (the Windows installer's): it holds only tracked files
+        epoch=$(stat -c %Y "$repo/mvgpu/meson.build")
+        list_mvgpu() { (cd "$repo" && find mvgpu COPYING -type f -print0); }
+    fi
+    list_mvgpu \
         | (cd "$repo" && while IFS= read -r -d '' f; do [[ -f $f ]] && printf '%s\0' "$f"; done) \
         | LC_ALL=C sort -z \
         | tar --mtime="@${epoch:-${SOURCE_DATE_EPOCH:-0}}" --owner=0 --group=0 --numeric-owner \

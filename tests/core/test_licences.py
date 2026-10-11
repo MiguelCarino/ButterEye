@@ -146,3 +146,167 @@ async def test_real_third_party(xdg_env: object) -> None:
     assert rows["ncnn"].text_files and rows["glslang"].text_files
     assert rows["ncnn"].version == "0^20250503git305837fd"
     assert rows["mpv"].detected and not rows["mpv"].conveyed
+
+
+# ---------------------------------------------------------------------------
+# Windows: the rows the installer's record (buttereye-install.json) drives,
+# simulated on Linux with the same record shape build-installer.sh writes
+# ---------------------------------------------------------------------------
+
+_WIN_RECORD = {
+    "buttereye-vs-mvtools": (
+        "29.2-1",
+        "GPL-2.0-or-later AND ISC",
+        [["bundled(fftw)", "3.3.8"]],
+        ["LICENSE", "x86inc.asm", "fftw-COPYING", "fftw-COPYRIGHT"],
+    ),
+    "ffms2": (
+        "5.0",
+        "MIT AND LGPL-2.1-or-later AND BSD-2-Clause AND Zlib",
+        [["bundled(ffmpeg)", "8.1.3"], ["bundled(dav1d)", "1.5.4"], ["bundled(zlib)", "1.3.2"]],
+        [
+            "COPYING.ffms2",
+            "COPYING.LGPLv2.1.ffmpeg",
+            "LICENSE.ffmpeg.md",
+            "FFMPEG-CONFIGURATION.txt",
+            "COPYING.dav1d",
+            "LICENSE.zlib",
+        ],
+    ),
+    "vulkan-tools": (
+        "1.4.328.1",
+        "Apache-2.0 AND MIT",
+        [["bundled(volk)", "1.4.328.1"]],
+        ["LICENSE.txt", "LICENSE.volk.md"],
+    ),
+    "python3": ("3.14.8", "PSF-2.0 AND 0BSD AND MIT", [], ["LICENSE.txt"]),
+    "microsoft-vcruntime": (
+        "14.51.36247.0",
+        "LicenseRef-Microsoft-Distributable-Code",
+        [],
+        ["LICENSE.txt", "MICROSOFT-VCRUNTIME.txt"],
+    ),
+    "python3-pyside6": ("6.11.2", "LGPL-3.0-only AND MIT", [], ["LGPL-3.0-only.txt"]),
+    "python3-shiboken6": ("6.11.2", "LGPL-3.0-only", [], ["LGPL-3.0-only.txt"]),
+}
+
+
+def _windows_db(install: Path) -> RpmDb:
+    import json
+
+    from buttereye.core.doctor.checks_pkgs import INSTALL_MANIFEST, manifest_db
+
+    comps = []
+    for name, (version, lic, provides, files) in _WIN_RECORD.items():
+        rel = [f"licenses/{name}/{f}" for f in files]
+        for f in rel:
+            (install / f).parent.mkdir(parents=True, exist_ok=True)
+            (install / f).write_text("text")
+        comps.append(
+            {
+                "name": name,
+                "version": version,
+                "license": lic,
+                "provides": provides,
+                "licence_files": rel,
+            }
+        )
+    (install / INSTALL_MANIFEST).write_text(json.dumps({"version": 1, "components": comps}))
+    return manifest_db(install)
+
+
+def test_windows_ffmpeg_is_the_lgpl_build_inside_ffms2(tmp_path: Path) -> None:
+    rows = {
+        r.name: r
+        for r in licences.build_third_party(
+            _windows_db(tmp_path), None, licences.components(windows=True)
+        )
+    }
+    ff = rows["FFmpeg"]
+    assert ff.spdx == "LGPL-2.1-or-later" and ff.version == "8.1.3"
+    assert ff.conveyed and ff.detected and ff.finding is None
+    assert ff.relation == licences.REL_IN_FFMS2
+    assert {p.name for p in ff.text_files} == {
+        "COPYING.LGPLv2.1.ffmpeg",
+        "LICENSE.ffmpeg.md",
+        "FFMPEG-CONFIGURATION.txt",
+    }
+    assert {p.name for p in rows["ffms2"].text_files} == {"COPYING.ffms2"}
+    assert rows["ffms2"].spdx == "MIT" and rows["ffms2"].conveyed
+
+
+@pytest.mark.parametrize(
+    ("name", "version", "spdx", "text"),
+    [
+        ("dav1d", "1.5.4", "BSD-2-Clause", "COPYING.dav1d"),
+        ("zlib", "1.3.2", "Zlib", "LICENSE.zlib"),
+        ("fftw", "3.3.8", "GPL-2.0-or-later", "fftw-COPYING"),
+        ("volk", "1.4.328.1", "MIT", "LICENSE.volk.md"),
+    ],
+)
+def test_windows_bundled_components_have_rows(
+    tmp_path: Path, name: str, version: str, spdx: str, text: str
+) -> None:
+    rows = {
+        r.name: r
+        for r in licences.build_third_party(
+            _windows_db(tmp_path), None, licences.components(windows=True)
+        )
+    }
+    r = rows[name]
+    assert r.conveyed and r.detected and r.finding is None
+    assert r.version == version and r.spdx == spdx
+    assert text in {p.name for p in r.text_files}
+
+
+def test_windows_runtime_rows(tmp_path: Path) -> None:
+    rows = {
+        r.name: r
+        for r in licences.build_third_party(
+            _windows_db(tmp_path), None, licences.components(windows=True)
+        )
+    }
+    assert "fftw" not in " ".join(p.name for p in rows["MVTools"].text_files)
+    assert {p.name for p in rows["Vulkan-Tools (vulkaninfo)"].text_files} == {"LICENSE.txt"}
+    vc = rows["Microsoft Visual C++ runtime (Python's copy)"]
+    assert vc.conveyed and vc.version == "14.51.36247.0" and vc.finding is None
+    assert vc.spdx == "LicenseRef-Microsoft-Distributable-Code"
+    assert rows["Shiboken6"].spdx == "LGPL-3.0-only" and rows["Shiboken6"].conveyed
+    assert rows["PySide6 / Qt"].spdx == "LGPL-3.0-only AND MIT"  # the record's
+    assert rows["PySide6 / Qt"].conveyed and rows["VapourSynth"].conveyed
+
+
+def test_linux_rows_unchanged() -> None:
+    names = [c.name for c in licences.components(windows=False)]
+    assert names == [
+        "RIFE-ncnn-Vulkan",
+        "ncnn",
+        "glslang",
+        "MVTools",
+        "RIFE ncnn models",
+        "mvgpu",
+        "vsmlrt.py",
+        "onnxconverter-common",
+        "FSRCNNX x2 8-0-4-1 shader",
+        "PySide6 / Qt",
+        "mpv",
+        "VapourSynth",
+        "FFmpeg",
+        "ffms2",
+        "mkvtoolnix",
+    ]
+    linux = {c.name: c for c in licences.components(windows=False)}
+    assert linux["FFmpeg"].spdx == "GPL-3.0-or-later" and not linux["FFmpeg"].conveyed
+    assert not linux["ffms2"].conveyed and not linux["PySide6 / Qt"].conveyed
+    if not licences.osapi.IS_WINDOWS:
+        assert licences.COMPONENTS == licences.components(windows=False)
+
+
+def test_windows_source_offer_is_sources_txt(tmp_path: Path) -> None:
+    assert licences._source_link(windows=True, install=tmp_path) == licences._source_link(
+        windows=False
+    )  # no SOURCES.txt: the project's link
+    offer = tmp_path / "licenses" / "SOURCES.txt"
+    offer.parent.mkdir()
+    offer.write_text("where the source is")
+    assert licences._source_link(windows=True, install=tmp_path) == str(offer)

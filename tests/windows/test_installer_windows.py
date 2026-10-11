@@ -175,12 +175,29 @@ def test_install_record_lists_every_component_with_its_licences(installed: Insta
     assert {
         "buttereye", "buttereye-vs-rife-ncnn", "buttereye-vs-mvtools", "buttereye-vs-mvgpu",
         "buttereye-rife-ncnn-models", "ffms2", "vulkan-tools", "mingw-w64-runtime",
-        "python3", "python3-pyside6", "vapoursynth-libs", "vapoursynth-tools",
+        "python3", "python3-pyside6", "python3-shiboken6", "microsoft-vcruntime",
+        "vapoursynth-libs", "vapoursynth-tools",
     } <= names  # fmt: skip
     for c in record["components"]:
         assert c["licence_files"], c["name"]
         for rel in c["licence_files"]:
             assert (installed.folder / rel).is_file(), rel
+    qt = next(c for c in record["components"] if c["name"] == "python3-pyside6")
+    assert qt["license"].startswith("LGPL-3.0-only AND ")
+    notices = [f for f in qt["licence_files"] if "/third-party/" in f]
+    assert len(notices) > 20 and "licenses/pyside6/third-party/freetype.txt" in notices
+
+
+def test_ships_no_microsoft_runtime_but_pythons(installed: Installed) -> None:
+    import re
+
+    vc = re.compile(r"^(vcruntime140|msvcp140|concrt140|vcomp140|vcamp140|vccorlib140)", re.I)
+    found = sorted(
+        str(p.relative_to(installed.folder)).replace(os.sep, "/").lower()
+        for p in installed.folder.rglob("*.dll")
+        if vc.match(p.name)
+    )
+    assert found == ["python/vcruntime140.dll", "python/vcruntime140_1.dll"]
 
 
 def _doctor(
@@ -268,13 +285,46 @@ def test_bundled_ffms2_reads_a_video(installed: Installed) -> None:
     assert frames > 0 and width > 0 and height > 0
 
 
+def _no_icu() -> bool:
+    """Qt 6 imports Windows' own ICU (icuuc.dll, Windows 10 1903+); Wine has none."""
+    import ctypes
+
+    try:
+        ctypes.WinDLL("icuuc")  # type: ignore[attr-defined,unused-ignore]
+    except OSError:
+        return True
+    return False
+
+
+#: Qt with the system's C++ runtime: the SVG icons through the shipped plugins
+_QT_PROBE = """\
+import sys
+from PySide6.QtCore import QSize
+from PySide6.QtGui import QIcon, QImageReader
+from PySide6.QtWidgets import QApplication
+app = QApplication([sys.argv[0], "-platform", "offscreen"])
+formats = {bytes(f).decode() for f in QImageReader.supportedImageFormats()}
+assert "svg" in formats and "jpeg" not in formats, sorted(formats)
+icon = QIcon(sys.argv[1])
+assert not icon.pixmap(QSize(32, 32)).isNull(), "the SVG icon did not render"
+print("qt ok", app.platformName())
+"""
+
+
 def test_gui_toolkit_loads(installed: Installed) -> None:
-    res = installed.run(str(installed.python), "-m", "buttereye.gui", "--version")
-    if res.returncode != 0 and _wine() and "DLL load failed" in res.stderr:
-        # Qt 6 imports Windows' own ICU (icuuc.dll, Windows 10 1903+); Wine has none
+    if _wine() and _no_icu():
         pytest.skip("Wine has no icuuc.dll for Qt")
+    res = installed.run(str(installed.python), "-m", "buttereye.gui", "--version")
     assert res.returncode == 0, res.stderr[-1500:]
     assert "ButterEye" in res.stdout
+    source = next(ln for ln in res.stdout.splitlines() if ln.startswith("Source: "))
+    assert os.path.samefile(
+        source.removeprefix("Source: "), installed.folder / "licenses" / "SOURCES.txt"
+    )
+    svg = installed.folder / "buttereye" / "gui" / "icons" / "buttereye.svg"
+    res = installed.run(str(installed.python), "-c", _QT_PROBE, str(svg))
+    assert res.returncode == 0, res.stderr[-1500:]
+    assert "qt ok offscreen" in res.stdout
 
 
 def test_uninstalls_silently(installed: Installed) -> None:
