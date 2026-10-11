@@ -137,6 +137,10 @@ def _not(*words: str) -> Callable[[Path], bool]:
     return lambda p: not any(w in p.name.lower() for w in words)
 
 
+#: Windows: the installer conveys these too, so the PySide6, VapourSynth and ffms2
+#: rows count as conveyed there (on Fedora they come from the distribution)
+_CONVEYED_ON_WINDOWS = osapi.IS_WINDOWS
+
 COMPONENTS: tuple[Component, ...] = (
     Component(
         "RIFE-ncnn-Vulkan",
@@ -197,7 +201,7 @@ COMPONENTS: tuple[Component, ...] = (
         "python3-pyside6",
         "LGPL-3.0-only OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
         REL_IN_PROCESS,
-        False,
+        _CONVEYED_ON_WINDOWS,
         spdx_from_rpm=True,
     ),
     Component("mpv", "mpv", "GPL-2.0-or-later", REL_SEPARATE, False, spdx_from_rpm=True),
@@ -206,11 +210,11 @@ COMPONENTS: tuple[Component, ...] = (
         "vapoursynth-libs",
         "LGPL-2.1-or-later",
         REL_SEPARATE,
-        False,
+        _CONVEYED_ON_WINDOWS,
         spdx_from_rpm=True,
     ),
     Component("FFmpeg", "ffmpeg", "GPL-3.0-or-later", REL_SEPARATE, False, spdx_from_rpm=True),
-    Component("ffms2", "ffms2", "MIT", REL_LOADED, False, spdx_from_rpm=True),
+    Component("ffms2", "ffms2", "MIT", REL_LOADED, _CONVEYED_ON_WINDOWS, spdx_from_rpm=True),
     Component(
         "mkvtoolnix",
         "mkvtoolnix",
@@ -220,6 +224,30 @@ COMPONENTS: tuple[Component, ...] = (
         spdx_from_rpm=True,
     ),
 )
+
+
+if osapi.IS_WINDOWS:
+    # What the Windows installer adds that Fedora provides itself (its install
+    # record, buttereye-install.json, lists them like rpm would)
+    COMPONENTS += (
+        Component("Python", "python3", "PSF-2.0", REL_IN_PROCESS, True, spdx_from_rpm=True),
+        Component(
+            "Vulkan-Tools (vulkaninfo)",
+            "vulkan-tools",
+            "Apache-2.0 AND MIT",
+            REL_SEPARATE,
+            True,
+            spdx_from_rpm=True,
+        ),
+        Component(
+            "MinGW-w64 runtime",
+            "mingw-w64-runtime",
+            "GPL-3.0-or-later WITH GCC-exception-3.1",
+            M("statically linked into the plugins and tools"),
+            True,
+            spdx_from_rpm=True,
+        ),
+    )
 
 
 def _licence_finding(

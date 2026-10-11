@@ -18,6 +18,7 @@ import glob
 import json
 import re
 import shutil
+import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -496,6 +497,73 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Windows: Microsoft's Visual C++ runtime
+# ---------------------------------------------------------------------------
+
+#: VapourSynth's own minimum (its ``_check_visual_studio_runtime``)
+VCRUNTIME_MIN = (14, 50, 35719)
+VCRUNTIME_KEY = r"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
+VCREDIST_WINGET = "Microsoft.VCRedist.2015+.x64"
+
+
+def read_vcruntime() -> tuple[int, int, int] | None:
+    """Windows: the installed x64 Visual C++ runtime (major, minor, build), read
+    from the 64-bit registry view; None when it isn't installed (or elsewhere)."""
+    if sys.platform != "win32":
+        return None
+    import winreg
+
+    access = winreg.KEY_READ | winreg.KEY_WOW64_64KEY
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, VCRUNTIME_KEY, 0, access) as key:
+            if winreg.QueryValueEx(key, "Installed")[0] != 1:
+                return None
+            major, minor, build = (
+                int(winreg.QueryValueEx(key, n)[0]) for n in ("Major", "Minor", "Bld")
+            )
+    except OSError, TypeError, ValueError:
+        return None
+    return major, minor, build
+
+
+def vcruntime_finding(version: tuple[int, int, int] | None) -> Finding:
+    """Windows: VapourSynth (and so every smoothing path) needs Microsoft's Visual
+    C++ runtime, at least ``VCRUNTIME_MIN``. ButterEye's installer offers to
+    install it; it can't be bundled inside ButterEye's own folder because mpv
+    loads VapourSynth into its own process."""
+    need = ".".join(map(str, VCRUNTIME_MIN))
+    if version is not None and version >= VCRUNTIME_MIN:
+        return _f(
+            "packages.vcruntime",
+            Severity.OK,
+            M("Microsoft Visual C++ runtime installed"),
+            cause=M("{v}", {"v": ".".join(map(str, version))}),
+        )
+    verb = "install" if version is None else "upgrade"
+    return _f(
+        "packages.vcruntime",
+        Severity.BLOCKING,
+        M("Microsoft's Visual C++ runtime is missing")
+        if version is None
+        else M("Microsoft's Visual C++ runtime is too old"),
+        code=ErrorCode.PKG_MISSING,
+        cause=M(
+            "VapourSynth needs the Visual C++ 2015-2026 runtime {need} or newer, "
+            "and it isn't installed.",
+            {"need": need},
+        )
+        if version is None
+        else M(
+            "VapourSynth needs the Visual C++ 2015-2026 runtime {need} or newer; "
+            "this PC has {have}.",
+            {"need": need, "have": ".".join(map(str, version))},
+        ),
+        fix=M("Install it (Windows asks for permission once), then run the checks again."),
+        commands=(f"winget {verb} --exact --id {VCREDIST_WINGET}",),
+    )
+
+
 def licence_files_finding(db: RpmDb) -> Finding:
     missing: list[str] = []
     checked = 0
@@ -731,6 +799,10 @@ async def gather_rpm_and_ffmpeg() -> tuple[RpmDb, CmdResult, RpmInfo | None]:
 
 
 __all__ = [
+    "VCREDIST_WINGET",
+    "VCRUNTIME_MIN",
+    "read_vcruntime",
+    "vcruntime_finding",
     "COPR_PROJECT",
     "INSTALL_MANIFEST",
     "REPAIR",

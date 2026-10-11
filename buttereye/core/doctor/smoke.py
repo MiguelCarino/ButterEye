@@ -11,8 +11,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from buttereye.core import osapi
 from buttereye.core.doctor import gpufault
-from buttereye.core.doctor.checks_pkgs import MODELS_SUBDIR, tool_fix
+from buttereye.core.doctor.checks_pkgs import MODELS_SUBDIR, REPAIR, tool_fix
 from buttereye.core.doctor.proc import CmdResult, run
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
@@ -143,8 +144,11 @@ async def smoke_test(
             f.code,
             f.title,
             f.cause,
-            f.fix,
-            tool_fix(M(""), "sudo dnf install vapoursynth-tools", "vapoursynth")["commands"],
+            # Windows: vspipe comes with ButterEye's installer (Repair), not winget
+            REPAIR if osapi.IS_WINDOWS else f.fix,
+            ()
+            if osapi.IS_WINDOWS
+            else tool_fix(M(""), "sudo dnf install vapoursynth-tools", "vapoursynth")["commands"],
             f.evidence,
         )
         return SmokeOutcome(False, None, f, log, faults)

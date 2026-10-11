@@ -110,6 +110,15 @@ INSTALL_PLUGINS = (
     "sudo dnf install buttereye-vs-rife-ncnn buttereye-rife-ncnn-models buttereye-vs-mvtools"
 )
 INSTALL_VSPIPE = "sudo dnf install vapoursynth-tools"
+#: Windows: the installer brings the plugins and VapourSynth (vspipe) itself
+REPAIR = Msg("Run the ButterEye installer again and choose Repair.")
+
+
+def _install_fix(fix: Msg, command: str) -> tuple[Msg, tuple[str, ...]]:
+    """(fix, commands): the dnf line on Linux; on Windows the installer's Repair."""
+    if osapi.IS_WINDOWS:
+        return REPAIR, ()
+    return fix, (command,)
 
 
 # ---------------------------------------------------------------- data
@@ -389,10 +398,11 @@ def repeat_faulters(
 def find_tools(paths: Paths) -> Tools:
     vspipe = shutil.which("vspipe")
     if vspipe is None:
+        fix, commands = _install_fix(
+            Msg("Install VapourSynth's tools, then run the benchmark again."), INSTALL_VSPIPE
+        )
         raise _fail(
-            Msg("vspipe is not installed, so the benchmark cannot run."),
-            Msg("Install VapourSynth's tools, then run the benchmark again."),
-            commands=(INSTALL_VSPIPE,),
+            Msg("vspipe is not installed, so the benchmark cannot run."), fix, commands=commands
         )
     return Tools(
         vspipe=vspipe,
@@ -654,10 +664,14 @@ async def _bench_locked(ctx: ProviderContext, req: BenchRequest, op: OpContext) 
     if rife_ok:
         cands = trt_candidates(ctx) + cands
     if not cands:
+        fix, commands = _install_fix(
+            Msg("Install ButterEye's plugin packages, then run the benchmark again."),
+            INSTALL_PLUGINS,
+        )
         raise _fail(
             Msg("No interpolation plugins are installed, so there is nothing to measure."),
-            Msg("Install ButterEye's plugin packages, then run the benchmark again."),
-            commands=(INSTALL_PLUGINS,),
+            fix,
+            commands=commands,
         )
     try:
         past = store.read(ctx.paths.bench_file)

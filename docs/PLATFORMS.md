@@ -5,24 +5,25 @@ ButterEye 0.0.1 supports **Fedora 44 and Fedora 45 on x86_64** and nothing else
 records, honestly, how far the code is from running on them, so a later decision
 starts from facts rather than guesses. Nothing here is a promise or a schedule.
 
-Assessed against the 0.0.1 tree on 2026-10-10; Windows phase 1 (the core
-platform layer) landed on 2026-10-11 and is described below. No Windows or
-macOS build has been made yet.
+Assessed against the 0.0.1 tree on 2026-10-10. The Windows port's four phases
+landed on 2026-10-11 and are described below: there is now a Windows installer,
+tested under Wine on the Linux dev box but **not yet on a real Windows PC**, so
+it is not released. No macOS build has been made.
 
 ## Summary
 
 | Piece | Linux (Fedora 44/45) | Windows | macOS |
 |---|---|---|---|
 | Python core (`buttereye.core`) | supported | platform layer, detection and doctor done (phases 1-2) | needs a smaller platform layer (peer credentials, paths, `/proc`, detection) |
-| PySide6 GUI | supported | Qt itself runs; its lock goes through the platform layer; untried on Windows | Qt itself runs; inherits the core's gaps (`fcntl` is available) |
+| PySide6 GUI | supported | bundled by the installer; opens under Wine, untried on real Windows | Qt itself runs; inherits the core's gaps (`fcntl` is available) |
 | mpv control (JSON IPC) | Unix sockets + socketpair | **named pipes**, done; tested under Wine with a real `mpv.exe` | Unix sockets work; `SO_PEERCRED` does not exist |
 | mpv `vapoursynth` filter | distro mpv has it | depends on the mpv build | depends on the mpv build |
-| VapourSynth + `vspipe` | Fedora packages | official installers exist | available (e.g. Homebrew); untested here |
+| VapourSynth + `vspipe` | Fedora packages | bundled by the installer (the official wheel, inside its own Python) | available (e.g. Homebrew); untested here |
 | `buttereye-vs-mvtools` | COPR RPM | `mvtools.dll`, cross-built (phase 3) | needs a macOS build |
 | `buttereye-vs-rife-ncnn` | COPR RPM (bundled ncnn) | `librife.dll`, cross-built with a Windows path fix (phase 3) | no native Vulkan: only via MoltenVK, unverified |
 | `buttereye-vs-mvgpu` (Vulkan compute) | COPR RPM | `libmvgpu.dll`, cross-built (phase 3) | MoltenVK only; compute-shader limits unverified |
 | TensorRT (experimental) | user-built `vstrt` | not yet (vs-mlrt is Windows-first upstream, so it is possible) | not possible (no CUDA/TensorRT on macOS) |
-| Packaging / installs | RPM + COPR | an installer or zip would be new work | an app bundle would be new work |
+| Packaging / installs | RPM + COPR | per-user installer with its own Python, Qt and VapourSynth (phase 4) | an app bundle would be new work |
 | `doctor` checks | `rpm -q`, `dnf` lines, `journalctl -k`, sysfs | done: install record, `winget` lines, Vulkan devices (phase 2) | must be rewritten for the platform |
 
 Short version: **the architecture ports, and on Windows the core's plumbing now does too** (phase 1, below). The core is
@@ -100,7 +101,7 @@ port is done in four phases; each leaves Linux exactly as it was.
 | 1 | Core platform layer: processes, mpv's control channel, folders, locks | **done** (`buttereye/core/osapi/`) |
 | 2 | Doctor, hardware detection and setup checks for Windows | **done** |
 | 3 | Windows builds of the four VapourSynth plugins | **done** (`packaging/windows/`) |
-| 4 | Installer (and the GitHub Actions build that makes it) | to do |
+| 4 | Installer | **done** (`packaging/windows/build-installer.sh`); real-Windows testing and a CI build to do |
 
 ### Phase 1: the core platform layer (done)
 
@@ -174,19 +175,136 @@ Found and fixed on the way: RIFE's Windows model loader built its paths with
 cut to its first letter and every in-between frame came out black, with no error.
 `buttereye-vs-rife-ncnn-windows-paths.patch` builds the paths as strings instead.
 
-Two things for the installer to take care of: VapourSynth needs Microsoft's Visual
-C++ runtime (VapourSynth's own installer brings it), and `ffms2.dll` and
-`vulkaninfo.exe` are not built here.
+Phase 4 added `ffms2.dll` and `vulkaninfo.exe` to the same build (below).
 
-### Remaining phases
+### Phase 4: the installer (done, Wine-tested only)
 
-1. **Distribution (phase 4).** An installer built on GitHub's Windows runners,
-   with the AGPL Corresponding Source offer and the plugin licence files carried
-   over (SCOPE §8). It writes `buttereye-install.json` from the plugin build's
-   `components.json` (the format is in `checks_pkgs.manifest_db`), ships the
-   `sources/` folder or a link to it, and adds `vulkaninfo.exe` and `ffms2.dll` next
-   to the plugins.
-3. **Later, not scheduled:** the TensorRT path on Windows (vs-mlrt's Windows
+`packaging/windows/build-installer.sh` makes `ButterEye-<version>-setup.exe` on the
+Fedora dev box. The installer needs nothing on the PC first: it brings its own
+Python, Qt and VapourSynth, so a user installs ButterEye and mpv
+(`winget install shinchiro.mpv`) and nothing else. Microsoft's Visual C++ runtime is
+the one exception (below).
+
+**What it installs**, per user and without administrator rights, into
+`%LOCALAPPDATA%\Programs\ButterEye` (or a folder you choose):
+
+| Folder | What | Size |
+|---|---|---|
+| `python\` | Python 3.14.8 (the official embeddable build) with PySide6-Essentials 6.11.2 and VapourSynth R81 from their official Windows wheels | 91 MiB |
+| `buttereye\` | ButterEye itself | 3 MiB |
+| `vapoursynth\` | the three plugins (phase 3) and `ffms2.dll` | 39 MiB |
+| `share\rife-ncnn-models\` | the RIFE models | 31 MiB |
+| `vulkaninfo.exe` | the GPU list | 2 MiB |
+| `licenses\` | every licence text, `SOURCES.txt` (the source offer) | 1 MiB |
+| `buttereye-install.json` | the install record the doctor reads (phase 2) | |
+| `buttereye.cmd` | the command line: `buttereye.cmd doctor`, `buttereye.cmd play VIDEO` | |
+
+165 MiB on disk (the prototype was 370 MiB: Qt is trimmed to the modules ButterEye
+uses, Core, Gui, Widgets and Svg, and VapourSynth's debug symbols are left out); the
+installer is 65 MiB. A Start-menu entry "ButterEye" starts the window without a
+console (`pythonw -m buttereye.gui`); a desktop shortcut is an option. The
+uninstaller is registered for this user (Settings ▸ Apps) and removes only what the
+installer put there; settings and history in `%APPDATA%` and `%LOCALAPPDATA%` stay.
+Running the installer again over an installation repairs it (no file of the earlier
+version survives). It refuses a folder that already holds other files.
+
+How the pieces find each other:
+
+- **VapourSynth.** The VapourSynth package sits inside the bundled Python, where its
+  "implicit config" finds that Python by itself: no registry entries, no
+  `vapoursynth config`. Windows mpv builds load VapourSynth at run time from
+  `VSSCRIPT_PATH` (else the registry, else the DLL search), so on Windows
+  `ButterEye.open()` sets `VSSCRIPT_PATH` to the bundled `vsscript.dll` and puts the
+  Python folder and the VapourSynth folder first on `PATH`
+  (`osapi.use_bundled_runtime`). Every child then uses the bundle: mpv's filter, the
+  doctor's probe, setup's smoke test, the speed test, and `vspipe` for offline render.
+  Linux is untouched.
+- **ButterEye's folder.** Python's `._pth` file lists the install folder, so the
+  `buttereye` package is importable and `paths.install_dir()` (the folder above the
+  package) is the install folder; `BUTTEREYE_HOME` is not needed.
+- **vulkaninfo.** Started without a console, as ButterEye starts its helpers, plain
+  `vulkaninfo` ends by waiting forever for its console to close (upstream behaviour
+  of every build, the one a GPU driver installs too), so the GPU list always timed
+  out. On Windows ButterEye now runs `vulkaninfo --text -o <file>` and reads the
+  file.
+
+**Built here, from source.** `build-plugins.sh` now also makes, in the same MinGW
+chroot and with the same "imports only Windows" check:
+
+- `ffms2.dll`: FFMS2 5.0 with FFmpeg 8.1.3 (decoders, demuxers and parsers only: no
+  encoders, filters, network or GPL parts, so it stays LGPL-2.1-or-later), dav1d 1.5.4
+  for AV1 and zlib, all linked in. Under Wine it reads H.264, 10-bit HEVC and AV1.
+  The official FFMS2 Windows build was not used: it is GPLv3 (FFmpeg with OpenSSL)
+  and its exact source can't be reconstructed, so its source offer couldn't be met.
+- `vulkaninfo.exe`: Vulkan-Tools 1.4.328.1 with volk, linked statically. Upstream sets
+  up its user32 functions only for MSVC builds, so every MinGW build (Fedora's
+  `mingw64-vulkan-tools` too) crashes on Windows;
+  `packaging/windows/vulkaninfo-mingw-user32.patch` fixes that.
+
+Every download is pinned by SHA-256 in `packaging/windows/pins.sh`, and a mismatch
+stops the build.
+
+**Microsoft's Visual C++ runtime.** VapourSynth needs it (14.50.35719 or newer) and
+it only installs machine-wide, which takes administrator rights once. It can't be
+put next to ButterEye instead: mpv loads VapourSynth into its own process. When it is
+missing or too old, the installer offers to download it from Microsoft (the download
+is accepted only with Microsoft's valid signature) and Windows asks for permission; a
+silent install (`/S`) leaves it alone. Either way the doctor checks it
+(`packages.vcruntime`, with the `winget` line). The redistributable is not bundled:
+Microsoft allows that only to licensed Visual Studio users (`VCREDIST=` in
+`build-installer.sh` embeds it if the owner decides to).
+
+**Licences and source.** `licenses\<component>\` holds the texts of every bundled
+part: ButterEye (`COPYING`, `LICENSES\`), Python, PySide6/Qt (LGPL-3.0 and the GPL-3.0
+it builds on), VapourSynth, the plugins, ffms2 with FFmpeg, dav1d and zlib,
+Vulkan-Tools with volk, and the MinGW-w64 runtime. `licenses\SOURCES.txt` says where
+each part's source is: `ButterEye-<version>-windows-sources.tar`, made next to the
+installer, holds the complete source of everything built for it, with the build
+scripts; Python, Qt/PySide6 and VapourSynth are unmodified official builds, listed with
+their source download pages and a written offer.
+
+**Minimum Windows:** 64-bit Windows 10 version 1903 or newer (Qt 6.11 uses the ICU
+that ships with Windows from 1903); the installer refuses older versions.
+
+**Verified under Wine 11** (dev prefix with the host's RTX 4090 passed through):
+
+- `setup.exe /S /D=<folder>` installs; `Uninstall.exe /S` removes the folder, the
+  Start-menu entry and the registry entry, and leaves a file of the user's alone;
+  installing over an installation removes a stale file; a folder with other files
+  is refused (exit code 2).
+- The installed runtime alone (this test's own Python taken off `PATH`, a fresh
+  profile): `buttereye.cmd doctor --json` with stdout a pipe reports the plugins,
+  models, licence files, ffms2, the Visual C++ runtime and the RTX 4090 OK, and with
+  mpv on `PATH`, the in-mpv probe passes (exit code 0). The bundled `vspipe.exe` runs
+  ButterEye's speed-test script with MVTools, mvgpu and RIFE; the bundled ffms2
+  reads a video. With the runtime's registry key removed, a silent install still
+  succeeds and the doctor blocks with the `winget` line.
+- `buttereye.cmd play` from a fresh profile, mpv on `PATH`: "23.976 → 47.952 fps with
+  mvtools (active, ok)", and RIFE active with the default profile.
+- The window, from the installed Python with Qt trimmed, opens and draws (in a Wine
+  prefix with a stand-in `icuuc.dll`, which Wine lacks; in `tests/windows` that test
+  skips under Wine).
+
+`tests/windows/test_installer_windows.py` does all of the above except the play and
+GUI-window runs; `tools/wine-tests.sh` runs it when the installer exists.
+
+**Not verified, needs a real Windows PC:**
+
+- anything on real Windows: SmartScreen (the installer isn't code-signed), Defender,
+  the Visual C++ download and its permission prompt (Wine has neither PowerShell nor
+  UAC), the installer's pages, shortcuts and Settings ▸ Apps entry as a user sees them;
+- Qt with Windows' own `icuuc.dll`; on-screen playback and its timing (Wine was only
+  run with `vo=null`); fonts (the interface's typefaces are Linux packages; Windows
+  falls back to its own);
+- whether `winget install shinchiro.mpv` puts `mpv.exe` on `PATH` as ButterEye expects;
+- offline render end to end (ffms2 reads video, but ffmpeg and mkvmerge were not
+  installed in the test prefix).
+
+### Remaining work
+
+1. **Real-Windows testing** of the installer before any release, then code signing
+   and a CI build (GitHub's Windows runners can run `tests/windows`).
+2. **Later, not scheduled:** the TensorRT path on Windows (vs-mlrt's Windows
    releases), and reading GPU faults from the Windows event log.
 
 ## macOS: the realistic path

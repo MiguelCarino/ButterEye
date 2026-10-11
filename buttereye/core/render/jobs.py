@@ -161,7 +161,14 @@ class _Tools:
     mkvmerge: str | None
 
 
-def _missing(what: str, command: str) -> ButterEyeError:
+def _missing(what: str, command: str | None) -> ButterEyeError:
+    """``command`` None: ButterEye's own installer brings it (Windows: Repair)."""
+    if command is None:
+        return ButterEyeError(
+            ErrorCode.PKG_MISSING,
+            Msg("{tool} is not installed, so videos can't be converted.", {"tool": what}),
+            Msg("Run the ButterEye installer again and choose Repair."),
+        )
     return ButterEyeError(
         ErrorCode.PKG_MISSING,
         Msg("{tool} is not installed, so videos can't be converted.", {"tool": what}),
@@ -176,7 +183,8 @@ def _tools() -> _Tools:
     if ffprobe is None or ffmpeg is None:
         raise _missing("ffmpeg", install_command("ffmpeg"))
     if vspipe is None:
-        raise _missing("vspipe", install_command("vapoursynth"))
+        # Windows: vspipe is part of the installer's bundled VapourSynth
+        raise _missing("vspipe", None if osapi.IS_WINDOWS else install_command("vapoursynth"))
     return _Tools(ffprobe, ffmpeg, vspipe, shutil.which("mkvmerge"))
 
 

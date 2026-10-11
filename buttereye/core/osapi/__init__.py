@@ -18,6 +18,9 @@ gets the nearest equivalent (docs/PLATFORMS.md):
 - private folder: 0700, own uid, not a symlink on Linux; on Windows owned by this
   user's SID and not a reparse point (it lives under %LOCALAPPDATA%, per-user by ACL).
 - locks: ``flock`` on Linux; ``msvcrt.locking`` on byte 0 of a lock file on Windows.
+- VapourSynth for child processes: Linux has the distribution's; on Windows the
+  installer bundles Python with VapourSynth, and ``use_bundled_runtime`` points
+  every child (mpv, vspipe) at it.
 
 mypy checks both halves: ``mypy`` and ``mypy --platform win32``.
 """
@@ -27,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import importlib.util
 import os
 import shutil
 import signal
@@ -36,7 +40,7 @@ import struct
 import subprocess
 import sys
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -176,6 +180,56 @@ def plugin_file(linux_name: str) -> str:
 
 #: vs-mlrt's TensorRT plugin: ``vstrt.dll`` is the name its Windows releases use
 VSTRT_LIB = "vstrt.dll" if IS_WINDOWS else "libvstrt.so"
+
+
+# ======================================================================== bundled runtime
+def runtime_dirs() -> tuple[str, str | None]:
+    """(the folder of this Python, the folder of its ``vapoursynth`` package or
+    None). Looks the package up without importing it: the GUI process must not
+    load VapourSynth (SCOPE §8.1)."""
+    try:
+        spec = importlib.util.find_spec("vapoursynth")
+    except ImportError, ValueError:
+        spec = None
+    vs_dir = os.path.dirname(spec.origin) if spec is not None and spec.origin else None
+    return os.path.dirname(sys.executable), vs_dir
+
+
+def point_at_runtime(
+    env: MutableMapping[str, str], python_dir: str, vs_dir: str | None, *, sep: str = os.pathsep
+) -> None:
+    """Make ``env`` lead children to this Python's VapourSynth (Windows):
+
+    - ``VSSCRIPT_PATH``: Windows mpv builds load VSScript at run time from this
+      variable (else the registry, else the DLL search), so without it mpv finds
+      no VapourSynth or someone else's;
+    - ``PATH`` starts with the Python folder (``vsscript.dll`` loads ``python3.dll``,
+      which forwards to ``python3XX.dll`` next to it) and the package folder
+      (``vspipe.exe``), so ``vspipe`` resolves to the bundled one everywhere.
+
+    Idempotent: folders already on PATH move to the front instead of repeating."""
+    first = [python_dir] + ([vs_dir] if vs_dir else [])
+    if vs_dir is not None:
+        vsscript = os.path.join(vs_dir, "vsscript.dll")
+        if os.path.isfile(vsscript):
+            env["VSSCRIPT_PATH"] = vsscript
+
+    def key(p: str) -> str:
+        return os.path.normcase(p.rstrip("\\/"))
+
+    lead = {key(p) for p in first}
+    rest = [p for p in env.get("PATH", "").split(sep) if p and key(p) not in lead]
+    env["PATH"] = sep.join(first + rest)
+
+
+def use_bundled_runtime() -> None:
+    """Windows: point every child process at the VapourSynth of the Python that
+    runs ButterEye (the installer's bundled runtime), through ``os.environ``
+    (``point_at_runtime``). Nothing anywhere else: Linux uses the system's."""
+    if not IS_WINDOWS:
+        return
+    python_dir, vs_dir = runtime_dirs()
+    point_at_runtime(os.environ, python_dir, vs_dir)
 
 
 # ======================================================================== processes
@@ -430,12 +484,15 @@ __all__ = [
     "owned_by_me",
     "pid_alive",
     "plugin_file",
+    "point_at_runtime",
     "prepare_endpoint",
     "replace",
+    "runtime_dirs",
     "set_mode",
     "shared_mode_bits",
     "signal_group",
     "spawn_detached",
     "try_lock",
     "unlock",
+    "use_bundled_runtime",
 ]

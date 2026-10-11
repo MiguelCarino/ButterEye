@@ -1,0 +1,19 @@
+SPDX-License-Identifier: Apache-2.0
+vulkaninfo for MinGW builds: upstream (Vulkan-Tools 1.4.328.1) loads its user32 function
+table only under _MSC_VER, so any MinGW build dereferences a null pointer in
+AppCreateWin32Window on every Windows system with VK_KHR_win32_surface. Set the
+table up for every Windows compiler. Used by packaging/windows/build-tools-in-chroot.sh.
+
+--- a/vulkaninfo/vulkaninfo.cpp	2025-10-01 14:15:31.000000000 -0600
++++ b/vulkaninfo/vulkaninfo.cpp	2026-10-11 09:16:55.849660953 -0600
+@@ -1270,7 +1270,9 @@
+     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+-
++#endif
++#if defined(_WIN32)
++    // user32 is used by the Win32 surface code on every Windows compiler (MinGW too)
+     if (ConsoleIsExclusive()) ConsoleEnlarge();
+     User32Handles local_user32_handles;
+     user32_handles = &local_user32_handles;

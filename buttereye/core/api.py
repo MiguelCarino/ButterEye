@@ -306,7 +306,10 @@ class ButterEye:
     # ---- lifecycle ----
     @classmethod
     async def open(cls, paths: Paths | None = None) -> ButterEye:
-        """Resolve paths, load the config; no writes."""
+        """Resolve paths, load the config; no writes. On Windows, also points the
+        child processes ButterEye starts (mpv, vspipe) at the bundled VapourSynth
+        (``osapi.use_bundled_runtime``)."""
+        osapi.use_bundled_runtime()
         if paths is None:
             resolve_paths = _provider(Feature.CONFIG, PATHS_RESOLVE)
             paths = cast(Paths, resolve_paths())

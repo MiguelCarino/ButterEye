@@ -10,11 +10,16 @@
 #   vapoursynth/mvtools.dll      MVTools 29.2 (fftw linked in)
 #   vapoursynth/librife.dll      RIFE-ncnn-Vulkan r9_mod_v33 (ncnn + glslang linked in)
 #   vapoursynth/libmvgpu.dll     ButterEye's GPU motion-vector engine
+#   vapoursynth/ffms2.dll        FFMS2 5.0 with a decode-only LGPL FFmpeg (offline render)
+#   vulkaninfo.exe               Vulkan-Tools' vulkaninfo (the GPU list)
 #   share/rife-ncnn-models/      the packaged RIFE models
 #   licenses/<component>/        every licence text the DLLs need
 #   components.json              install-record entries (checks_pkgs.manifest_db)
 #   sources/                     Corresponding Source for the GPL parts
 #   SHA256SUMS
+#
+# ffms2 and vulkaninfo come from pinned upstream releases (pins.sh), built by
+# build-tools-in-chroot.sh. The installer (build-installer.sh) packs all of it.
 #
 # Usage: packaging/windows/build-plugins.sh
 # Output: $XDG_CACHE_HOME/buttereye/windows (never the repository). JOBS caps
@@ -31,11 +36,22 @@ jobs=${JOBS:-8}
 chroot_cfg=fedora-44-x86_64
 mock=(mock -r "$chroot_cfg" --uniqueext=buttereye-win -q)
 specs=$repo/packaging/plugins
+# shellcheck source=pins.sh
+source "$here/pins.sh"
 
 # ---------------------------------------------------------------- sources
 # the same fetch, repack and checksum check as the Fedora packages (no SRPM upload)
 SPECS="buttereye-vs-mvtools buttereye-vs-rife-ncnn buttereye-vs-mvgpu buttereye-rife-ncnn-models" \
     "$repo/packaging/build.sh" --srpm-only "$chroot_cfg" >/dev/null
+
+# ffms2 (+ FFmpeg, dav1d) and vulkaninfo (+ volk): pinned upstream releases
+tool_srcs=(
+    "$(fetch "$FFMS2_URL" "$FFMS2_SHA256")"
+    "$(fetch "$FFMPEG_URL" "$FFMPEG_SHA256")"
+    "$(fetch "$DAV1D_URL" "$DAV1D_SHA256")"
+    "$(fetch "$VULKAN_TOOLS_URL" "$VULKAN_TOOLS_SHA256")"
+    "$(fetch "$VOLK_URL" "$VOLK_SHA256")"
+)
 
 q() { rpmspec -q --srpm --define 'dist %{nil}' --qf "$2" "$specs/$1.spec"; }
 bundled() { rpmspec -q --define 'dist %{nil}' --provides "$specs/$1.spec" | sed -n "s/^bundled($2) = //p"; }
@@ -44,7 +60,8 @@ bundled() { rpmspec -q --define 'dist %{nil}' --provides "$specs/$1.spec" | sed 
 "${mock[@]}" --init
 "${mock[@]}" --install mingw64-gcc-c++ mingw64-libgomp mingw64-winpthreads-static \
     mingw64-fftw-static mingw64-fftw mingw64-vulkan-headers mingw64-vulkan-loader \
-    meson ninja-build cmake nasm glslang vapoursynth-devel python3 patch tar gzip
+    meson ninja-build cmake nasm glslang vapoursynth-devel python3 patch tar gzip xz \
+    gcc mingw64-zlib-static
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 mkdir "$stage/in"
@@ -54,8 +71,11 @@ cp "$src"/vapoursynth-mvtools-v*.tar.gz "$src"/buttereye-vs-rife-ncnn-r*.tar.gz 
    "$specs"/buttereye-vs-rife-ncnn-windows-paths.patch \
    "$specs"/licenses/LICENSE.rife-ncnn-vulkan "$specs"/licenses/LGPL-2.1.txt "$specs"/licenses/WTFPL.txt \
    "$here/build-in-chroot.sh" "$stage/in/"
-"${mock[@]}" --chroot 'rm -rf /builddir/in /builddir/out'
+mkdir "$stage/tin"
+cp "${tool_srcs[@]}" "$here/vulkaninfo-mingw-user32.patch" "$here/build-tools-in-chroot.sh" "$stage/tin/"
+"${mock[@]}" --chroot 'rm -rf /builddir/in /builddir/tin /builddir/out'
 "${mock[@]}" --copyin "$stage/in" /builddir/in
+"${mock[@]}" --copyin "$stage/tin" /builddir/tin
 "${mock[@]}" --chroot "env JOBS=$jobs \
     MVTOOLS_VR='$(q buttereye-vs-mvtools '%{version}-%{release}')' \
     MVTOOLS_LICENSE='$(q buttereye-vs-mvtools '%{license}')' \
@@ -66,6 +86,8 @@ cp "$src"/vapoursynth-mvtools-v*.tar.gz "$src"/buttereye-vs-rife-ncnn-r*.tar.gz 
     NCNN_BUNDLED='$(bundled buttereye-vs-rife-ncnn ncnn)' \
     GLSLANG_BUNDLED='$(bundled buttereye-vs-rife-ncnn glslang)' \
     bash /builddir/in/build-in-chroot.sh"
+"${mock[@]}" --chroot "env JOBS=$jobs FFMS2_VER=$FFMS2_VER FFMPEG_VER=$FFMPEG_VER \
+    DAV1D_VER=$DAV1D_VER VULKAN_TOOLS_VER=$VULKAN_TOOLS_VER bash /builddir/tin/build-tools-in-chroot.sh"
 fftw_nvr=$("${mock[@]}" --chroot "rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' mingw64-fftw-static" | tail -1)
 
 rm -rf "$out"
@@ -87,6 +109,9 @@ import json, os, sys
 out, vr, lic = sys.argv[1:4]
 path = os.path.join(out, "components.json")
 data = json.load(open(path))
+tools = os.path.join(out, "components-tools.json")  # ffms2, vulkan-tools
+data["components"] += json.load(open(tools))["components"]
+os.remove(tools)
 root = os.path.join(out, "licenses", "buttereye-rife-ncnn-models")
 data["components"].append({
     "name": "buttereye-rife-ncnn-models", "version": vr, "license": lic, "provides": [],
@@ -101,9 +126,12 @@ mkdir -p "$out/sources"
 cp "$src"/vapoursynth-mvtools-v*.tar.gz "$src"/buttereye-vs-rife-ncnn-r*.tar.gz \
    "$src"/ncnn-*.tar.gz "$src"/glslang-*.tar.gz "$src"/buttereye-vs-mvgpu-*.tar.gz \
    "$specs"/*.patch "$here"/build-plugins.sh "$here"/build-in-chroot.sh "$out/sources/"
+# ffms2.dll links FFmpeg (LGPL) statically: its source and the exact build steps
+cp "${tool_srcs[@]}" "$here"/vulkaninfo-mingw-user32.patch "$here"/build-tools-in-chroot.sh \
+   "$here"/pins.sh "$out/sources/"
 (cd "$out/sources" && dnf download -q --source "$fftw_nvr") \
     || echo "warning: could not download the $fftw_nvr source package; add it before release" >&2
 
 (cd "$out" && find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) >"$out/SHA256SUMS"
 echo "Windows plugins in $out"
-ls -l "$out/vapoursynth"
+ls -l "$out/vapoursynth" "$out/vulkaninfo.exe"

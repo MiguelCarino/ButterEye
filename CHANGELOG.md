@@ -18,6 +18,27 @@ release may change behaviour or settings.
   that size, so reopening the film doesn't repeat the problem. An engine you chose
   yourself is left alone, as before.
 
+### Windows port, phase 4 of 4
+
+- **ButterEye has a Windows installer.** One `setup.exe` installs everything ButterEye
+  needs except mpv: its own Python, Qt and VapourSynth, the smoothing plugins, the
+  RIFE models, the GPU list tool and the video reader for smooth copies. It installs
+  for your account only, without administrator rights, adds "ButterEye" to the Start
+  menu (and the desktop if you want), a `buttereye.cmd` for the command line, and an
+  uninstaller in Settings ▸ Apps. Running it again repairs an installation. The one
+  thing it may ask Windows' permission for is Microsoft's Visual C++ runtime, which
+  VapourSynth needs; the system checks tell you when it is missing.
+- It has only been tested under Wine so far, so it is not released yet; real-Windows
+  testing comes first (`docs/PLATFORMS.md`). It needs 64-bit Windows 10 version 1903
+  or newer. Every licence text is installed with it, and the source code of
+  everything built for it is published next to it.
+- **Fixed for Windows:** the first `buttereye play` on a new Windows account failed
+  because a parent folder didn't exist yet; the command line crashed on "→" when its
+  output went to a file or another program; the GPU list never arrived (vulkaninfo
+  waits for its console forever, so ButterEye now has it write to a file); and the
+  checks and speed test suggested Linux or `winget` fixes for pieces the installer
+  brings.
+
 ### Windows port, phase 1 of 4
 
 - **The core now has a Windows half.** Everything that differs between Linux and

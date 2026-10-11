@@ -58,7 +58,9 @@ def ensure_private_dir(path: Path) -> Path:
 
     Uses U3's ``paths.check_private_dir`` when present (same BE-2010 texts)."""
     try:
-        path.mkdir(mode=0o700)
+        # Windows: the runtime folder is %LOCALAPPDATA%\ButterEye\run, whose parent
+        # doesn't exist yet on a fresh profile (POSIX: $XDG_RUNTIME_DIR must exist)
+        path.mkdir(mode=0o700, parents=osapi.IS_WINDOWS)
     except FileExistsError:
         pass
     except OSError as exc:

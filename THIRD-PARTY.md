@@ -32,6 +32,28 @@ Optional packages for the experimental TensorRT path, when published in the same
 repository: `buttereye-vsmlrt-py` (vsmlrt.py from vs-mlrt, unmodified, GPL-3.0-only) and
 `buttereye-onnxconverter-common` (MIT). They are not part of the 0.0.1 release assets.
 
+## Shipped by the Windows installer (not released yet)
+
+The Windows installer (`docs/PLATFORMS.md`, phase 4) conveys, besides ButterEye, the
+plugins and the models above (built for Windows), the parts Fedora would otherwise
+provide. Their licence texts are installed in `licenses\<component>\`, and
+`licenses\SOURCES.txt` says where each part's source is.
+
+| Component | Version | Licence | How ButterEye uses it |
+|---|---|---|---|
+| Python (embeddable build, unmodified) | 3.14.8 | PSF-2.0 (and the licences in its `LICENSE.txt`) | runs ButterEye |
+| PySide6 / Shiboken6 / Qt 6 (Core, Gui, Widgets, Svg; unmodified) | 6.11.2 | LGPL-3.0-only (conveyed under it) | the window, in-process |
+| VapourSynth (official wheel, unmodified) | R81 | LGPL-2.1-or-later | `vspipe` and mpv's filter |
+| FFMS2 (`ffms2.dll`) | 5.0 | MIT | loaded by vspipe (smooth copies) |
+| FFmpeg, decoders only, in `ffms2.dll` | 8.1.3 | LGPL-2.1-or-later | statically linked into ffms2 |
+| dav1d, zlib, in `ffms2.dll` | 1.5.4, 1.3.2 | BSD-2-Clause, Zlib | statically linked into ffms2 |
+| Vulkan-Tools `vulkaninfo.exe`, with volk | 1.4.328.1 | Apache-2.0 AND MIT | separate program (the GPU list) |
+| fftw (in `mvtools.dll`) | 3.3.8 | GPL-2.0-or-later | statically linked into MVTools |
+| MinGW-w64 runtime (GCC runtime libraries, winpthreads, CRT start-up code) | GCC 16.2.1, mingw-w64 13.0.0 | GPL-3.0-or-later WITH GCC-exception-3.1 AND BSD-3-Clause AND MIT AND ZPL-2.1 | statically linked into the plugins and tools |
+
+Microsoft's Visual C++ runtime is not shipped: the installer downloads it from
+Microsoft when you agree.
+
 ## Used from your system, not shipped
 
 These come from Fedora (or, for NVIDIA software, from NVIDIA) under their own licences.

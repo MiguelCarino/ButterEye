@@ -15,6 +15,11 @@
 #   WINEPREFIX=$WIN/prefix wine vc_redist.x64.exe /install /quiet   # VapourSynth needs it
 #   # optional, for the end-to-end test: a Windows mpv build unpacked in $WIN/mpv
 #
+# The installer test (phase 4) runs when packaging/windows/build-installer.sh has
+# made ButterEye-<version>-setup.exe. It installs into a temporary folder of the
+# prefix and uninstalls again; winemenubuilder is switched off so its Start-menu
+# shortcut never reaches the Linux desktop.
+#
 # Usage: tools/wine-tests.sh [pytest args...]
 set -euo pipefail
 
@@ -22,6 +27,8 @@ repo=$(cd "$(dirname "$0")/.." && pwd)
 win=${BUTTEREYE_WIN_DIR:-$HOME/.cache/buttereye-dev/win}
 export WINEPREFIX=$win/prefix
 export WINEDEBUG=${WINEDEBUG:--all}
+# shortcuts made inside the prefix stay there (no .desktop files on the host)
+export WINEDLLOVERRIDES=${WINEDLLOVERRIDES:-winemenubuilder.exe=d}
 python='C:\Python314\python.exe'
 # vspipe.exe (pip's VapourSynth) loads python3.dll, which forwards to python314.dll;
 # Windows finds that next to python3.dll, Wine only on PATH. Wine-only workaround.
@@ -49,6 +56,12 @@ if [[ -d $winout/vapoursynth ]]; then
 fi
 if [[ -d $winout/share/rife-ncnn-models ]]; then
     export BUTTEREYE_TEST_MODELS; BUTTEREYE_TEST_MODELS=$(winpath "$winout/share/rife-ncnn-models")
+fi
+
+# phase 4: the installer (packaging/windows/build-installer.sh)
+version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$repo/buttereye/__init__.py")
+if [[ -f $winout/ButterEye-$version-setup.exe ]]; then
+    export BUTTEREYE_TEST_INSTALLER; BUTTEREYE_TEST_INSTALLER=$(winpath "$winout/ButterEye-$version-setup.exe")
 fi
 
 cd "$repo"

@@ -187,6 +187,8 @@ async def doctor(
         prog.section(Section.GPU_FAULT)
 
         findings.extend(checks_pkgs.package_findings(db, paths))
+        if osapi.IS_WINDOWS:
+            findings.append(checks_pkgs.vcruntime_finding(checks_pkgs.read_vcruntime()))
         prog.section(Section.PACKAGES)
 
         enc = await t_enc

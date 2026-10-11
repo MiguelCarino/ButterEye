@@ -19,10 +19,12 @@ The parsing functions are pure so that fixtures can test them.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import os
 import re
 import sys
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -466,6 +468,25 @@ def vulkaninfo_exe() -> str:
     return "vulkaninfo"
 
 
+async def run_vulkaninfo(timeout_s: float) -> CmdResult:
+    """``vulkaninfo``'s full text report. On Windows it is written to a file
+    (``--text -o``): run without a console of its own, as ButterEye starts its
+    helpers, plain ``vulkaninfo`` ends by waiting forever for that console to
+    close (upstream behaviour, every build), so it would always time out. The
+    file's text comes back as ``stdout``."""
+    exe = vulkaninfo_exe()
+    if not osapi.IS_WINDOWS:
+        return await run((exe,), timeout_s=timeout_s)
+    with tempfile.TemporaryDirectory(prefix="buttereye-vulkan-") as tmp:
+        report = Path(tmp) / "vulkaninfo.txt"
+        res = await run((exe, "--text", "-o", str(report)), timeout_s=timeout_s)
+        try:
+            text = report.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return res
+    return dataclasses.replace(res, stdout=text)
+
+
 async def probe_hardware(
     paths: Paths | None = None,
     *,
@@ -479,7 +500,7 @@ async def probe_hardware(
         want_smi = osapi.executable("nvidia-smi") is not None
     else:
         want_smi = any(g.vendor_id == 0x10DE for g in sysfs) or Path("/dev/nvidia0").exists()
-    vk_task = asyncio.ensure_future(run((vulkaninfo_exe(),), timeout_s=timeout_s))
+    vk_task = asyncio.ensure_future(run_vulkaninfo(timeout_s))
     smi_res: CmdResult | None = None
     try:
         if want_smi:
@@ -507,6 +528,7 @@ __all__ = [
     "SmiGpu",
     "HwProbe",
     "parse_vulkaninfo",
+    "run_vulkaninfo",
     "parse_nvidia_smi",
     "read_sysfs_gpus",
     "gpus_from_vulkan",

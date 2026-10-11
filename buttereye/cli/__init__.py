@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 import buttereye
-from buttereye.core import licences
+from buttereye.core import licences, osapi
 from buttereye.core.api import ButterEye
 from buttereye.core.capabilities import unavailable_text
 from buttereye.core.errors import ButterEyeError, ErrorCode, OperationCancelled
@@ -564,6 +564,20 @@ async def run(ns: argparse.Namespace, out: Out, opener: Opener) -> int:
             await core.close(DetachPolicy.KEEP_FILTER, cancel_jobs=policy_cancel, timeout_s=5.0)
 
 
+def utf8_stdio(*streams: TextIO | None) -> None:
+    """Write UTF-8 (unencodable characters replaced) to ``streams``. For Windows,
+    where a redirected stdout or stderr gets the ANSI code page (cp1252), which
+    has no "→" or "✓": the first such line would end the command with an
+    ``UnicodeEncodeError`` and leave mpv running. A console is unaffected."""
+    for stream in streams:
+        reconfigure = getattr(stream, "reconfigure", None)
+        encoding = str(getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if reconfigure is None or encoding == "utf8":
+            continue
+        with contextlib.suppress(ValueError, OSError):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -576,6 +590,10 @@ def main(
         ns = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     except SystemExit as exc:  # argparse: --help (0) or a usage error (2)
         return int(exc.code or 0)
+    if osapi.IS_WINDOWS:
+        utf8_stdio(
+            *(s for s, given in ((sys.stdout, stdout), (sys.stderr, stderr)) if given is None)
+        )
     out = Out(ns, stdout or sys.stdout, stderr or sys.stderr)
     if ns.version:
         print(version_text(), file=out.stdout)
@@ -604,4 +622,12 @@ def main(
         return out.error(ns.command, err)
 
 
-__all__ = ["EXIT_CANCELLED", "JSON_VERSION", "build_parser", "main", "plain", "version_text"]
+__all__ = [
+    "EXIT_CANCELLED",
+    "JSON_VERSION",
+    "build_parser",
+    "main",
+    "plain",
+    "utf8_stdio",
+    "version_text",
+]
