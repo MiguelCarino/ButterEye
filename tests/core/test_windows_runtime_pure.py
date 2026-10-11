@@ -24,7 +24,7 @@ from buttereye.core.errors import ButterEyeError
 from buttereye.core.hw import detect
 from buttereye.core.mpvctl import launcher
 from buttereye.core.render import jobs
-from buttereye.core.types import Severity
+from buttereye.core.types import Finding, Severity
 
 
 # ---------------------------------------------------------------- the bundled runtime
@@ -164,3 +164,46 @@ def test_missing_vspipe_or_plugins_point_at_the_installer_on_windows(
     err = jobs._missing("vspipe", None)
     assert err.commands == ()
     assert not any("dnf" in c or "winget" in c for c in err.commands)
+
+
+# ---------------------------------------------------------------- no Vulkan loader
+def _probe_plugins(monkeypatch: pytest.MonkeyPatch, windows: bool, loader: bool) -> Finding:
+    from buttereye.core.doctor import probe
+    from buttereye.core.types import PluginStatus
+
+    monkeypatch.setattr(osapi, "IS_WINDOWS", windows)
+    raw = {
+        "vs_core": "81",
+        "python": "3.14.8",
+        "plugins": [
+            {"ns": "rife", "loaded": False, "error": "GetLastError() returned 126"},
+            {"ns": "mv", "loaded": True, "loaded_from": "C:/ButterEye/vapoursynth/mvtools.dll"},
+        ],
+    }
+    status = [
+        PluginStatus("RIFE-ncnn-Vulkan", pk.PKG_RIFE, "1", "buttereye", False, None, ()),
+        PluginStatus("MVTools", pk.PKG_MVTOOLS, "1", "buttereye", True, None, ()),
+    ]
+    out = probe.probe_findings(
+        probe.ProbeOutcome(raw, None, None), status, vspipe_core="81", vulkan_loader=loader
+    )
+    return next(f for f in out if f.id == "probe.plugins")
+
+
+def test_rife_without_the_vulkan_loader_is_the_driver_not_a_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    f = _probe_plugins(monkeypatch, windows=True, loader=False)
+    assert f.severity is Severity.DEGRADED
+    assert "Vulkan loader" in f.title.key
+    assert "graphics driver" in f.fix.key and f.commands == ()
+    assert any(e.startswith("mv: loaded from") for e in f.evidence)
+
+
+@pytest.mark.parametrize(("windows", "loader"), [(True, True), (False, False), (False, True)])
+def test_a_rife_load_failure_otherwise_stays_a_reinstall(
+    monkeypatch: pytest.MonkeyPatch, windows: bool, loader: bool
+) -> None:
+    f = _probe_plugins(monkeypatch, windows=windows, loader=loader)
+    assert f.severity is Severity.DEGRADED
+    assert f.title.key == "{names} did not load inside mpv"

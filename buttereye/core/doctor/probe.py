@@ -309,8 +309,11 @@ def probe_findings(
     plugins: Sequence[PluginStatus],
     *,
     vspipe_core: str | None,
+    vulkan_loader: bool = True,
 ) -> list[Finding]:
-    """``outcome`` None: mpv itself is unusable (the mpv section already blocks)."""
+    """``outcome`` None: mpv itself is unusable (the mpv section already blocks).
+    ``vulkan_loader`` False (Windows): RIFE failing to load is the missing loader,
+    which a graphics driver installs, not a broken install."""
     if outcome is None:
         return [
             _f(
@@ -392,7 +395,27 @@ def probe_findings(
         )
         for r in recs.values()
     )
-    if failed:
+    if (
+        failed
+        and osapi.IS_WINDOWS
+        and not vulkan_loader
+        and {_ns_of(p) for p in failed} == {"rife"}
+    ):
+        out.append(
+            _f(
+                "probe.plugins",
+                Severity.DEGRADED,
+                M("RIFE can't load inside mpv without the Vulkan loader"),
+                code=ErrorCode.VULKAN_LOADER_MISSING,
+                cause=M(
+                    "RIFE needs vulkan-1.dll, which a graphics driver installs. "
+                    "MVTools (CPU) works without it."
+                ),
+                fix=M("Install or update your graphics driver from AMD, Intel or NVIDIA."),
+                evidence=evid,
+            )
+        )
+    elif failed:
         out.append(
             _f(
                 "probe.plugins",

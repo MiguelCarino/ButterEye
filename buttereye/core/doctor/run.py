@@ -203,7 +203,12 @@ async def doctor(
         raw: dict[str, Any] | None = dict(outcome.raw) if outcome and outcome.raw else None
         statuses = plugin_statuses(db, paths, raw)
         findings.extend(
-            probe_findings(outcome, statuses, vspipe_core=parse_vspipe_core(vsp.stdout))
+            probe_findings(
+                outcome,
+                statuses,
+                vspipe_core=parse_vspipe_core(vsp.stdout),
+                vulkan_loader=any(p.exists() for p in checks_vulkan.LOADER_PATHS),
+            )
         )
         prog.section(Section.PROBE)
 
