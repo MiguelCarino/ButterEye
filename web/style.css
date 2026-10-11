@@ -45,7 +45,7 @@ code, pre { font-family: var(--mono); }
 /* ---------------------------------------------------------------- layout */
 .page {
   flex: 1; width: 100%;
-  padding: calc(32px + var(--tall) * 0.1) var(--gutter) 16px;
+  padding: calc(24px + var(--tall) * 0.1) var(--gutter) 8px;
   display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
   gap: clamp(24px, 4vw, 72px); align-items: start;   /* top-anchored, never centred */
 }
@@ -95,7 +95,8 @@ h2 {
 }
 .hint { color: var(--text-sec); font-size: 0.86rem; margin: 8px 0 0; }
 
-.kitchen { position: relative; margin-top: 18px; padding-top: 84px; }  /* the butter waits above the pans */
+.kitchen { position: relative; margin-top: 10px; padding-top: 72px; transition: padding-top .35s ease; }
+.kitchen.cooking { padding-top: 0; }  /* the butter waits above the pans */
 .butter {
   position: absolute; left: 0; top: 0; z-index: 3; width: 64px; height: 64px;
   transform: translate(var(--bx, 0px), var(--by, 0px)) scale(var(--bs, 1));
@@ -115,7 +116,7 @@ h2 {
   padding: 6px 4px 10px; background: none; border: 1px solid transparent; border-radius: var(--radius);
   color: var(--text); font: inherit; cursor: pointer; transition: 0.15s;
 }
-.pan svg { width: 100%; max-width: 150px; aspect-ratio: 4 / 3; overflow: visible; }
+.pan svg { width: 100%; max-width: min(150px, calc(118px + var(--tall) * .1)); aspect-ratio: 4 / 3; overflow: visible; }
 @property --melt { syntax: '<number>'; inherits: true; initial-value: 0; }
 .pan { --rim: #333; --rim-w: 2; --melt: 0; transition: 0.15s, --melt 0.6s ease; }
 .pan:hover, .pan.near { background: var(--accent-faint); border-color: var(--accent-dim); --rim: var(--accent); }
@@ -125,9 +126,44 @@ h2 {
 .pan-sub { font-family: var(--mono); font-size: 0.64rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.1em; }
 .pan.cold .pan-name { color: var(--text-sec); }
 
+/* ---------------------------------------------------------------- classic download buttons
+   The dicom.carino.systems chips (Carino-PACS docs/styles.css .dl-btn): a Fedora chip
+   downloads the app's RPM and opens the install panel (the plugins come with the
+   one-line command); the chosen platform's chip turns gold like dicom's
+   "recommended" one. */
+.dl-or {
+  font-family: var(--mono); font-size: 0.66rem; font-weight: 600; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--text-muted); text-align: center; margin: 10px 0 14px;
+}
+.downloads { display: grid; grid-template-columns: repeat(4, 1fr); gap: min(14px, calc(8px + var(--tall) * .03)); }
+.dl-btn {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  min-width: 0;
+  padding: min(20px, calc(10px + var(--tall) * .02)) 8px;
+  border-radius: 11px; text-decoration: none; font: inherit; cursor: pointer; text-align: center;
+  border: 1px solid var(--border); background: linear-gradient(180deg, var(--bg-elev), #0a0a0a);
+  color: var(--text); transition: .16s;
+}
+.dl-btn:hover { border-color: var(--accent); transform: translateY(-2px); color: var(--text); }
+.dl-btn b { font-size: min(1.15rem, calc(.95rem + var(--tall) * .01)); white-space: nowrap; }
+.dl-btn .fmt { font-family: var(--mono); font-size: .68rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+.dl-btn.soon b { color: var(--text-sec); }
+.dl-btn .rec { display: none; }
+.dl-btn.recommended {
+  border-color: var(--accent); background: var(--accent); color: #050505;
+  box-shadow: 0 10px 30px rgba(234, 179, 8, .22);
+}
+.dl-btn.recommended b { color: #050505; }
+.dl-btn.recommended .fmt { color: #3a2c00; }
+.dl-btn.recommended .rec {
+  display: block; position: absolute; top: -10px; left: 50%; transform: translateX(-50%);
+  background: #050505; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px;
+  font-family: var(--mono); font-size: .56rem; letter-spacing: .1em; text-transform: uppercase; padding: 2px 8px; white-space: nowrap;
+}
+
 /* ---------------------------------------------------------------- result */
 .result {
-  margin: 14px 0 0; padding: 16px 18px; border-radius: 12px;
+  margin: 14px 0 0; padding: 14px 16px; border-radius: 12px;
   background: var(--bg); border: 1px solid var(--accent-dim); animation: rise 0.25s ease both;
 }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -135,13 +171,13 @@ h2 {
   font-family: var(--display); font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px;
   margin: 0 0 4px; font-size: 1.05rem; color: var(--accent);
 }
-.result p { color: var(--text-sec); margin: 8px 0; font-size: 0.9rem; }
+.result p { color: var(--text-sec); margin: 6px 0; font-size: 0.88rem; }
 .result strong { color: var(--text); }
 .code { position: relative; margin: 8px 0; }
 .code pre {
   margin: 0; padding: 12px 88px 12px 12px; overflow-x: auto; white-space: pre;
   background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px;
-  font-size: 0.74rem; line-height: 1.55; color: #fde68a;
+  font-size: 0.72rem; line-height: 1.45; color: #fde68a;
 }
 .code pre code { background: none; padding: 0; color: inherit; }
 .copy {
@@ -173,10 +209,14 @@ summary { cursor: pointer; color: var(--text); font-weight: 600; font-size: 0.9r
   .points { display: none; }   /* one column: keep the page short, the pans come first */
 }
 @media (max-width: 560px) {
+  .downloads { grid-template-columns: repeat(2, 1fr); }
+  .dl-btn { padding: 9px 8px; gap: 0; }
+  .dl-btn b { font-size: .95rem; }
+  .downloads { gap: 8px; }
   .pans { grid-template-columns: repeat(2, 1fr); }
   .hint { font-size: 0.8rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .butter.settle, .butter.melted, .result, .pan { transition: none; animation: none; }
+  .butter.settle, .butter.melted, .result, .pan, .dl-btn, .kitchen { transition: none; animation: none; }
 }

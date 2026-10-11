@@ -43,9 +43,12 @@ let dragging = null;    // {dx, dy} while dragging
 let timer = 0;
 
 function size() { return butter.getBoundingClientRect().width || 64; }
-function home() {       // resting place: centred above the pans
+let chosen = 0;         // pan that has butter in it (1-based), 0 = none yet
+function home() {       // resting place: above the pans, or on the chosen pan's handle
   const k = kitchen.getBoundingClientRect();
-  return { x: (k.width - size()) / 2, y: 6 };
+  if (!chosen) return { x: (k.width - size()) / 2, y: 6 };
+  const s = pans[chosen - 1].querySelector('svg').getBoundingClientRect();
+  return { x: s.left + s.width * 0.86 - k.left - size() / 2, y: s.top + s.height / 2 - k.top - size() * 0.62 };
 }
 function panCentre(i) { // butter position that centres it over pan i's cooking surface
   const k = kitchen.getBoundingClientRect();
@@ -92,8 +95,12 @@ function choose(i) {
   mark(i);
   place(panCentre(i), { settle: true, scale: 0.7 });
   butter.classList.add('melted');
+  chosen = i;
+  kitchen.classList.add('cooking');  // the butter no longer needs room above the pans
   pans.forEach((p, k) => p.classList.toggle('chosen', k + 1 === i));
-  show(pans[i - 1].dataset.platform);
+  const platform = pans[i - 1].dataset.platform;
+  chips.forEach((c) => c.classList.toggle('recommended', c.dataset.platform === platform));
+  show(platform);
   // once it has melted, a new pat waits at home for another choice
   timer = setTimeout(() => {
     butter.classList.remove('melted', 'settle');
@@ -145,9 +152,26 @@ butter.addEventListener('keydown', (e) => {
   e.preventDefault();
 });
 
+// ---------------------------------------------------------------- classic buttons
+// A Fedora chip is a real link (the browser downloads the app's RPM) and also
+// drops the butter in that pan, so the panel shows the command with the plugins.
+const chips = Array.from(document.querySelectorAll('.dl-btn'));
+chips.forEach((c) => c.addEventListener('click', () => {
+  choose(pans.findIndex((p) => p.dataset.platform === c.dataset.platform) + 1);
+}));
+function linkChips() {
+  for (const c of chips) {
+    if (c.tagName !== 'A') continue;
+    const app = release.assets.find((a) => /^buttereye-\d/.test(a.name) && a.name.includes(`.${c.dataset.platform}.`) && a.name.endsWith('.rpm'));
+    if (app) c.href = app.url;
+  }
+}
+
 // ---------------------------------------------------------------- the pans themselves
 pans.forEach((p, k) => p.addEventListener('click', () => choose(k + 1)));
 window.addEventListener('resize', () => { if (!dragging) place(hover ? panCentre(hover) : home()); });
+// the kitchen shrinks when a pan is chosen: put the waiting pat back on its handle after
+kitchen.addEventListener('transitionend', (e) => { if (e.target === kitchen && !dragging && !hover) place(home()); });
 
 // ---------------------------------------------------------------- result
 function show(platform) {
@@ -215,6 +239,7 @@ fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accep
     };
     document.getElementById('version-chip').textContent = release.tag;
     document.getElementById('foot-version').textContent = `ButterEye ${release.tag.replace(/^v/, '')}`;
+    linkChips();
     const chosen = pans.findIndex((p) => p.classList.contains('chosen'));
     if (chosen >= 0) show(pans[chosen].dataset.platform);
   })

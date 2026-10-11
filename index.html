@@ -56,7 +56,7 @@
     <section class="stove" aria-labelledby="dl-title">
       <p class="kicker">Download</p>
       <h2 id="dl-title">Put the butter in your pan</h2>
-      <p class="hint" id="dl-hint">Drag the butter into the pan for your system. Keyboard: arrows, then Enter. Or pick a pan.</p>
+      <p class="hint" id="dl-hint">Drag the butter into the pan for your system. Keyboard: arrows, then Enter. Or pick a pan or a button below.</p>
 
       <div class="kitchen" id="kitchen">
         <div class="butter" id="butter" role="slider" tabindex="0" aria-label="Butter: put it in a pan"
@@ -78,6 +78,19 @@
             <svg aria-hidden="true"><use href="#pan"/></svg>
             <span class="pan-name">Windows</span><span class="pan-sub">not yet</span></button></li>
         </ol>
+      </div>
+
+      <p class="dl-or">Or download directly</p>
+      <div class="downloads" id="downloads">
+        <a class="dl-btn" data-platform="fc44" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.1/buttereye-0.0.1-1.fc44.noarch.rpm">
+          <span class="rec">chosen</span><b>🐧 Fedora 44</b><span class="fmt">.rpm · x86-64</span></a>
+        <a class="dl-btn" data-platform="fc45" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.1/buttereye-0.0.1-1.fc45.noarch.rpm">
+          <span class="rec">chosen</span><b>🐧 Fedora 45</b><span class="fmt">.rpm · x86-64</span></a>
+        <!-- buttons, not links: there is nothing to download yet -->
+        <button class="dl-btn soon" data-platform="macos" type="button">
+          <span class="rec">chosen</span><b> macOS</b><span class="fmt">not yet</span></button>
+        <button class="dl-btn soon" data-platform="windows" type="button">
+          <span class="rec">chosen</span><b>🪟 Windows</b><span class="fmt">not yet</span></button>
       </div>
 
       <div class="result" id="result" aria-live="polite" hidden></div>
