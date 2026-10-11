@@ -323,7 +323,9 @@ async def test_cap_scales_by_pixel_count(
     bench_history.append(_devbox())
     s = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
     cap = await s.sustainable_fps(BackendId.RIFE_NCNN, M26, _facts(*video), s.ctx.config())
-    assert cap == pytest.approx(RIFE_1080 * factor / live.LIVE_HEADROOM)
+    # a bigger picture than measured costs more than its pixel count (UPSCALE_EXPONENT)
+    scaled = factor**live.UPSCALE_EXPONENT if factor < 1 else factor
+    assert cap == pytest.approx(RIFE_1080 * scaled / live.LIVE_HEADROOM)
 
 
 async def test_cap_prefers_closest_size_then_newest(
@@ -1054,3 +1056,93 @@ async def test_crashed_mpv_keeps_its_log_and_reason(
     finally:
         core_logger.removeHandler(book)
         core_logger.setLevel(old_level)
+
+
+# ---------------------------------------------------------------------------
+# 6. estimates for a bigger picture, and live correction (§11.9)
+# ---------------------------------------------------------------------------
+
+TRT_1080 = 191.61  # the dev box's 1080p RIFE v4.26 TensorRT speed in mpv (2026-10-11)
+
+
+async def test_a_1080p_measurement_no_longer_promises_4k(
+    tmp_path: Path, bench_history: list[BenchResult]
+) -> None:
+    """The HDR10 film of 2026-10-11 (3840x1616, 24 fps -> 48): scaled linearly, the
+    1080p TensorRT speed promised 51 fps after headroom and TensorRT was chosen,
+    then dropped 60-81 % of frames (measured at that size: 54 fps in mpv)."""
+    bench_history.append(_result(_m("rife-v4.26 · TensorRT", TRT_1080, backend=BackendId.RIFE_TRT)))
+    s = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
+    cap = await s.sustainable_fps(BackendId.RIFE_TRT, None, _facts(3840, 1616), s.ctx.config())
+    ratio = (1920 * 1080) / (3840 * 1616)
+    assert cap == pytest.approx(TRT_1080 * ratio**live.UPSCALE_EXPONENT / live.LIVE_HEADROOM)
+    assert cap is not None and cap < 48  # no longer "keeps up" at 2x
+    assert TRT_1080 * ratio / live.LIVE_HEADROOM > 48  # what the old linear scaling said
+
+
+def _heavy(rate: float = 0.8) -> Verdict:
+    return Verdict(Health.DROPPING, None, Msg("Dropping frames."), (), True, rate)
+
+
+async def _running(tmp_path: Path, profile: Profile) -> tuple[FakeCtx, live._Session]:
+    ctx = FakeCtx(_paths(tmp_path), _config(profile))
+    s = _session(ctx, tmp_path)
+    _load(s, fps=float(NTSC))
+    await s.apply(raise_on_fail=False)
+    await _settle(ctx)
+    # what mpv reports while ButterEye's filter runs (step() checks it is still there)
+    s.props["vf"] = [{"name": "vapoursynth", "label": "buttereye", "enabled": True}]
+    return ctx, s
+
+
+async def test_heavy_drops_switch_automatics_engine_and_are_remembered(
+    tmp_path: Path, bench_history: list[BenchResult], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bench_history.append(_devbox())
+    ctx, s = await _running(tmp_path, _simple())
+    assert _engine(s) is BackendId.RIFE_NCNN and s.auto_chosen
+    # 10 s of heavy dropping (the detector's verdict, fed through step)
+    monkeypatch.setattr(s.detector, "update", lambda _sample: _heavy(0.6))
+    s.heavy_since = time.monotonic() - live.HEAVY_HOLD_S - 1
+    await s.step()
+    await _settle(ctx)
+    assert _engine(s) is BackendId.MVTOOLS, "moved to what can keep up"
+    notes = [e for e in ctx.events if isinstance(e, Notice)]
+    assert notes and notes[-1].message.key.startswith("{engine} couldn't keep up")
+    # remembered on disk: the same film in a new session goes straight to MVTools
+    limits = (ctx.paths.state_dir / live.livelimits.FILE).read_text()
+    assert "rife-ncnn" in limits and "1920x1080" in limits
+    ctx2 = FakeCtx(ctx.paths, _config(_simple()))  # a new core: reads the file
+    s2 = _session(ctx2, tmp_path)
+    _load(s2, fps=float(NTSC))
+    await s2.apply(raise_on_fail=False)
+    await _settle(ctx2)
+    assert _engine(s2) is BackendId.MVTOOLS
+
+
+async def test_short_or_light_drops_change_nothing(
+    tmp_path: Path, bench_history: list[BenchResult], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bench_history.append(_devbox())
+    ctx, s = await _running(tmp_path, _simple())
+    monkeypatch.setattr(s.detector, "update", lambda _sample: _heavy(0.05))  # light
+    s.heavy_since = time.monotonic() - 60
+    await s.step()
+    assert _engine(s) is BackendId.RIFE_NCNN and s.heavy_since is None
+    monkeypatch.setattr(s.detector, "update", lambda _sample: _heavy(0.8))
+    await s.step()  # heavy, but only just started
+    assert _engine(s) is BackendId.RIFE_NCNN and s.heavy_since is not None
+
+
+async def test_an_engine_the_user_chose_is_not_second_guessed(
+    tmp_path: Path, bench_history: list[BenchResult], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bench_history.append(_devbox())
+    ctx, s = await _running(tmp_path, _simple(BackendId.RIFE_NCNN))
+    assert _engine(s) is BackendId.RIFE_NCNN and not s.auto_chosen
+    monkeypatch.setattr(s.detector, "update", lambda _sample: _heavy(0.8))
+    s.heavy_since = time.monotonic() - 60
+    await s.step()
+    assert _engine(s) is BackendId.RIFE_NCNN
+    assert s.health is Health.DROPPING  # reported, and the step-down offered as before
+    assert not (ctx.paths.state_dir / live.livelimits.FILE).exists()

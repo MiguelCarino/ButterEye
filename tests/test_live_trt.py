@@ -278,9 +278,12 @@ async def test_half_flow_before_a_smaller_picture(
 
     bench_history.append(_result(_trt_m(260.0), _ncnn_m(65.0)))
 
-    async def caps(self: Any, backend: BackendId, model: Any, f: Any, cfg: Any) -> float:
+    async def caps(
+        self: Any, backend: BackendId, model: Any, f: Any, cfg: Any, *, flow_scale: float = 1.0
+    ) -> float:
         full = {BackendId.RIFE_TRT: trt_cap, BackendId.RIFE_NCNN: 14.0}.get(backend, 30.0)
-        return full * (3840 * 2160) / (f.width * f.height)  # smaller sizes run faster
+        gain = decide.HALF_FLOW_GAIN if flow_scale != 1.0 else 1.0
+        return full * gain * (3840 * 2160) / (f.width * f.height)  # smaller sizes run faster
 
     monkeypatch.setattr(live._Session, "sustainable_fps", caps)
     ctx = FakeCtx(_paths(tmp_path), _opted(_simple(BackendId.RIFE_TRT)))

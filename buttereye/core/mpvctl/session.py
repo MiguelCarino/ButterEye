@@ -54,7 +54,7 @@ from buttereye.core.events import (
     SessionEnded,
 )
 from buttereye.core.i18n import render
-from buttereye.core.mpvctl import decide, launcher, osd, shaders
+from buttereye.core.mpvctl import decide, launcher, livelimits, osd, shaders
 from buttereye.core.mpvctl.health import (
     HealthDetector,
     Thresholds,
@@ -142,6 +142,16 @@ REALTIME_HEADROOM = 1.15
 #: other multipliers are costed by their interpolated frames (``decide.load_rate``),
 #: so 23.976 → 60 needs ~120 (almost every frame inferred), not 60.
 LIVE_HEADROOM = 1.25
+#: a measurement scaled *up* to a bigger picture: cost grows faster than the pixel
+#: count (RIFE TensorRT on an RTX 4090: 1080p -> 3840x1616 is 2.99x the pixels and
+#: 3.54x the time; 1080p -> 2160p 4x and 4.3x), so fps / ratio ** 1.15; scaling down
+#: stays linear, which already errs on the slow side
+UPSCALE_EXPONENT = 1.15
+#: live correction (§11.9): an engine Automatic chose that drops at least this share
+#: of frames for HEAVY_HOLD_S is recorded as slower here (livelimits) and replaced
+HEAVY_DROP = 0.15
+HEAVY_HOLD_S = 10.0
+LIVE_LIMITS = "mpvctl.live_limits"  # livelimits records, loaded once per core
 #: The lite model must beat the full one by more than this in this machine's
 #: benchmark to be offered as a step down (§5.3 step 5).
 LITE_GAIN = 1.05
@@ -387,6 +397,8 @@ class _Session:
         # what the running filter does, for the snapshot (reset when it is off)
         self.run_size: tuple[int, int] | None = None
         self.run_flow = 1.0
+        self.auto_chosen = False  # the running engine was Automatic's choice
+        self.heavy_since: float | None = None  # heavy dropping since (monotonic)
         self.run_block = False
         self.proc = proc
         self.pid: int | None = proc.pid
@@ -717,7 +729,13 @@ class _Session:
         return cfg.profiles[0], note
 
     async def sustainable_fps(
-        self, backend: BackendId, model: str | None, facts: SourceFacts, cfg: Config | None
+        self,
+        backend: BackendId,
+        model: str | None,
+        facts: SourceFacts,
+        cfg: Config | None,
+        *,
+        flow_scale: float = 1.0,
     ) -> float | None:
         """The live rate cap for ``backend``/``model`` at this video's size (§11.9).
 
@@ -730,7 +748,12 @@ class _Session:
         LIVE_HEADROOM`` as a 2× output rate (``decide.load_rate`` units: a bench
         run at another multiplier is converted by its interpolated frames), so
         ``decide.choose_target`` costs each target by the frames it infers. None =
-        no benchmark for this engine."""
+        no benchmark for this engine.
+
+        Scaling up to a bigger picture divides by ``ratio ** UPSCALE_EXPONENT``;
+        ``flow_scale`` 0.5 (TensorRT half-resolution flow) gains
+        ``decide.HALF_FLOW_GAIN``; what live playback learned about this engine at
+        this size on this GPU (``livelimits``) multiplies the result."""
         history = capabilities.resolve(_BENCH_HISTORY)
         if history is None:
             return None
@@ -769,10 +792,67 @@ class _Session:
                     getattr(req, "source_fps", None),
                     getattr(req, "target_fps", None),
                 )
-                found.append((round(-abs(math.log(ratio)), 6), stamp, fps * ratio))
+                scaled = fps * ratio**UPSCALE_EXPONENT if ratio < 1 else fps * ratio
+                found.append((round(-abs(math.log(ratio)), 6), stamp, scaled))
         if not found:
             return None
-        return max(found)[2] / LIVE_HEADROOM
+        rate = max(found)[2] / LIVE_HEADROOM
+        if flow_scale != 1.0:
+            rate *= decide.HALF_FLOW_GAIN
+        key = self.limit_key(backend, model, (facts.width, facts.height), flow_scale, current)
+        return rate * livelimits.factor(self.live_limits(), key)
+
+    def live_limits(self) -> dict[str, dict[str, float]]:
+        path = self.ctx.paths.state_dir / livelimits.FILE
+        return self.ctx.state(LIVE_LIMITS, lambda: livelimits.load(path))
+
+    @staticmethod
+    def limit_key(
+        backend: BackendId,
+        model: str | None,
+        size: tuple[int, int],
+        flow_scale: float,
+        device: Any,
+    ) -> livelimits.LimitKey:
+        uuid = getattr(device, "uuid", None)
+        return livelimits.LimitKey(
+            uuid if backend in decide.GPU_BACKENDS else None,
+            backend.value,
+            model,
+            size[0],
+            size[1],
+            flow_scale,
+        )
+
+    async def live_fallback(self, drop_rate: float) -> None:
+        """Automatic's engine keeps dropping heavily: record that it is slower here
+        than estimated (``livelimits``) and decide again, which moves to the next
+        engine or size that fits, or plays unsmoothed (§11.9)."""
+        self.heavy_since = None
+        src = self.source
+        if self.backend is None or src is None:
+            return
+        cfg, _ = self.config()
+        size = self.run_size or (src.width, src.height)
+        key = self.limit_key(self.backend, self.model, size, self.run_flow, self.gpu_device(cfg))
+        limits = self.live_limits()
+        new = livelimits.lowered(livelimits.factor(limits, key), drop_rate)
+        livelimits.record(self.ctx.paths.state_dir / livelimits.FILE, limits, key, new)
+        name = decide.BACKEND_NAMES.get(self.backend, self.backend.value)
+        self.log.info(
+            "%s: %s%s dropped %.0f%% of frames at %s × %s; it is slower here than the "
+            "speed test showed (estimate × %.2f from now on), choosing again",
+            self.title, name, f" {self.model}" if self.model else "", drop_rate * 100,
+            size[0], size[1], new,
+        )  # fmt: skip
+        msg = Msg(
+            "{engine} couldn't keep up at {w} × {h}, so ButterEye switched to what can.",
+            {"engine": name, "w": size[0], "h": size[1]},
+        )
+        self.emit(Notice(msg, None, self.sid))
+        if self.health is Health.DROPPING:
+            self.health, self.step_down_to = Health.OK, None
+        await self.apply(raise_on_fail=False)
 
     async def step_down_choice(self) -> str | None:
         """The profile to offer when frames drop (§5.3 step 5)."""
@@ -1169,14 +1249,12 @@ class _Session:
             ):
                 # TensorRT with half-resolution flow (M0(q)) before a smaller picture
                 half = [
-                    dataclasses.replace(
-                        o,
-                        sustainable_fps=o.sustainable_fps * decide.HALF_FLOW_GAIN
-                        if o.sustainable_fps is not None
-                        else None,
+                    decide.EngineOption(
+                        BackendId.RIFE_TRT,
+                        await self.sustainable_fps(
+                            BackendId.RIFE_TRT, trt_model, facts, cfg, flow_scale=0.5
+                        ),
                     )
-                    for o in options
-                    if o.backend is BackendId.RIFE_TRT
                 ]
                 hp = choose(half, forced=False)
                 if hp.backend is BackendId.RIFE_TRT and hp.target.bypass is None:
@@ -1312,6 +1390,10 @@ class _Session:
         gen = self.next_gen()
         self.run_size = size
         self.run_flow = self.flow_scale if backend is BackendId.RIFE_TRT else 1.0
+        # live correction only second-guesses ButterEye's own choice: not an engine
+        # the user picked, nor "smooth at full size" (frames may drop by choice)
+        self.auto_chosen = wanted is None and not forced_used
+        self.heavy_since = None
         self.run_block = bool(mv_block and backend is BackendId.MVTOOLS)
         params = FilterParams(
             gen=gen,
@@ -1760,6 +1842,7 @@ class _Session:
         self.bypass_display = None
         self.step_down_to = None
         self.drop_rate = None
+        self.heavy_since = None
         self.start_notice = None
         self.file_started_mono = time.monotonic()
         if self.health is Health.DROPPING:
@@ -1937,6 +2020,21 @@ class _Session:
             self.drop_rate = verdict.drop_rate
             if verdict.flowing and self.filter is FilterState.PENDING:
                 self.filter = FilterState.ACTIVE
+            heavy = (
+                verdict.health is Health.DROPPING
+                and verdict.drop_rate is not None
+                and verdict.drop_rate >= HEAVY_DROP
+            )
+            if not heavy:
+                self.heavy_since = None
+            elif self.heavy_since is None:
+                self.heavy_since = now
+            elif now - self.heavy_since >= HEAVY_HOLD_S and self.auto_chosen and not self.busy:
+                assert verdict.drop_rate is not None
+                await self.live_fallback(verdict.drop_rate)
+                self.publish()
+                await self.send_status()
+                return
             if verdict.health is Health.STALLED:
                 await self.stalled(verdict)
             elif verdict.health is Health.DROPPING:

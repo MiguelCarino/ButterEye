@@ -7,6 +7,17 @@ release may change behaviour or settings.
 
 ## Unreleased
 
+### Fixed
+
+- **4K films no longer get an engine that can't keep up.** ButterEye estimated an
+  engine's speed on a bigger picture from a 1080p speed test by pixel count alone;
+  real cost grows faster, so a 3840×1616 HDR10 film got RIFE · TensorRT and dropped
+  most of its frames. The estimate now accounts for that.
+- **ButterEye corrects itself while you watch.** If an engine Automatic chose keeps
+  dropping many frames, ButterEye switches to one that keeps up and remembers it for
+  that size, so reopening the film doesn't repeat the problem. An engine you chose
+  yourself is left alone, as before.
+
 ### Windows port, phase 1 of 4
 
 - **The core now has a Windows half.** Everything that differs between Linux and
@@ -18,6 +29,16 @@ release may change behaviour or settings.
   installer are the next three phases (`docs/PLATFORMS.md`).
 - `tests/windows/` tests the Windows code against the real Windows API, including a
   real `mpv.exe`; `tools/wine-tests.sh` runs them under Wine on Linux.
+
+### Windows port, phase 3 of 4
+
+- **The video plugins build for Windows.** `packaging/windows/build-plugins.sh`
+  cross-compiles MVTools, RIFE and mvgpu on Fedora into self-contained DLLs, with every
+  licence text and the source code for the GPL parts. Under Wine they load into
+  VapourSynth for Windows and interpolate correctly, on the GPU too.
+- **Fixed for Windows:** RIFE built with MinGW cut its model folder to one letter and
+  produced black in-between frames without an error
+  (`buttereye-vs-rife-ncnn-windows-paths.patch`).
 
 ### Windows port, phase 2 of 4
 
