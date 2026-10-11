@@ -7,15 +7,16 @@ starts from facts rather than guesses. Nothing here is a promise or a schedule.
 
 Assessed against the 0.0.1 tree on 2026-10-10. The Windows port's four phases
 landed on 2026-10-11 and are described below: there is now a Windows installer,
-tested under Wine on the Linux dev box but **not yet on a real Windows PC**, so
-it is not released. No macOS build has been made.
+tested under Wine on the Linux dev box and, in CI, installed and tested on GitHub's
+Windows Server 2025 machines (no GPU there). It has **not yet been used on a real
+Windows desktop PC with a GPU**, so it is not released. No macOS build has been made.
 
 ## Summary
 
 | Piece | Linux (Fedora 44/45) | Windows | macOS |
 |---|---|---|---|
 | Python core (`buttereye.core`) | supported | platform layer, detection and doctor done (phases 1-2) | needs a smaller platform layer (peer credentials, paths, `/proc`, detection) |
-| PySide6 GUI | supported | bundled by the installer; opens under Wine, untried on real Windows | Qt itself runs; inherits the core's gaps (`fcntl` is available) |
+| PySide6 GUI | supported | bundled by the installer; opens under Wine, Qt loads on Windows Server 2025 (CI); the window is untried on a real desktop | Qt itself runs; inherits the core's gaps (`fcntl` is available) |
 | mpv control (JSON IPC) | Unix sockets + socketpair | **named pipes**, done; tested under Wine with a real `mpv.exe` | Unix sockets work; `SO_PEERCRED` does not exist |
 | mpv `vapoursynth` filter | distro mpv has it | depends on the mpv build | depends on the mpv build |
 | VapourSynth + `vspipe` | Fedora packages | bundled by the installer (the official wheel, inside its own Python) | available (e.g. Homebrew); untested here |
@@ -151,8 +152,9 @@ objects, process trees, named pipes with the peer check, locks, junction-safe
 cleaning, settings saved over an existing file, and a real `mpv.exe` driven
 over its pipe. On Windows it runs with plain `pytest`; on the Linux dev box,
 `tools/wine-tests.sh` runs it under Wine with a Windows Python (one-time setup
-in the script's header). Wine is a stand-in, not proof: the installer phase is
-tested on real Windows before any release.
+in the script's header). Wine is a stand-in, not proof; GitHub Actions now runs
+the same tests on real Windows (below, "On real Windows: GitHub Actions"), but
+without a GPU, so a desktop PC test is still due before any release.
 
 ### Phase 3: the plugins (done)
 
@@ -177,7 +179,7 @@ cut to its first letter and every in-between frame came out black, with no error
 
 Phase 4 added `ffms2.dll` and `vulkaninfo.exe` to the same build (below).
 
-### Phase 4: the installer (done, Wine-tested only)
+### Phase 4: the installer (done; Wine and CI-tested)
 
 `packaging/windows/build-installer.sh` makes `ButterEye-<version>-setup.exe` on the
 Fedora dev box. The installer needs nothing on the PC first: it brings its own
@@ -288,22 +290,73 @@ that ships with Windows from 1903); the installer refuses older versions.
 `tests/windows/test_installer_windows.py` does all of the above except the play and
 GUI-window runs; `tools/wine-tests.sh` runs it when the installer exists.
 
-**Not verified, needs a real Windows PC:**
+**Not verified under Wine** (the next section says what GitHub's Windows machines
+have covered since: Qt with Windows' own `icuuc.dll`, among others):
 
 - anything on real Windows: SmartScreen (the installer isn't code-signed), Defender,
   the Visual C++ download and its permission prompt (Wine has neither PowerShell nor
   UAC), the installer's pages, shortcuts and Settings ▸ Apps entry as a user sees them;
-- Qt with Windows' own `icuuc.dll`; on-screen playback and its timing (Wine was only
+- on-screen playback and its timing (Wine was only
   run with `vo=null`); fonts (the interface's typefaces are Linux packages; Windows
   falls back to its own);
 - whether `winget install shinchiro.mpv` puts `mpv.exe` on `PATH` as ButterEye expects;
 - offline render end to end (ffms2 reads video, but ffmpeg and mkvmerge were not
   installed in the test prefix).
 
+### On real Windows: GitHub Actions
+
+`.github/workflows/windows.yml` (since 2026-10-11) builds the installer in a
+`fedora:44` container with the same scripts as the dev box (`--no-mock`), then on
+`windows-latest` installs, tests and uninstalls it. First green run:
+<https://github.com/MiguelCarino/ButterEye/actions/runs/38159088098>, on
+**Windows Server 2025 Datacenter 10.0.26100** (Hyper-V VM, AMD EPYC, 4 threads, no
+GPU; Visual C++ runtime 14.51 already present), with shinchiro's mpv 0.41.0 build
+(20261011, pinned by SHA-256).
+
+**Verified there:**
+
+- `setup.exe /S` and `/S /D=<folder>`: the files, the install record with every
+  component's licence files, the uninstall entry and the Start-menu shortcut;
+  the default folder is `%LOCALAPPDATA%\Programs\ButterEye` (535 files, 167 MiB once
+  the installer has compiled the `.pyc` files). `Uninstall.exe /S` removes the
+  folder, the entry and the shortcut.
+- The installed `buttereye.cmd doctor --json`, with stdout a pipe and no other
+  Python on `PATH`: plugins, models, licence files, Visual C++ runtime and ffms2
+  OK; mpv's VapourSynth filter OK; the in-mpv probe runs the bundled VapourSynth
+  R81 with Python 3.14.8 and loads RIFE-ncnn-Vulkan and MVTools; exit code 0.
+  Plain `doctor --verbose` through a pipe prints UTF-8.
+- The bundled `vspipe.exe` runs ButterEye's speed-test script with MVTools; MVTools
+  interpolates the moving-square test correctly; all three plugin DLLs load into
+  VapourSynth; the bundled ffms2 reads an H.264 video (made by mpv on the runner).
+- Qt from the installed Python (`buttereye.gui --version`) with Windows' own
+  `icuuc.dll`.
+- All of `tests/windows/test_osapi_windows.py` run by the **installed** ButterEye's
+  own Python: job objects, process trees, named pipes with the peer check, locks,
+  junction-safe cleaning, atomic saves, the whole doctor, and a real `mpv.exe`
+  driven over its pipe.
+
+**Found and fixed by it:** on Windows Server (and in any elevated process) new
+folders are owned by the Administrators group, not the user, so ButterEye refused
+its own fresh runtime folder (BE-2010) and nothing ran; `osapi.owned_by_me` now
+accepts the token's default owner too.
+
+**Skipped there, and why:** the runner has `vulkan-1.dll` but no Vulkan driver
+(`vkCreateInstance` returns -9), so RIFE and mvgpu are only loaded, never run (the
+interpolation and speed-test tests skip with that reason; the doctor reports
+"Vulkan did not start"); the windowed mpv test (no desktop session to look at);
+offline render (no ffmpeg or mkvmerge on the runner, and the doctor says so).
+
+**Still not verified, needs a real Windows desktop PC with a GPU:** RIFE and mvgpu on
+a real GPU under Windows (only under Wine so far), on-screen playback and its timing,
+the GUI window as a user sees it, the installer's pages, SmartScreen and Defender on an
+unsigned installer, the Visual C++ download and its permission prompt (the runner
+already had the runtime), fonts, `winget install shinchiro.mpv` and `PATH`, and a
+non-administrator account (the runner's user is an administrator).
+
 ### Remaining work
 
-1. **Real-Windows testing** of the installer before any release, then code signing
-   and a CI build (GitHub's Windows runners can run `tests/windows`).
+1. **A real Windows desktop PC with a GPU** before any release (the list just
+   above), then code signing.
 2. **Later, not scheduled:** the TensorRT path on Windows (vs-mlrt's Windows
    releases), and reading GPU faults from the Windows event log.
 
