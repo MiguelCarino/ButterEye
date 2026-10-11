@@ -7,7 +7,9 @@ Windows only, and only when ``BUTTEREYE_TEST_PLUGINS`` names the folder with the
 built DLLs (``packaging/windows/build-plugins.sh``; ``tools/wine-tests.sh`` sets
 it). Needs the ``vapoursynth`` and ``numpy`` wheels. The RIFE test also needs
 ``BUTTEREYE_TEST_MODELS`` (the rife-ncnn-models folder) and a Vulkan GPU, which
-Wine passes through from the host.
+Wine passes through from the host. librife.dll and libmvgpu.dll import Windows'
+Vulkan loader (vulkan-1.dll, which a GPU driver installs): on a PC without one
+(GitHub's Windows runners) their tests skip and MVTools is tested alone.
 
 The check is the one tests/integration/test_mvgpu_real.py makes on Linux: a
 textured square moving 16 px a frame must sit 8 px further on in the in-between
@@ -37,13 +39,29 @@ W, H, STEP, SIDE = 640, 368, 16, 96
 BG = 32
 #: (namespace, file): the names ButterEye loads (osapi.plugin_file of the Linux names)
 FILES = {"mv": "mvtools.dll", "rife": "librife.dll", "mvgpu": "libmvgpu.dll"}
+GPU_PLUGINS = ("rife", "mvgpu")
 
 
-def _core() -> object:
+def _no_vulkan_loader() -> str | None:
+    """Why the GPU plugins can't load here, or None: they import vulkan-1.dll."""
+    import ctypes
+
+    try:
+        ctypes.WinDLL("vulkan-1")  # type: ignore[attr-defined,unused-ignore]
+    except OSError as exc:
+        return f"no Vulkan loader (vulkan-1.dll) on this PC: {exc}"
+    return None
+
+
+def _core(*namespaces: str) -> object:
+    """VapourSynth's core with ``namespaces`` loaded (default: all three); a GPU
+    plugin skips the test when this PC has no Vulkan loader."""
     core = vs.core  # type: ignore[union-attr]
-    for ns, name in FILES.items():
+    for ns in namespaces or tuple(FILES):
+        if ns in GPU_PLUGINS and (why := _no_vulkan_loader()):
+            pytest.skip(why)
         if not hasattr(core, ns):
-            core.std.LoadPlugin(str(Path(PLUGINS) / name))
+            core.std.LoadPlugin(str(Path(PLUGINS) / FILES[ns]))
     return core
 
 
@@ -84,14 +102,15 @@ def _errors(mid: object) -> tuple[float, float]:
     return err, base
 
 
-def test_every_plugin_loads_and_reports_itself() -> None:
-    core = _core()
+@pytest.mark.parametrize("ns", list(FILES))
+def test_every_plugin_loads_and_reports_itself(ns: str) -> None:
+    core = _core(ns)
     names = {p.namespace: p.name for p in core.plugins()}  # type: ignore[attr-defined]
-    assert {"mv", "rife", "mvgpu"} <= set(names), names
+    assert ns in names, names
 
 
 def test_mvtools_moves_the_square() -> None:
-    core = _core()
+    core = _core("mv")
     src = _source(core)
     sup = core.mv.Super(src, pel=2)  # type: ignore[attr-defined]
     bv = core.mv.Analyse(sup, isb=True, blksize=16, overlap=8)  # type: ignore[attr-defined]
@@ -103,7 +122,7 @@ def test_mvtools_moves_the_square() -> None:
 
 
 def test_mvgpu_moves_the_square() -> None:
-    core = _core()
+    core = _core("mvgpu")
     src = _source(core)
     try:
         out = core.mvgpu.Interpolate(src, fps_num=48, fps_den=1)  # type: ignore[attr-defined]
@@ -119,7 +138,7 @@ def test_mvgpu_moves_the_square() -> None:
 
 @pytest.mark.skipif(not MODELS, reason="BUTTEREYE_TEST_MODELS not set")
 def test_rife_moves_the_square() -> None:
-    core = _core()
+    core = _core("rife")
     src = _source(core)
     rgb = core.resize.Bicubic(src, format=vs.RGBS, matrix_in_s="709")  # type: ignore[attr-defined,union-attr]
     model = str(Path(MODELS) / "rife-v4.22_lite_ensembleFalse")
@@ -141,16 +160,28 @@ def test_rife_moves_the_square() -> None:
 @pytest.mark.parametrize("backend", ["mvtools", "mvgpu", "rife"])
 def test_buttereyes_speed_test_script_runs_each_engine(backend: str) -> None:
     """``bench.vpy`` under Windows ``vspipe.exe``, as the speed test runs it: the
-    script itself maps the plugin names to the .dll builds."""
+    script itself maps the plugin names to the .dll builds. ``vspipe.exe`` is
+    pip's (``Scripts``) or, run by the installer's Python, the bundled one in the
+    ``vapoursynth`` package folder, with the PATH ButterEye gives its children."""
     import subprocess
 
+    from buttereye.core import osapi
     from buttereye.core.bench import measure
 
     if backend == "rife" and not MODELS:
         pytest.skip("BUTTEREYE_TEST_MODELS not set")
-    vspipe = Path(sys.prefix) / "Scripts" / "vspipe.exe"
-    if not vspipe.is_file():
+    if backend != "mvtools" and (why := _no_vulkan_loader()):
+        pytest.skip(why)
+    vs_dir = Path(vs.__file__).parent  # type: ignore[union-attr]
+    vspipe = next(
+        (p for p in (Path(sys.prefix) / "Scripts" / "vspipe.exe", vs_dir / "vspipe.exe")
+         if p.is_file()),
+        None,
+    )  # fmt: skip
+    if vspipe is None:
         pytest.skip("vspipe.exe not installed (pip install vapoursynth)")
+    env = dict(os.environ)
+    osapi.point_at_runtime(env, os.path.dirname(sys.executable), str(vs_dir))
     vpy = Path(measure.__file__).with_name("bench.vpy")
     ud = {
         "backend": backend, "plugin_dir": PLUGINS, "gpu_thread": 2, "gpu_id": None,
@@ -159,7 +190,7 @@ def test_buttereyes_speed_test_script_runs_each_engine(backend: str) -> None:
         "model_path": str(Path(MODELS) / "rife-v4.22_lite_ensembleFalse") if MODELS else "",
     }  # fmt: skip
     argv = measure.vspipe_argv(str(vspipe), vpy, ud, 48)
-    res = subprocess.run(argv, capture_output=True, text=True, timeout=300, check=False)
+    res = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=300, check=False)
     if res.returncode != 0 and backend != "mvtools" and "Vulkan" in res.stderr:
         pytest.skip(f"no Vulkan device here: {res.stderr[-200:]}")
     assert res.returncode == 0, res.stderr[-1500:]

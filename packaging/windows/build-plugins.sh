@@ -21,7 +21,9 @@
 # ffms2 and vulkaninfo come from pinned upstream releases (pins.sh), built by
 # build-tools-in-chroot.sh. The installer (build-installer.sh) packs all of it.
 #
-# Usage: packaging/windows/build-plugins.sh
+# Usage: packaging/windows/build-plugins.sh [--no-mock]
+#   --no-mock: build right here, as root in a fedora:44 container (CI), instead
+#   of in a mock chroot (chroot.sh). The steps are the same.
 # Output: $XDG_CACHE_HOME/buttereye/windows (never the repository). JOBS caps
 # the compile (default 8; the ncnn build is heavy and the machine may be shared).
 # Test the result under Wine with tools/wine-tests.sh.
@@ -34,10 +36,14 @@ src=$cache/packaging/SOURCES
 out=$cache/windows
 jobs=${JOBS:-8}
 chroot_cfg=fedora-44-x86_64
-mock=(mock -r "$chroot_cfg" --uniqueext=buttereye-win -q)
 specs=$repo/packaging/plugins
 # shellcheck source=pins.sh
 source "$here/pins.sh"
+# shellcheck source=chroot.sh
+source "$here/chroot.sh"
+win_mode_from_args "$@"
+# what this script itself runs outside the chroot (--no-mock: install them here)
+win_host_install rpm-build rpmdevtools git-core curl python3 dnf5-plugins tar gzip
 
 # ---------------------------------------------------------------- sources
 # the same fetch, repack and checksum check as the Fedora packages (no SRPM upload)
@@ -57,8 +63,8 @@ q() { rpmspec -q --srpm --define 'dist %{nil}' --qf "$2" "$specs/$1.spec"; }
 bundled() { rpmspec -q --define 'dist %{nil}' --provides "$specs/$1.spec" | sed -n "s/^bundled($2) = //p"; }
 
 # ---------------------------------------------------------------- chroot
-"${mock[@]}" --init
-"${mock[@]}" --install mingw64-gcc-c++ mingw64-libgomp mingw64-winpthreads-static \
+win_init
+win_install mingw64-gcc-c++ mingw64-libgomp mingw64-winpthreads-static \
     mingw64-fftw-static mingw64-fftw mingw64-vulkan-headers mingw64-vulkan-loader \
     meson ninja-build cmake nasm glslang vapoursynth-devel python3 patch tar gzip xz \
     gcc mingw64-zlib-static
@@ -73,10 +79,10 @@ cp "$src"/vapoursynth-mvtools-v*.tar.gz "$src"/buttereye-vs-rife-ncnn-r*.tar.gz 
    "$here/build-in-chroot.sh" "$stage/in/"
 mkdir "$stage/tin"
 cp "${tool_srcs[@]}" "$here/vulkaninfo-mingw-user32.patch" "$here/build-tools-in-chroot.sh" "$stage/tin/"
-"${mock[@]}" --chroot 'rm -rf /builddir/in /builddir/tin /builddir/out'
-"${mock[@]}" --copyin "$stage/in" /builddir/in
-"${mock[@]}" --copyin "$stage/tin" /builddir/tin
-"${mock[@]}" --chroot "env JOBS=$jobs \
+win_run 'rm -rf /builddir/in /builddir/tin /builddir/out'
+win_copyin "$stage/in" /builddir/in
+win_copyin "$stage/tin" /builddir/tin
+win_run "env JOBS=$jobs \
     MVTOOLS_VR='$(q buttereye-vs-mvtools '%{version}-%{release}')' \
     MVTOOLS_LICENSE='$(q buttereye-vs-mvtools '%{license}')' \
     RIFE_VR='$(q buttereye-vs-rife-ncnn '%{version}-%{release}')' \
@@ -86,13 +92,13 @@ cp "${tool_srcs[@]}" "$here/vulkaninfo-mingw-user32.patch" "$here/build-tools-in
     NCNN_BUNDLED='$(bundled buttereye-vs-rife-ncnn ncnn)' \
     GLSLANG_BUNDLED='$(bundled buttereye-vs-rife-ncnn glslang)' \
     bash /builddir/in/build-in-chroot.sh"
-"${mock[@]}" --chroot "env JOBS=$jobs FFMS2_VER=$FFMS2_VER FFMPEG_VER=$FFMPEG_VER \
+win_run "env JOBS=$jobs FFMS2_VER=$FFMS2_VER FFMPEG_VER=$FFMPEG_VER \
     DAV1D_VER=$DAV1D_VER VULKAN_TOOLS_VER=$VULKAN_TOOLS_VER bash /builddir/tin/build-tools-in-chroot.sh"
-fftw_nvr=$("${mock[@]}" --chroot "rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' mingw64-fftw-static" | tail -1)
+fftw_nvr=$(win_run "rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' mingw64-fftw-static" | tail -1)
 
 rm -rf "$out"
 mkdir -p "$(dirname "$out")"
-"${mock[@]}" --copyout /builddir/out "$out"  # mock creates $out (it won't copy into one)
+win_copyout /builddir/out "$out"  # this creates $out (mock won't copy into one)
 
 # ---------------------------------------------------------------- models
 models=$out/share/rife-ncnn-models
@@ -125,7 +131,7 @@ EOF
 mkdir -p "$out/sources"
 cp "$src"/vapoursynth-mvtools-v*.tar.gz "$src"/buttereye-vs-rife-ncnn-r*.tar.gz \
    "$src"/ncnn-*.tar.gz "$src"/glslang-*.tar.gz "$src"/buttereye-vs-mvgpu-*.tar.gz \
-   "$specs"/*.patch "$here"/build-plugins.sh "$here"/build-in-chroot.sh "$out/sources/"
+   "$specs"/*.patch "$here"/build-plugins.sh "$here"/build-in-chroot.sh "$here"/chroot.sh "$out/sources/"
 # ffms2.dll links FFmpeg (LGPL) statically: its source and the exact build steps
 cp "${tool_srcs[@]}" "$here"/vulkaninfo-mingw-user32.patch "$here"/build-tools-in-chroot.sh \
    "$here"/pins.sh "$out/sources/"

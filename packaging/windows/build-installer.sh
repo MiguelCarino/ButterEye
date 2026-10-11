@@ -32,7 +32,9 @@
 # downloading it at install time; only if you may redistribute it (packaging/README.md).
 # Test the result under Wine: tools/wine-tests.sh (BUTTEREYE_TEST_INSTALLER).
 #
-# Usage: packaging/windows/build-installer.sh
+# Usage: packaging/windows/build-installer.sh [--no-mock]
+#   --no-mock: build right here, as root in a fedora:44 container (CI), instead
+#   of in a mock chroot (chroot.sh). The steps are the same.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -40,9 +42,13 @@ repo=$(cd "$here/../.." && pwd)
 cache=${XDG_CACHE_HOME:-$HOME/.cache}/buttereye
 win=$cache/windows
 work=$cache/windows-installer
-mock=(mock -r fedora-44-x86_64 --uniqueext=buttereye-win -q)
 # shellcheck source=pins.sh
 source "$here/pins.sh"
+# shellcheck source=chroot.sh
+source "$here/chroot.sh"
+win_mode_from_args "$@"
+# what this script itself runs outside the chroot (--no-mock: install them here)
+win_host_install git-core curl python3 python3-pip python3-setuptools tar
 stagepy() { python3 -I "$here/winstage.py" "$@"; }
 
 version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$repo/buttereye/__init__.py")
@@ -150,18 +156,18 @@ if [[ -n ${VCREDIST:-} ]]; then
     defs+=(-DVCREDIST=/builddir/nsis/vc_redist.x64.exe)
 fi
 mv "$stage" "$nsis/payload"
-"${mock[@]}" --init
-"${mock[@]}" --install mingw32-nsis librsvg2-tools icoutils
-"${mock[@]}" --chroot 'rm -rf /builddir/nsis'
-"${mock[@]}" --copyin "$nsis" /builddir/nsis
-"${mock[@]}" --chroot "set -e; cd /builddir/nsis
+win_init
+win_install mingw32-nsis librsvg2-tools icoutils
+win_run 'rm -rf /builddir/nsis'
+win_copyin "$nsis" /builddir/nsis
+win_run "set -e; cd /builddir/nsis
     for s in 16 24 32 48 64 128 256; do rsvg-convert -w \$s -h \$s buttereye.svg -o icon-\$s.png; done
     icotool -c -o buttereye.ico icon-16.png icon-24.png icon-32.png icon-48.png icon-64.png icon-128.png -r icon-256.png
     cp buttereye.ico payload/buttereye.ico && cp buttereye.ico out/
     makensis -V2 -NOCD $(printf "'%s' " "${defs[@]}") buttereye.nsi"
 rm -rf "$work/out"
-"${mock[@]}" --copyout /builddir/nsis/out "$work/out"
-"${mock[@]}" --chroot 'rm -rf /builddir/nsis'
+win_copyout /builddir/nsis/out "$work/out"
+win_run 'rm -rf /builddir/nsis'
 mv "$nsis/payload" "$stage"
 cp "$work/out/buttereye.ico" "$stage/"
 cp "$work/out/$setup" "$win/$setup"

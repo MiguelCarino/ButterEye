@@ -1,0 +1,283 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The ButterEye contributors
+#
+# ButterEye for Windows (docs/PLATFORMS.md): build the plugins and the installer
+# in a fedora:44 container, exactly as packaging/windows/build-*.sh do in a mock
+# chroot on the dev box (--no-mock: the container is the chroot), then install,
+# check and uninstall it on a real Windows machine.
+#
+# GitHub's Windows runners have no GPU and no Vulkan loader, so RIFE and mvgpu
+# skip there (tests/windows says why); MVTools, the doctor, the bundled
+# VapourSynth, ffms2, mpv and the installer itself run for real.
+
+name: Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - packaging/windows/**
+      - buttereye/core/**
+      - tests/windows/**
+      - mvgpu/**
+      - .github/workflows/windows.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build the installer (Fedora MinGW-w64)
+    runs-on: ubuntu-latest
+    container: fedora:44
+    timeout-minutes: 150
+    env:
+      XDG_CACHE_HOME: /github/home/.cache
+    steps:
+      - name: Install git (for the checkout)
+        run: dnf -y -q install --setopt=install_weak_deps=False git-core
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # build.sh dates the mvgpu tarball by its last commit
+          persist-credentials: false
+
+      - name: Trust the checkout (owned by the runner, used as root)
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Cache the pinned downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /github/home/.cache/buttereye/windows-dl
+            /github/home/.cache/buttereye/packaging/SOURCES/vapoursynth-mvtools-*.tar.gz
+            /github/home/.cache/buttereye/packaging/SOURCES/ncnn-*.tar.gz
+            /github/home/.cache/buttereye/packaging/SOURCES/glslang-*.tar.gz
+            /github/home/.cache/buttereye/packaging/SOURCES/buttereye-*rife-ncnn*-r*.tar.gz
+          key: windows-dl-${{ hashFiles('packaging/windows/pins.sh', 'packaging/plugins/*.spec', 'packaging/plugins/repack-rife-ncnn.sh') }}
+
+      - name: Build the plugins, ffms2 and vulkaninfo
+        run: JOBS=$(nproc) packaging/windows/build-plugins.sh --no-mock
+
+      - name: Build the installer
+        run: packaging/windows/build-installer.sh --no-mock
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-installer
+          path: |
+            /github/home/.cache/buttereye/windows/ButterEye-*-setup.exe
+            /github/home/.cache/buttereye/windows/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the Corresponding Source
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-sources
+          path: /github/home/.cache/buttereye/windows/ButterEye-*-windows-sources.tar
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the build logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-build-logs
+          path: |
+            /builddir/work/*.log
+            /builddir/twork/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  test:
+    name: Install and test on Windows
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      # shinchiro's mpv build (the one `winget install shinchiro.mpv` installs),
+      # pinned; its releases expire after about two months, then bump these two
+      MPV_URL: https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261011/mpv-x86_64-20261011-git-accb7b2821.7z
+      MPV_SHA256: afdf8a0422510f0dd375196ef406607984d3861cf033fc9e74ed7997c8db4700
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-installer
+          path: ${{ runner.temp }}\dist
+
+      - name: Check the installer's checksum
+        run: |
+          $setup = Get-Item "$env:RUNNER_TEMP\dist\ButterEye-*-setup.exe"
+          $line = Select-String -Path "$env:RUNNER_TEMP\dist\SHA256SUMS" -SimpleMatch " ./$($setup.Name)"
+          $want = ($line.Line -split '\s+')[0]
+          $got = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          if (-not $want -or $got -ne $want) { throw "$($setup.Name): SHA-256 $got, SHA256SUMS says '$want'" }
+          "$($setup.Name) $([math]::Round($setup.Length / 1MB, 1)) MiB, SHA-256 $got"
+          "SETUP=$($setup.FullName)" >> $env:GITHUB_ENV
+
+      - name: Describe the runner
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          "$($os.Caption) $($os.Version) build $($os.BuildNumber)"
+          "CPU: $((Get-CimInstance Win32_Processor).Name), $env:NUMBER_OF_PROCESSORS threads"
+          "GPU: $((Get-CimInstance Win32_VideoController).Name -join ', ')"
+          "vulkan-1.dll: $(Test-Path "$env:SystemRoot\System32\vulkan-1.dll")"
+          $vc = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64' -ErrorAction SilentlyContinue
+          "Visual C++ runtime: $(if ($vc) { "$($vc.Major).$($vc.Minor).$($vc.Bld)" } else { 'none' })"
+
+      # A user's PC needs it too: ButterEye's installer offers Microsoft's signed
+      # download (a silent install skips it). Same check here: Microsoft's signature.
+      - name: Install Microsoft's Visual C++ runtime if it is older than VapourSynth needs
+        run: |
+          $vc = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64' -ErrorAction SilentlyContinue
+          $have = if ($vc) { [version]"$($vc.Major).$($vc.Minor).$($vc.Bld)" } else { [version]'0.0' }
+          if ($have -ge [version]'14.50.35719') { "Visual C++ runtime $have is new enough"; exit 0 }
+          $dir = New-Item -ItemType Directory "$env:RUNNER_TEMP\vcredist-$(New-Guid)"
+          Invoke-WebRequest https://aka.ms/vc14/vc_redist.x64.exe -OutFile "$dir\vc_redist.x64.exe"
+          $sig = Get-AuthenticodeSignature "$dir\vc_redist.x64.exe"
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            throw "vc_redist.x64.exe is not signed by Microsoft: $($sig.Status) $($sig.SignerCertificate.Subject)"
+          }
+          $p = Start-Process "$dir\vc_redist.x64.exe" -ArgumentList '/install', '/quiet', '/norestart' -Wait -PassThru
+          if ($p.ExitCode -notin 0, 3010) { throw "vc_redist exited with $($p.ExitCode)" }
+          $vc = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+          "Visual C++ runtime now $($vc.Major).$($vc.Minor).$($vc.Bld)"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install the test tools
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install --disable-pip-version-check -q pytest==9.1.1 pytest-asyncio==1.4.0
+          # the same, for the installed ButterEye's Python (3.14 too), kept apart from it
+          python -m pip install --disable-pip-version-check -q --only-binary=:all: `
+            --target "$env:RUNNER_TEMP\testdeps" pytest==9.1.1 pytest-asyncio==1.4.0 numpy==2.5.4
+          "TESTDEPS=$env:RUNNER_TEMP\testdeps" >> $env:GITHUB_ENV
+
+      - name: Cache mpv
+        id: mpv-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}\mpv-dl
+          key: mpv-${{ env.MPV_SHA256 }}
+
+      - name: Get mpv and make a test video with it
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $dl = "$env:RUNNER_TEMP\mpv-dl"
+          $archive = "$dl\mpv.7z"
+          if (-not (Test-Path $archive)) {
+            # a new empty folder, moved into place only once the checksum matches
+            $tmp = New-Item -ItemType Directory "$env:RUNNER_TEMP\mpv-fetch-$(New-Guid)"
+            Invoke-WebRequest $env:MPV_URL -OutFile "$tmp\mpv.7z"
+            Move-Item $tmp $dl
+          }
+          $got = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $env:MPV_SHA256) { throw "mpv.7z has SHA-256 $got, expected $env:MPV_SHA256" }
+          $mpv = New-Item -ItemType Directory "$env:RUNNER_TEMP\mpv"
+          7z x -y -bso0 "-o$mpv" $archive
+          & "$mpv\mpv.com" --version | Select-Object -First 1
+          $video = "$env:RUNNER_TEMP\test.mkv"
+          & "$mpv\mpv.com" --no-config --msg-level=all=warn `
+            'av://lavfi:testsrc=size=320x240:rate=24000/1001:duration=5' `
+            "--o=$video" --of=matroska --ovc=libx264 --ovcopts=preset=ultrafast
+          if (-not (Test-Path $video)) { throw "mpv made no test video" }
+          "BUTTEREYE_TEST_MPV=$mpv\mpv.exe" >> $env:GITHUB_ENV
+          "BUTTEREYE_TEST_VIDEO=$video" >> $env:GITHUB_ENV
+
+      # its own install into a temporary folder, the installed runtime at work
+      # (doctor, vspipe, ffms2, Qt), then its own silent uninstall
+      - name: The installer test (tests/windows/test_installer_windows.py)
+        env:
+          BUTTEREYE_TEST_INSTALLER: ${{ env.SETUP }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -B -m pytest tests/windows/test_installer_windows.py --noconftest -p no:cacheprovider -v -rs
+
+      - name: Install silently into the default folder
+        run: |
+          $p = Start-Process $env:SETUP -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "setup.exe /S exited with $($p.ExitCode)" }
+          $key = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ButterEye'
+          $inst = $key.InstallLocation
+          if ($inst -ne "$env:LOCALAPPDATA\Programs\ButterEye") { throw "installed into '$inst'" }
+          foreach ($f in 'buttereye.cmd', 'python\python.exe', 'vapoursynth\mvtools.dll', 'Uninstall.exe') {
+            if (-not (Test-Path "$inst\$f")) { throw "$f is missing" }
+          }
+          "$($key.DisplayName) $($key.DisplayVersion) in $inst"
+          "$((Get-ChildItem $inst -Recurse -File | Measure-Object).Count) files, " +
+            "$([math]::Round((Get-ChildItem $inst -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)) MiB"
+          "INST=$inst" >> $env:GITHUB_ENV
+
+      - name: buttereye doctor --json (the installed one)
+        run: |
+          # a user's session: the installed ButterEye, mpv on PATH, no Python of ours
+          $env:PATH = "$(Split-Path $env:BUTTEREYE_TEST_MPV);" + (($env:PATH -split ';' | Where-Object { $_ -notmatch 'Python' }) -join ';')
+          & "$env:INST\buttereye.cmd" doctor --json > "$env:RUNNER_TEMP\doctor.json"
+          $code = $LASTEXITCODE
+          $doc = Get-Content "$env:RUNNER_TEMP\doctor.json" -Raw | ConvertFrom-Json
+          $doc.data.findings | ForEach-Object {
+            "{0,-9} {1,-28} {2}" -f $_.severity, $_.id, ($_.title | ConvertTo-Json -Compress -Depth 5)
+          }
+          "exit code $code"
+          $sev = @{}; $doc.data.findings | ForEach-Object { $sev[$_.id] = $_.severity }
+          $bad = 'packages.rife', 'packages.mvtools', 'packages.mvgpu', 'packages.models',
+                 'packages.licence_files', 'packages.vcruntime', 'render.ffms2', 'mpv.vf_vapoursynth' |
+                 Where-Object { $sev[$_] -ne 'ok' }
+          if ($bad) { throw "not ok: $($bad -join ', ')" }
+          if ($code -ne 0) { throw "doctor exited with $code (something is blocking)" }
+
+      - name: The Windows tests, run by the installed ButterEye's Python
+        env:
+          BUTTEREYE_TEST_PLUGINS: ${{ env.INST }}\vapoursynth
+          BUTTEREYE_TEST_MODELS: ${{ env.INST }}\share\rife-ncnn-models
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          # the installed buttereye package, not the checkout's (-o pythonpath=);
+          # the installer test already ran above (it installs a copy of its own)
+          & "$env:INST\python\python.exe" -B -c "import sys; sys.path.insert(0, sys.argv.pop(1)); import pytest; raise SystemExit(pytest.main(sys.argv[1:]))" `
+            $env:TESTDEPS tests/windows --ignore=tests/windows/test_installer_windows.py `
+            --noconftest -p no:cacheprovider -o pythonpath= -v -rs
+          # and the package it imports is the installed one
+          & "$env:INST\python\python.exe" -c "import buttereye, os, sys; f = os.path.realpath(buttereye.__file__); print('buttereye from', f); sys.exit(not f.lower().startswith(os.path.realpath(sys.argv[1]).lower()))" $env:INST
+
+      - name: Uninstall silently
+        run: |
+          $p = Start-Process "$env:INST\Uninstall.exe" -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Uninstall.exe /S exited with $($p.ExitCode)" }
+          # the uninstaller copies itself away and returns at once
+          $deadline = (Get-Date).AddMinutes(3)
+          while ((Test-Path $env:INST) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          if (Test-Path $env:INST) {
+            Get-ChildItem $env:INST -Recurse | Select-Object -First 20 FullName
+            throw "$env:INST is still there"
+          }
+          if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ButterEye') { throw "the uninstall entry is still there" }
+          if (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\ButterEye.lnk") { throw "the Start-menu shortcut is still there" }
+          "uninstalled: folder, uninstall entry and shortcut are gone"
+
+      - name: Upload the doctor's report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-doctor
+          path: ${{ runner.temp }}\doctor.json
+          if-no-files-found: ignore
+          retention-days: 14

@@ -51,6 +51,18 @@ def _wine() -> bool:
     return hasattr(ntdll, "wine_get_version")
 
 
+def _no_vulkan_loader() -> str | None:
+    """Why the GPU plugins can't run here, or None: librife.dll and libmvgpu.dll
+    import vulkan-1.dll, which a GPU driver installs (GitHub's runners have none)."""
+    import ctypes
+
+    try:
+        ctypes.WinDLL("vulkan-1")  # type: ignore[attr-defined,unused-ignore]
+    except OSError as exc:
+        return f"no Vulkan loader (vulkan-1.dll) on this PC: {exc}"
+    return None
+
+
 def _uninstall_entry() -> dict[str, Any] | None:
     import winreg
 
@@ -148,16 +160,18 @@ def test_install_record_lists_every_component_with_its_licences(installed: Insta
             assert (installed.folder / rel).is_file(), rel
 
 
-def _doctor(installed: Installed) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
+def _doctor(
+    installed: Installed,
+) -> tuple[subprocess.CompletedProcess[str], dict[str, str], dict[str, Any]]:
     # through buttereye.cmd, the command-line wrapper, with stdout a pipe
     res = installed.run("cmd", "/c", str(installed.folder / "buttereye.cmd"), "doctor", "--json")
     assert res.stdout.strip(), res.stderr[-2000:]
-    doc = json.loads(res.stdout)
-    return res, {f["id"]: f["severity"] for f in doc["data"]["findings"]}
+    findings = {f["id"]: f for f in json.loads(res.stdout)["data"]["findings"]}
+    return res, {k: f["severity"] for k, f in findings.items()}, findings
 
 
 def test_doctor_reports_the_installed_plugins(installed: Installed) -> None:
-    res, sev = _doctor(installed)
+    res, sev, findings = _doctor(installed)
     for fid in (
         "packages.rife", "packages.mvtools", "packages.mvgpu", "packages.models",
         "packages.licence_files", "packages.vcruntime", "render.ffms2",
@@ -168,7 +182,14 @@ def test_doctor_reports_the_installed_plugins(installed: Installed) -> None:
         assert sev.get("vulkan.loader") == "ok" and "vulkan.devices" not in sev, sev
     if MPV:  # mpv runs the bundled VapourSynth (VSSCRIPT_PATH set by ButterEye)
         assert sev.get("mpv.vf_vapoursynth") == "ok", sev
-        assert sev.get("probe.plugins") == "ok", sev
+        if _no_vulkan_loader():
+            # RIFE can't load without vulkan-1.dll and the doctor says why; MVTools must
+            plugins = findings["probe.plugins"]
+            assert plugins["severity"] == "degraded", plugins
+            assert "Vulkan loader" in json.dumps(plugins["title"]), plugins
+            assert any(e.startswith("mv: loaded from") for e in plugins["evidence"]), plugins
+        else:
+            assert sev.get("probe.plugins") == "ok", sev
         assert res.returncode == 0, (res.returncode, sev)
 
 
@@ -182,6 +203,8 @@ def test_plain_output_survives_a_pipe(installed: Installed) -> None:
 def test_bundled_vspipe_runs_the_speed_test_script(installed: Installed, backend: str) -> None:
     from buttereye.core.bench import measure
 
+    if backend != "mvtools" and (why := _no_vulkan_loader()):
+        pytest.skip(why)
     f = installed.folder
     ud = {
         "backend": backend, "plugin_dir": str(f / "vapoursynth"), "gpu_thread": 2,

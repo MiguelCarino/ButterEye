@@ -94,3 +94,21 @@ Microsoft when it is missing. Microsoft lets only licensed Visual Studio users
 redistribute `vc_redist.x64.exe`; with that licence,
 `VCREDIST=/path/to/vc_redist.x64.exe packaging/windows/build-installer.sh` embeds it.
 The installer is not code-signed, so Windows SmartScreen will warn about it.
+
+### In CI (`.github/workflows/windows.yml`)
+
+GitHub Actions runs the same two scripts with `--no-mock`: inside a `fedora:44`
+container, which then *is* the chroot (`windows/chroot.sh` holds both modes; it refuses
+`--no-mock` outside a container, as root only, so a dev box's `/` is never written to).
+The `test` job installs the artifact silently on `windows-latest`, runs the installed
+`buttereye doctor --json` and `tests/windows` (the installer test with GitHub's Python,
+the rest with the installed ButterEye's own Python, MVTools and a pinned mpv build),
+then uninstalls it. The runners have no GPU: RIFE and mvgpu skip there with the reason.
+Triggers: pushes to `main` touching `packaging/windows/`, `buttereye/core/`,
+`tests/windows/` or `mvgpu/`, and "Run workflow" by hand. To try the CI build locally:
+
+```sh
+podman run --rm -v "$PWD:/src:ro" -v ~/.cache/buttereye-ci:/cache -e XDG_CACHE_HOME=/cache \
+    fedora:44 bash -c 'dnf -y install git-core && git config --global --add safe.directory /src &&
+    cd /src && packaging/windows/build-plugins.sh --no-mock && packaging/windows/build-installer.sh --no-mock'
+```
