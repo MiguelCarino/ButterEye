@@ -388,6 +388,27 @@ GPU; Visual C++ runtime 14.51 already present), with shinchiro's mpv 0.41.0 buil
   junction-safe cleaning, atomic saves, the whole doctor, and a real `mpv.exe`
   driven over its pipe.
 
+**Verified there since** (run
+<https://github.com/MiguelCarino/ButterEye/actions/runs/38165626433>, same runner
+image, after the licence and installer-safety fixes; the installer test 13 passed and
+2 skipped, the installed Python's `tests/windows` 24 passed and 5 skipped):
+
+- The install folder without the wheels' copies of Microsoft's C++ runtime: the only
+  Microsoft DLLs in it are `python\vcruntime140.dll` and `vcruntime140_1.dll`, and Qt
+  loads with the system's runtime (14.51): `buttereye.gui --version` (its `Source:`
+  line is `licenses\SOURCES.txt`) and an SVG icon rendered offscreen through the
+  shipped `qsvg`/`qsvgicon` plugins. The install record lists `python3-shiboken6`,
+  `microsoft-vcruntime` and Qt's third-party notices, every licence file present.
+- Installing into a folder with a space and a non-ASCII letter (`Butter Eye ñ`, `/D=`
+  last and unquoted): every test above ran from there.
+- One installation per user: a second copy in another folder is refused (exit code
+  2) and an uninstaller run for another folder leaves the entry and the shortcut.
+- In use: repair and uninstall stop with exit code 4 and change nothing while a
+  process holds the folder's mutex name, while the installed core runs, and while a
+  plain process has the bundled Python's DLLs loaded; once it has ended, the repair
+  works.
+- `osapi.executable` ignores a program planted in the current folder.
+
 **Found and fixed by it:** on Windows Server (and in any elevated process) new
 folders are owned by the Administrators group, not the user, so ButterEye refused
 its own fresh runtime folder (BE-2010) and nothing ran; `osapi.owned_by_me` now
@@ -403,7 +424,11 @@ offline render (no ffmpeg or mkvmerge on the runner, and the doctor says so).
 a real GPU under Windows (only under Wine so far), on-screen playback and its timing,
 the GUI window as a user sees it, the installer's pages, SmartScreen and Defender on an
 unsigned installer, the Visual C++ download and its permission prompt (the runner
-already had the runtime), fonts, `winget install shinchiro.mpv` and `PATH`, and a
+already had the runtime, so the PowerShell check of the download's Microsoft
+signature and version information has never run, nor has the same check of an
+embedded `VCREDIST=` copy), RIFE loading its model from a non-ASCII folder (only
+under Wine; the runner can't start Vulkan), the window without the Visual C++
+runtime (it shouldn't open; the command line should still run), fonts, `winget install shinchiro.mpv` and `PATH`, and a
 non-administrator account (the runner's user is an administrator).
 
 ### Remaining work
