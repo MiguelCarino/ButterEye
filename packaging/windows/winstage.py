@@ -511,9 +511,11 @@ Fedora's mingw64-zlib-static package; its source is Fedora's mingw-zlib source
 package (dnf download --source mingw-zlib on Fedora 44).
 
 To rebuild: unpack the tar, copy sources/*.tar.gz into
-$XDG_CACHE_HOME/buttereye/packaging/SOURCES (~/.cache/... by default) so nothing
-has to be fetched again, and run packaging/windows/build-plugins.sh on Fedora
-44 with mock (packaging/README.md). ffms2.dll links FFmpeg statically: to use a
+$XDG_CACHE_HOME/buttereye/packaging/SOURCES (~/.cache/... by default), and run
+packaging/windows/build-plugins.sh on Fedora 44 with mock (packaging/README.md).
+The build still downloads the FFmpeg, dav1d, ffms2, Vulkan-Tools and volk
+sources (the pinned URLs and SHA-256 sums in packaging/windows/pins.sh), so the
+result is the same files; copies of them are also under sources/. ffms2.dll links FFmpeg statically: to use a
 modified FFmpeg, rebuild ffms2.dll from that source with
 packaging/windows/build-tools-in-chroot.sh (it records the exact FFmpeg
 configuration in licenses/ffms2/FFMPEG-CONFIGURATION.txt) and put your build in

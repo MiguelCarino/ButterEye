@@ -271,8 +271,9 @@ it only installs machine-wide, which takes administrator rights once. It can't b
 put next to ButterEye instead: mpv loads VapourSynth into its own process. Qt uses
 the same system runtime: the PySide6 and Shiboken6 wheels each carry a copy
 (`msvcp140*.dll`, `concrt140.dll`, `vcomp140.dll`, ...), and the installer leaves both
-out, so without the runtime the window doesn't open either (the command line and its
-doctor still run). The only Microsoft DLLs shipped are `python\vcruntime140.dll` and
+out, so without the runtime the window doesn't open either: it shows a message box
+naming the missing runtime, its download link and the `winget` line instead (the
+command line and its doctor still run). The only Microsoft DLLs shipped are `python\vcruntime140.dll` and
 `vcruntime140_1.dll`, part of Python's official embeddable build, redistributed under
 the conditions in its `LICENSE.txt` (`licenses\python\MICROSOFT-VCRUNTIME.txt`; the
 install record lists them as `microsoft-vcruntime`); `winstage.py check-imports`

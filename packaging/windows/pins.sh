@@ -30,7 +30,8 @@ SHIBOKEN_SHA256=6ab0eba1c904455df621f9a6df3ca2bb896bab8670572d2bc4e37804ae91f19a
 
 # Qt's own sources for the PySide6 wheel's Qt (same version): build-installer.sh
 # takes the licence texts of the third-party code inside the shipped Qt binaries
-# from them (qt_attribution.json), and the sources tar carries them
+# from them (qt_attribution.json); the sources tar does not carry these tarballs:
+# SOURCES.txt offers them from download.qt.io, pinned by these hashes
 QT_SRC_URL=https://download.qt.io/official_releases/qt/${PYSIDE_VER%.*}/$PYSIDE_VER/submodules
 QTBASE_URL=$QT_SRC_URL/qtbase-everywhere-src-$PYSIDE_VER.tar.xz
 QTBASE_SHA256=5b2e00eccaf5a4d8c14134ffa0ea8dfd0a35ae1ffc7f8d87fa4305a1ed23cf22
