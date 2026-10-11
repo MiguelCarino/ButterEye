@@ -21,6 +21,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+from buttereye.core import osapi
 from buttereye.core.mpvctl.ipc import LABEL, VF_ADD_PREFIX, quote
 from buttereye.core.types import BackendId
 
@@ -177,12 +178,12 @@ def write_atomic(path: Path, text: str, *, mode: int = 0o600) -> None:
     """Write ``text`` to ``path`` via a ``mode`` temp file in the same directory + rename."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
-        os.fchmod(fd, mode)
+        osapi.set_mode(fd, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        osapi.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)

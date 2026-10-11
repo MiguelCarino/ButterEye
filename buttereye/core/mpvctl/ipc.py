@@ -7,7 +7,9 @@ Every command ButterEye can send to mpv passes ``check_command`` in this module:
 listed are refused before a byte is written. Only ``vf`` entries labelled
 ``@buttereye`` can be added, toggled or removed. Sockets are checked with
 ``lstat`` (socket, own uid, parent owned by us, no symlinked parent) and, after
-connecting, with ``SO_PEERCRED``.
+connecting, with ``SO_PEERCRED``. On Windows the channel is a named pipe: the
+runtime-folder marker file gets the same checks, and the pipe's server process
+must run as this user (``osapi.ipc_peer``).
 """
 
 from __future__ import annotations
@@ -18,14 +20,13 @@ import json
 import logging
 import os
 import re
-import socket
 import stat
-import struct
 import time
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from buttereye.core import osapi
 from buttereye.core.types import RefusalReason
 
 _log = logging.getLogger(__name__)
@@ -232,24 +233,21 @@ def quote(value: str) -> str:
 def check_socket_path(path: Path) -> RefusalReason | None:
     """``lstat`` checks before connecting (§4.3). Raises ``FileNotFoundError``."""
     st = os.lstat(path)
-    if not stat.S_ISSOCK(st.st_mode):
+    if osapi.is_link(st) or not osapi.is_endpoint(st):
         return RefusalReason.NOT_SOCKET
-    if st.st_uid != os.getuid():
+    if not osapi.owned_by_me(path, st):
         return RefusalReason.WRONG_UID
     try:
         pst = os.lstat(path.parent)
     except OSError:
         return RefusalReason.BAD_PARENT
-    if not stat.S_ISDIR(pst.st_mode) or pst.st_uid != os.getuid():
+    if (
+        not stat.S_ISDIR(pst.st_mode)
+        or osapi.is_link(pst)
+        or not osapi.owned_by_me(path.parent, pst)
+    ):
         return RefusalReason.BAD_PARENT
     return None
-
-
-def peer_credentials(sock: socket.socket) -> tuple[int, int, int]:
-    """``(pid, uid, gid)`` of the process at the other end of a Unix socket."""
-    raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
-    pid, uid, gid = struct.unpack("3i", raw)
-    return pid, uid, gid
 
 
 class SocketRefused(ConnectionError):
@@ -308,18 +306,13 @@ class MpvIpc:
         reason = check_socket_path(path)
         if reason is not None:
             raise SocketRefused(reason, path)
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_unix_connection(os.fspath(path), limit=_LINE_LIMIT), timeout_s
-        )
-        sock = writer.get_extra_info("socket")
+        reader, writer = await asyncio.wait_for(osapi.open_ipc(path, limit=_LINE_LIMIT), timeout_s)
         peer_pid: int | None = None
         try:
-            if sock is None:
+            peer = osapi.ipc_peer(writer)
+            if peer is None or not peer[1]:
                 raise SocketRefused(RefusalReason.PEERCRED, path)
-            pid, uid, _gid = peer_credentials(sock)
-            if uid != os.getuid():
-                raise SocketRefused(RefusalReason.PEERCRED, path)
-            peer_pid = pid if pid > 0 else None
+            peer_pid = peer[0]
         except BaseException:
             writer.close()
             raise
@@ -455,7 +448,6 @@ __all__ = [
     "MpvIpc",
     "check_command",
     "check_socket_path",
-    "peer_credentials",
     "quote",
     "valid_vf_add",
 ]

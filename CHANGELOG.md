@@ -5,6 +5,20 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
+## Unreleased
+
+### Windows port, phase 1 of 4
+
+- **The core now has a Windows half.** Everything that differs between Linux and
+  Windows goes through one module, `buttereye.core.osapi`: mpv is controlled over a
+  named pipe (checked to belong to your own account), helper programs end with
+  ButterEye while mpv keeps playing, settings live in `%APPDATA%\ButterEye`, and
+  file locks and folder checks use the Windows equivalents. Linux behaves exactly as
+  before. There is no Windows build yet: system checks, plugin builds and an
+  installer are the next three phases (`docs/PLATFORMS.md`).
+- `tests/windows/` tests the Windows code against the real Windows API, including a
+  real `mpv.exe`; `tools/wine-tests.sh` runs them under Wine on Linux.
+
 ## 0.0.1 — 2026-10-10
 
 The first release. ButterEye is in **alpha**: it works on the machines it was tested

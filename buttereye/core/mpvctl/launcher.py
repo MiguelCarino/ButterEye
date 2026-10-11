@@ -12,6 +12,8 @@ mpv's lifetime is decided at spawn (§4.10): it is started with ``posix_spawn``,
 not as an asyncio subprocess, so no transport or ``Popen`` finaliser can ever
 kill it. ``MpvProcess`` watches it with a pidfd and reaps it when it exits; only
 an explicit ``terminate`` (a cancelled or failed ``play``) or the user stops it.
+On Windows (``osapi``) mpv breaks away from ButterEye's job, is polled, and its
+control channel is a named pipe.
 """
 
 from __future__ import annotations
@@ -20,14 +22,13 @@ import asyncio
 import contextlib
 import logging
 import os
-import signal
 import stat
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import buttereye
-from buttereye.core import capabilities
+from buttereye.core import capabilities, osapi
 from buttereye.core.capabilities import ProviderRef
 from buttereye.core.errors import ButterEyeError, ErrorCode
 from buttereye.core.mpvctl.ipc import MpvIpc, SocketRefused
@@ -72,7 +73,11 @@ def ensure_private_dir(path: Path) -> Path:
         check(path, must_exist=True)
         return path
     st = os.lstat(path)
-    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) & 0o077:
+    if (
+        not stat.S_ISDIR(st.st_mode)
+        or not osapi.owned_by_me(path, st)
+        or osapi.shared_mode_bits(st)
+    ):
         raise ButterEyeError(
             ErrorCode.RUNTIME_DIR_UNSAFE,
             Msg(
@@ -115,7 +120,7 @@ def build_argv(
         f"--include={os.fspath(include)}",
         f"--profile={PROFILE}",
         f"--script={os.fspath(LUA_HELPER)}",
-        f"--input-ipc-server={os.fspath(socket)}",
+        f"--input-ipc-server={osapi.ipc_address(socket)}",
         f"--hwdec={HWDEC}",
         "--video-sync=display-resample",
         "--term-status-msg=",
@@ -131,19 +136,17 @@ class MpvProcess:
     """The mpv ButterEye started: pid, exit status and an async ``wait``.
 
     Exit is watched with a pidfd on the running loop and the child is reaped as
-    soon as it exits (no zombies while ButterEye runs). Dropping this object,
-    closing the loop or exiting ButterEye never signals mpv."""
+    soon as it exits (no zombies while ButterEye runs); without a pidfd (Windows,
+    old kernels) it is polled. Dropping this object, closing the loop or exiting
+    ButterEye never signals mpv."""
 
-    def __init__(self, pid: int) -> None:
+    def __init__(self, pid: int, child: osapi.DetachedChild | None = None) -> None:
         self.pid = pid
         self.returncode: int | None = None
+        self._child = child if child is not None else osapi.DetachedChild(pid)
         self._exited = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._pidfd: int | None = None
-        try:
-            self._pidfd = os.pidfd_open(pid)
-        except OSError:
-            self._pidfd = None
+        self._pidfd = self._child.open_pidfd()
         if self._pidfd is not None:
             self._loop = asyncio.get_running_loop()
             try:
@@ -166,17 +169,10 @@ class MpvProcess:
         """Reap mpv if it has exited (never blocks)."""
         if self.returncode is not None:
             return
-        try:
-            pid, status = os.waitpid(self.pid, os.WNOHANG)
-        except ChildProcessError:
-            # reaped elsewhere (or not our child): judge by existence
-            if _pid_alive(self.pid):
-                return
-            self.returncode = -1
-        else:
-            if pid == 0:
-                return
-            self.returncode = os.waitstatus_to_exitcode(status)
+        code = self._child.poll()
+        if code is None:
+            return
+        self.returncode = code
         self._close_pidfd()
         self._exited.set()
 
@@ -185,7 +181,7 @@ class MpvProcess:
         while self.returncode is None:
             if self._pidfd is not None:
                 await self._exited.wait()
-            else:  # no pidfd (old kernel): poll
+            else:  # no pidfd (Windows, old kernel): poll
                 await asyncio.sleep(0.1)
                 self._poll()
         return self.returncode
@@ -196,17 +192,7 @@ class MpvProcess:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    try:
-        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-    except OSError, IndexError:
-        return True
-    return state not in ("Z", "X")
+    return osapi.pid_alive(pid)
 
 
 async def spawn_mpv(
@@ -215,56 +201,36 @@ async def spawn_mpv(
     """Start mpv detached from ButterEye's lifetime (own session, file output).
 
     ``posix_spawnp`` with ``setsid``: stdin /dev/null, stdout+stderr appended to
-    ``log_path``; every other descriptor of ButterEye is close-on-exec (PEP 446)."""
-    log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC, 0o600)
+    ``log_path``; every other descriptor of ButterEye is close-on-exec (PEP 446).
+    Windows: see ``osapi.spawn_detached``."""
     try:
-        pid = os.posix_spawnp(
-            argv[0],
-            list(argv),
-            dict(env) if env is not None else dict(os.environ),
-            file_actions=[
-                (os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0),
-                (os.POSIX_SPAWN_DUP2, fd, 1),
-                (os.POSIX_SPAWN_DUP2, fd, 2),
-            ],
-            setsid=True,
-        )
+        child = osapi.spawn_detached(argv, log_path, env=env)
     except FileNotFoundError as exc:
         raise ButterEyeError(
             ErrorCode.MPV_NOT_FOUND,
             Msg("mpv was not found."),
-            Msg("Install the distribution's mpv package."),
-            commands=("sudo dnf install mpv",),
+            Msg("Install mpv." if osapi.IS_WINDOWS else "Install the distribution's mpv package."),
+            commands=() if osapi.IS_WINDOWS else ("sudo dnf install mpv",),
             detail=str(exc),
         ) from exc
-    finally:
-        os.close(fd)
-    return MpvProcess(pid)
+    return MpvProcess(child.pid, child)
 
 
 def _group_alive(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return osapi.group_alive(pgid)
 
 
 async def terminate(proc: MpvProcess, *, grace_s: float = 2.0) -> None:
     """SIGTERM mpv's process group, SIGKILL after ``grace_s``; used only when
-    ``play`` fails or is cancelled before it returns (GUI.md §11.4)."""
+    ``play`` fails or is cancelled before it returns (GUI.md §11.4). On Windows
+    mpv's window is closed first, then its tree terminated (``osapi``)."""
     pgid = proc.pid
     if proc.returncode is None or _group_alive(pgid):
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pgid, signal.SIGTERM)
+        osapi.signal_group(pgid, kill=False)
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(asyncio.shield(proc.wait()), grace_s)
     if proc.returncode is None or _group_alive(pgid):
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pgid, signal.SIGKILL)
+        osapi.signal_group(pgid, kill=True)
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(asyncio.shield(proc.wait()), 2.0)
 
@@ -324,7 +290,7 @@ def remove_runtime_files(runtime_dir: Path, sid: str) -> None:
         p = runtime_dir / f"mpv-{sid}{suffix}"
         with contextlib.suppress(OSError):
             st = os.lstat(p)
-            if st.st_uid == os.getuid() and (stat.S_ISSOCK(st.st_mode) or stat.S_ISREG(st.st_mode)):
+            if osapi.owned_by_me(p, st) and (stat.S_ISSOCK(st.st_mode) or stat.S_ISREG(st.st_mode)):
                 p.unlink()
 
 
@@ -339,8 +305,9 @@ def log_tail(path: Path, *, lines: int = 20, max_bytes: int = 64 * 1024) -> str:
     return "\n".join(data.decode("utf-8", errors="replace").splitlines()[-lines:])
 
 
-#: Where the mpvSockets user script moves every mpv's IPC socket (SCOPE §4.3).
-MPVSOCKETS_DIR = Path("/tmp/mpvSockets")
+#: Where the mpvSockets user script moves every mpv's IPC socket (SCOPE §4.3);
+#: a Unix-socket script, so nothing to adopt on Windows.
+MPVSOCKETS_DIR: Path | None = None if osapi.IS_WINDOWS else Path("/tmp/mpvSockets")
 
 
 async def _adopt_mpvsockets(proc: MpvProcess, sockets_dir: Path) -> MpvIpc | None:
@@ -362,6 +329,12 @@ async def _adopt_mpvsockets(proc: MpvProcess, sockets_dir: Path) -> MpvIpc | Non
         return None
     _log.info("mpvSockets moved mpv's socket; using %s", path)
     return ipc
+
+
+def prepare_socket(socket: Path) -> None:
+    """Before spawning: on Windows create the runtime-folder marker that stands
+    for mpv's pipe (``osapi.prepare_endpoint``); nothing to do on POSIX."""
+    osapi.prepare_endpoint(socket)
 
 
 async def connect(
@@ -444,4 +417,5 @@ __all__ = [
     "log_tail",
     "MPVSOCKETS_DIR",
     "connect",
+    "prepare_socket",
 ]

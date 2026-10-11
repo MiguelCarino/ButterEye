@@ -3,7 +3,7 @@
 """Application start-up (docs/design/GUI.md §1 ``app.py``, §4.0, R14).
 
 ``QApplication`` with the Wayland desktop file name, a single-instance
-``flock`` on ``$XDG_RUNTIME_DIR/buttereye/gui.lock``, the log file, the
+an exclusive lock on ``$XDG_RUNTIME_DIR/buttereye/gui.lock``, the log file, the
 translators, the theme hooks, the core bridge and the main window.
 
 The default window is the simple window (GUI.md §12). The ``--fake
@@ -15,7 +15,6 @@ opens the earlier multi-page window; both are accepted only when
 from __future__ import annotations
 
 import argparse
-import fcntl
 import importlib
 import logging
 import logging.handlers
@@ -35,6 +34,7 @@ from buttereye.core.api import (
     ErrorCode,
     Paths,
     legal_notices,
+    osapi,
     render,
     set_language,
 )
@@ -150,16 +150,17 @@ class UnsafeRuntimeDir(RuntimeError):
 
 def _check_private_dir(path: Path) -> None:
     st = os.lstat(path)
-    if not stat.S_ISDIR(st.st_mode):
+    if osapi.is_link(st) or not stat.S_ISDIR(st.st_mode):
         raise UnsafeRuntimeDir(f"{path} is not a directory")
-    if st.st_uid != os.getuid():
-        raise UnsafeRuntimeDir(f"{path} is owned by uid {st.st_uid}")
-    if st.st_mode & 0o077:
+    if not osapi.owned_by_me(path, st):
+        raise UnsafeRuntimeDir(f"{path} is owned by another user")
+    if osapi.shared_mode_bits(st):
         raise UnsafeRuntimeDir(f"{path} has mode {stat.S_IMODE(st.st_mode):o}, expected 700")
 
 
 class InstanceLock:
-    """``fcntl.flock`` held for the life of the window. Never chmods anything."""
+    """An exclusive lock (``osapi.try_lock``) held for the life of the window.
+    Never chmods anything."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -168,27 +169,32 @@ class InstanceLock:
     def acquire(self) -> None:
         parent = self.path.parent
         try:
-            parent.mkdir(mode=0o700)
+            parent.mkdir(mode=0o700, parents=osapi.IS_WINDOWS)
         except FileExistsError:
             pass
         _check_private_dir(parent)
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+        flags = os.O_RDWR | os.O_CREAT | osapi.O_CLOEXEC | osapi.O_NOFOLLOW | osapi.O_BINARY
+        fd = os.open(self.path, flags, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.close(fd)
-            raise AlreadyRunning(str(self.path)) from None
+            if not osapi.try_lock(fd):
+                os.close(fd)
+                raise AlreadyRunning(str(self.path))
+        except AlreadyRunning:
+            raise
         except BaseException:
             os.close(fd)
             raise
         self._fd = fd
+        # the pid goes after the locked byte: Windows bars even this process's
+        # other handles from a locked range, and readers only want the number
         os.ftruncate(fd, 0)
+        os.lseek(fd, 1 if osapi.IS_WINDOWS else 0, os.SEEK_SET)
         os.write(fd, f"{os.getpid()}\n".encode())
 
     def release(self) -> None:
         if self._fd is not None:
             try:
-                fcntl.flock(self._fd, fcntl.LOCK_UN)
+                osapi.unlock(self._fd)
             finally:
                 os.close(self._fd)
                 self._fd = None

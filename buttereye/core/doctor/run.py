@@ -15,10 +15,10 @@ written except the probe's short-lived JSON in the 0700 runtime directory.
 from __future__ import annotations
 
 import asyncio
-import shutil
 import time
 from typing import Any
 
+from buttereye.core import osapi
 from buttereye.core.capabilities import ProviderRef, resolve
 from buttereye.core.doctor import checks_mpv, checks_pkgs, checks_trt, checks_vulkan, gpufault
 from buttereye.core.doctor.probe import (
@@ -233,7 +233,7 @@ async def doctor(
 async def plugins(paths: Paths) -> tuple[PluginStatus, ...]:
     """Installed plugins and which copy is active (runs the short in-mpv probe)."""
     db_task = asyncio.ensure_future(checks_pkgs.rpm_query())
-    mpv = shutil.which("mpv")
+    mpv = osapi.executable("mpv")
     raw: dict[str, Any] | None = None
     try:
         if mpv is not None:

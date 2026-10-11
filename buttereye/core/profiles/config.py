@@ -12,13 +12,12 @@
   a ``.bak`` copy first when it replaces a v0 or unreadable file, then writes a
   0600 temporary file in the same directory, fsyncs it and renames it over
   ``config.toml`` (a symlinked ``config.toml`` is followed, so the link survives).
-  Writers serialise on an ``flock`` of the config directory.
+  Writers serialise on a lock of the config directory (``osapi.locked_dir``).
 """
 
 from __future__ import annotations
 
 import dataclasses
-import fcntl
 import hashlib
 import os
 import secrets
@@ -27,6 +26,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import MappingProxyType
 
+from buttereye.core import osapi
 from buttereye.core.errors import ButterEyeError, ConfigConflict, ConfigError, ErrorCode
 from buttereye.core.profiles import defaults, rules, schema
 from buttereye.core.types import Config, ConfigIssue, ConfigLoad, Msg, Paths
@@ -199,31 +199,25 @@ def _read_optional(path: Path) -> bytes | None:
 
 @contextmanager
 def _locked(directory: Path) -> Iterator[None]:
-    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+    with osapi.locked_dir(directory):
         yield
-    finally:
-        os.close(fd)  # closing releases the lock
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    fd = os.open(
+        tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | osapi.O_CLOEXEC | osapi.O_BINARY, 0o600
+    )
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        osapi.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
         except FileNotFoundError:
             pass
         raise
-    dfd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    try:
-        os.fsync(dfd)
-    finally:
-        os.close(dfd)
+    osapi.fsync_dir(path.parent)

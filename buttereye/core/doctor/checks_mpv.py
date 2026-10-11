@@ -11,11 +11,11 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from buttereye.core import osapi
 from buttereye.core.doctor.proc import run
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
@@ -92,7 +92,7 @@ def sandbox_kind(binary: str) -> str | None:
 async def mpv_checks(
     *, mpv: str | None = None, which: Mapping[str, str | None] | None = None
 ) -> tuple[list[Finding], MpvFacts]:
-    exe = mpv or (which.get("mpv") if which is not None else shutil.which("mpv"))
+    exe = mpv or (which.get("mpv") if which is not None else osapi.executable("mpv"))
     if exe is None:
         return [
             _f(

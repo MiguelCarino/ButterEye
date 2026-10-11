@@ -27,7 +27,6 @@ import logging
 import math
 import os
 import shutil
-import signal
 import subprocess
 import time
 import uuid
@@ -37,7 +36,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from buttereye.core import capabilities, filelog
+from buttereye.core import capabilities, filelog, osapi
 from buttereye.core.backends import trt
 from buttereye.core.capabilities import ProviderRef
 from buttereye.core.doctor.checks_pkgs import parse_encoders
@@ -973,21 +972,31 @@ async def _encode(
     try:
         # vspipe leads a new process group that ffmpeg joins (a group can only be
         # joined from the same session, so no new session here); cancel and the
-        # stale-job check signal the whole group
+        # stale-job check signal the whole group. Windows has no joinable groups:
+        # each gets its own, below normal priority from the start, both inside
+        # ButterEye's kill-on-close job, and ffmpeg is ended on its own below.
+        vs_group: dict[str, Any] = (
+            osapi.group_spawn_kwargs(low_priority=True) if osapi.IS_WINDOWS
+            else {"process_group": 0}
+        )  # fmt: skip
         vs_proc = await asyncio.create_subprocess_exec(
             *pipeline.vspipe_argv(tools.vspipe, script, ud, requests=requests),
             stdin=subprocess.DEVNULL,
             stdout=wfd,
             stderr=subprocess.PIPE,
-            process_group=0,
+            **vs_group,
         )
         _own_group(vs_proc.pid)
+        ff_group: dict[str, Any] = (
+            osapi.group_spawn_kwargs(low_priority=True) if osapi.IS_WINDOWS
+            else {"process_group": vs_proc.pid}
+        )  # fmt: skip
         ff_proc = await asyncio.create_subprocess_exec(
             *pipeline.encode_argv(tools.ffmpeg, job.spec.encoder, info, video_tmp),
             stdin=rfd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
-            process_group=vs_proc.pid,
+            **ff_group,
         )
         os.close(rfd)
         os.close(wfd)
@@ -996,8 +1005,7 @@ async def _encode(
         manifest.save()
         # §7.6: a render is a batch job; playback, the GUI and the desktop come
         # first whether they start before or after it (threads started later inherit)
-        with contextlib.suppress(OSError):
-            os.setpriority(os.PRIO_PGRP, vs_proc.pid, RENICE)
+        osapi.lower_group_priority(vs_proc.pid, RENICE)
 
         async def read_ffmpeg() -> str:
             assert ff_proc is not None and ff_proc.stderr is not None
@@ -1107,15 +1115,7 @@ def _manifests(ctx: ProviderContext) -> list[tuple[Path, Mapping[str, Any]]]:
 
 
 def _group_alive(pgid: int | None) -> bool:
-    if not pgid:
-        return False
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return osapi.group_alive(pgid)
 
 
 async def stale_jobs(ctx: ProviderContext) -> tuple[StaleJob, ...]:
@@ -1139,15 +1139,13 @@ async def stale_stop(ctx: ProviderContext, job_id: JobId) -> None:
             continue
         pgid = data.get("pgid") if isinstance(data.get("pgid"), int) else None
         if pgid and _group_alive(pgid):
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pgid, signal.SIGTERM)
+            osapi.signal_group(pgid, kill=False)
             for _ in range(30):
                 if not _group_alive(pgid):
                     break
                 await asyncio.sleep(0.1)
             if _group_alive(pgid):
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(pgid, signal.SIGKILL)
+                osapi.signal_group(pgid, kill=True)
         _remove(*(Path(x) for x in data.get("partials") or ()))
         _remove(p)
 

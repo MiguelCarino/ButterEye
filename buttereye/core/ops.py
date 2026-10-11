@@ -6,6 +6,8 @@ Cancellation contract: ``cancel()`` -> ``CANCELLING`` -> SIGTERM to each child
 **process group** (``start_new_session=True``) -> SIGKILL after the grace period
 (5 s) -> delete partial files -> ``CANCELLED``. R72 vspipe ignores SIGINT, so
 SIGTERM always. ``preexec_fn`` is banned (the process is multithreaded).
+On Windows a "group" is the leader's process tree and the signals are
+``osapi.signal_group``'s window-close / terminate (docs/PLATFORMS.md).
 
 All methods run on the core loop thread; the GUI bridge marshals calls.
 """
@@ -16,8 +18,6 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
-import os
-import signal
 import subprocess
 import threading
 import traceback
@@ -26,6 +26,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mappi
 from pathlib import Path
 from typing import IO, Any, Generic, Literal, TypeVar
 
+from buttereye.core import osapi
 from buttereye.core.errors import ButterEyeError, ErrorCode, OperationCancelled
 from buttereye.core.events import Event, OpFinished, OpStarted, Progress
 from buttereye.core.types import Msg, OpId, OpKind, OpState
@@ -94,15 +95,13 @@ def kill_owned_groups(loop: asyncio.AbstractEventLoop | None = None) -> tuple[in
         _disown_group(pgid)
         if not _group_alive(pgid):
             continue
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pgid, signal.SIGKILL)
-            killed.append(pgid)
+        osapi.signal_group(pgid, kill=True)
+        killed.append(pgid)
     return tuple(killed)
 
 
 def _sigkill_group(pgid: int) -> None:
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(pgid, signal.SIGKILL)
+    osapi.signal_group(pgid, kill=True)
 
 
 async def run_to_completion(aw: Coroutine[Any, Any, T]) -> T:
@@ -136,13 +135,7 @@ async def run_to_completion(aw: Coroutine[Any, Any, T]) -> T:
 
 
 def _group_alive(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return osapi.group_alive(pgid)
 
 
 async def terminate_group(
@@ -150,7 +143,7 @@ async def terminate_group(
 ) -> None:
     """SIGTERM the process group led by ``proc``, SIGKILL after ``grace_s``.
 
-    ``proc`` must have been started with ``start_new_session=True`` so that its
+    ``proc`` must have been started by ``spawn_group`` (``osapi.group_spawn_kwargs``) so its
     pid is the group id. Waits for ``proc`` itself to be reaped. Never raises for
     an already-gone group.
     """
@@ -169,8 +162,7 @@ async def terminate_group(
 
 async def _terminate_group(proc: asyncio.subprocess.Process, pgid: int, grace_s: float) -> None:
     if proc.returncode is None or _group_alive(pgid):
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pgid, signal.SIGTERM)
+        osapi.signal_group(pgid, kill=False)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + grace_s
     while True:
@@ -213,7 +205,7 @@ async def spawn_group(
         stderr=stderr,
         env=dict(env) if env is not None else None,
         cwd=cwd,
-        start_new_session=True,
+        **osapi.group_spawn_kwargs(),
     )
 
 

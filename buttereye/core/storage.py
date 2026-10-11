@@ -24,6 +24,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
+from buttereye.core import osapi
 from buttereye.core.doctor.checks_pkgs import MODELS_SUBDIR
 from buttereye.core.doctor.text import M
 from buttereye.core.events import Progress
@@ -231,7 +232,7 @@ def safe_target(paths: Paths, target: Path) -> Msg | None:
                 break  # nothing below a missing component, nothing to delete
             except OSError:
                 return M("This folder can't be inspected; it is left alone.")
-            if stat.S_ISLNK(st.st_mode):
+            if osapi.is_link(st):
                 return M("This folder is a symbolic link; it is left alone.")
             if comp != target and not stat.S_ISDIR(st.st_mode):
                 return M("Outside ButterEye's own folders.")
@@ -244,7 +245,7 @@ def safe_target(paths: Paths, target: Path) -> Msg | None:
     return None
 
 
-_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | osapi.O_NOFOLLOW | osapi.O_CLOEXEC
 
 
 def _remove_tree(d: Path, removed: list[Path], skipped: list[tuple[Path, Msg]]) -> int:
@@ -252,7 +253,21 @@ def _remove_tree(d: Path, removed: list[Path], skipped: list[tuple[Path, Msg]]) 
 
     Works relative to directory file descriptors opened with ``O_NOFOLLOW``, so
     a folder swapped for a symlink while cleaning is unlinked as a link and
-    never descended into; other mounted file systems are left alone."""
+    never descended into; other mounted file systems are left alone. Windows
+    can't open folders, so there each entry is ``lstat``-ed by path instead and
+    links and junctions are removed as links (``_remove_in_windows``)."""
+    if osapi.IS_WINDOWS:
+        try:
+            st = os.lstat(d)
+        except FileNotFoundError:
+            return 0
+        except OSError as exc:
+            skipped.append((d, M("Can't read this folder: {why}", {"why": exc.strerror or ""})))
+            return 0
+        if osapi.is_link(st) or not stat.S_ISDIR(st.st_mode):
+            skipped.append((d, M("This folder is a symbolic link; it is left alone.")))
+            return 0
+        return _remove_in_windows(d, removed, skipped)
     try:
         fd = os.open(d, _DIR_FLAGS)
     except FileNotFoundError:
@@ -312,6 +327,50 @@ def _remove_in(fd: int, d: Path, removed: list[Path], skipped: list[tuple[Path, 
             else:
                 os.unlink(name, dir_fd=fd)  # files and symlinks (the link, never its target)
                 freed += st.st_size
+            removed.append(p)
+        except OSError as exc:
+            skipped.append((p, M("Couldn't delete: {why}", {"why": exc.strerror or ""})))
+    return freed
+
+
+def _unlink_any(p: Path, st: os.stat_result) -> None:
+    """Remove one entry that is not descended into: a file, or a link/junction
+    (the link itself, never its target). Read-only files are made writable first,
+    as Windows refuses to delete them otherwise."""
+    try:
+        if stat.S_ISDIR(st.st_mode):
+            os.rmdir(p)  # a directory link or junction: rmdir removes the link only
+        else:
+            os.unlink(p)
+    except PermissionError:
+        os.chmod(p, stat.S_IWRITE)
+        if stat.S_ISDIR(st.st_mode):
+            os.rmdir(p)
+        else:
+            os.unlink(p)
+
+
+def _remove_in_windows(d: Path, removed: list[Path], skipped: list[tuple[Path, Msg]]) -> int:
+    freed = 0
+    try:
+        names = [e.name for e in os.scandir(d)]
+    except OSError as exc:
+        skipped.append((d, M("Can't read this folder: {why}", {"why": exc.strerror or ""})))
+        return 0
+    for name in names:
+        p = d / name
+        try:
+            st = os.lstat(p)
+        except OSError:
+            continue
+        try:
+            if osapi.is_link(st) or not stat.S_ISDIR(st.st_mode):
+                _unlink_any(p, st)
+                if not osapi.is_link(st):
+                    freed += st.st_size
+            else:
+                freed += _remove_in_windows(p, removed, skipped)
+                os.rmdir(p)
             removed.append(p)
         except OSError as exc:
             skipped.append((p, M("Couldn't delete: {why}", {"why": exc.strerror or ""})))

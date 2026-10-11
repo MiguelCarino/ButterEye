@@ -29,6 +29,7 @@ from buttereye.core import errors as _errors_mod
 from buttereye.core import events as _events_mod
 from buttereye.core import filelog as _filelog
 from buttereye.core import ops as _ops_mod
+from buttereye.core import osapi as osapi  # the OS seam, for the GUI's own lock and folder checks
 from buttereye.core import types as _types_mod
 from buttereye.core.capabilities import ProviderRef, unavailable_text
 from buttereye.core.commands import CLI_MISSING_NOTE, cli_available, command_hint
@@ -848,6 +849,7 @@ __all__ = [
     "cli_available",
     "CLI_MISSING_NOTE",
     "unavailable_text",
+    "osapi",
 ]
 __all__ += _types_mod.__all__
 __all__ += _errors_mod.__all__

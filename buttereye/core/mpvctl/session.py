@@ -40,7 +40,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from buttereye.core import capabilities, filelog
+from buttereye.core import capabilities, filelog, osapi
 from buttereye.core.backends import trt
 from buttereye.core.capabilities import ProviderRef
 from buttereye.core.errors import ButterEyeError, ErrorCode, FilterFailed, NotAvailable
@@ -213,7 +213,7 @@ class LiveOptions:
     """Launch and detection settings. Defaults are the shipped behaviour; tests
     change them through ``registry(ctx).options`` (e.g. ``--vo=null``)."""
 
-    mpv: str = "mpv"
+    mpv: str = "mpv.exe" if osapi.IS_WINDOWS else "mpv"
     extra_args: tuple[str, ...] = ()
     env: Mapping[str, str] | None = None
     thresholds: Thresholds = field(default_factory=Thresholds)
@@ -2098,6 +2098,7 @@ async def play(
         shaders=(shader,) if shader is not None else (),
     )
     launcher.prune_logs(paths.logs_dir, runtime)
+    launcher.prepare_socket(socket)
     proc = await launcher.spawn_mpv(argv, log_path, env=opts.env)
     try:
         op.report(Msg("Connecting to mpv"))

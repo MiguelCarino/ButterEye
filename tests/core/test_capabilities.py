@@ -387,6 +387,7 @@ def test_api_import_pulls_no_subsystem(repo_root: Path) -> None:
             "commands",
             "capabilities",
             "filelog",
+            "osapi",  # the OS seam ops uses; stdlib only
         )
     }
     allowed |= {"buttereye", "buttereye.core"}

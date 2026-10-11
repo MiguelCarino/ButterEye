@@ -21,11 +21,11 @@ import dataclasses
 import datetime as _dt
 import os
 import re
-import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
+from buttereye.core import osapi
 from buttereye.core.backends.select import backends, chosen_device, select
 from buttereye.core.capabilities import ProviderRef, absent_state, resolve
 from buttereye.core.doctor.probe import run_probe
@@ -239,7 +239,7 @@ async def apply(
             smoke_ok, smoke_fps, smoke_finding = outcome.ok, outcome.fps, outcome.finding
 
             _step(progress, 3, M("Smoke test: loading the plugins inside mpv"))
-            mpv = shutil.which("mpv")
+            mpv = osapi.executable("mpv")
             if mpv is None:
                 smoke_ok = False
                 smoke_finding = smoke_finding or Finding(

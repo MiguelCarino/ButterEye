@@ -5,17 +5,17 @@ ButterEye 0.0.1 supports **Fedora 44 and Fedora 45 on x86_64** and nothing else
 records, honestly, how far the code is from running on them, so a later decision
 starts from facts rather than guesses. Nothing here is a promise or a schedule.
 
-Assessed against the 0.0.1 tree on 2026-10-10. No Windows or macOS build was
-attempted; the findings come from reading the code and the upstream projects'
-documentation.
+Assessed against the 0.0.1 tree on 2026-10-10; Windows phase 1 (the core
+platform layer) landed on 2026-10-11 and is described below. No Windows or
+macOS build has been made yet.
 
 ## Summary
 
 | Piece | Linux (Fedora 44/45) | Windows | macOS |
 |---|---|---|---|
-| Python core (`buttereye.core`) | supported | needs a platform layer (IPC, process control, paths, locks, detection) | needs a smaller platform layer (peer credentials, paths, `/proc`, detection) |
-| PySide6 GUI | supported | Qt itself runs; inherits the core's gaps plus one `fcntl` lock | Qt itself runs; inherits the core's gaps (`fcntl` is available) |
-| mpv control (JSON IPC) | Unix sockets + socketpair | mpv uses **named pipes**; new transport needed | Unix sockets work; `SO_PEERCRED` does not exist |
+| Python core (`buttereye.core`) | supported | platform layer done (phase 1); detection and doctor still to port | needs a smaller platform layer (peer credentials, paths, `/proc`, detection) |
+| PySide6 GUI | supported | Qt itself runs; its lock goes through the platform layer; untried on Windows | Qt itself runs; inherits the core's gaps (`fcntl` is available) |
+| mpv control (JSON IPC) | Unix sockets + socketpair | **named pipes**, done; tested under Wine with a real `mpv.exe` | Unix sockets work; `SO_PEERCRED` does not exist |
 | mpv `vapoursynth` filter | distro mpv has it | depends on the mpv build | depends on the mpv build |
 | VapourSynth + `vspipe` | Fedora packages | official installers exist | available (e.g. Homebrew); untested here |
 | `buttereye-vs-mvtools` | COPR RPM | upstream code is portable C/C++; needs a Windows build | needs a macOS build |
@@ -25,12 +25,17 @@ documentation.
 | Packaging / installs | RPM + COPR | an installer or zip would be new work | an app bundle would be new work |
 | `doctor` checks | `rpm -q`, `dnf` lines, `journalctl -k`, sysfs | must be rewritten for the platform | must be rewritten for the platform |
 
-Short version: **the architecture ports, the plumbing does not yet.** The core is
+Short version: **the architecture ports, and on Windows the core's plumbing now does too** (phase 1, below). The core is
 a GUI-free asyncio library with the OS-specific parts concentrated in a handful
-of modules, and the GUI only talks to `buttereye.core.api`. But those modules
-were written for Linux on purpose and none has a Windows or macOS branch today.
+of modules, and the GUI only talks to `buttereye.core.api`. Those modules were
+written for Linux on purpose; the Windows branch now lives in `buttereye.core.osapi`,
+and there is still no macOS branch.
 
 ## What is Linux-specific today
+
+This section describes the 0.0.1 tree. On Windows, phase 1 (below) replaced
+everything under "mpv IPC and process control" and "Paths and locks"; the
+rest still applies.
 
 These are the places a port would have to touch. File paths are relative to the
 repository root.
@@ -84,38 +89,67 @@ repository root.
   built with a pinned, statically linked ncnn and two local patches (SCOPE §9,
   `packaging/plugins/`). None of that output is usable off Linux.
 
-## Windows: the realistic path
+## Windows: the port, phase by phase
 
 The pieces ButterEye drives all exist on Windows: mpv (with VapourSynth support
 in builds that enable it), VapourSynth with `vspipe`, ffmpeg and mkvmerge. The
-Python core and the Qt GUI could run there with:
+port is done in four phases; each leaves Linux exactly as it was.
 
-1. **An IPC transport for named pipes.** mpv's `--input-ipc-server` on Windows
-   creates a named pipe (`\\.\pipe\<name>`) instead of a Unix socket. The JSON
-   protocol is the same, so `MpvIpc` would need a second transport, not a second
-   client. The security checks would change from file ownership and
-   `SO_PEERCRED` to pipe ACLs and the client process's owner.
-2. **A process layer.** Replace `setsid`/`killpg`/`/proc` with
-   `CREATE_NEW_PROCESS_GROUP` (or a Job Object, which also kills children
-   reliably) and Win32 process queries.
-3. **Paths and locks.** Map config/state/cache to `%APPDATA%`/`%LOCALAPPDATA%`,
-   use a per-user private directory in place of `$XDG_RUNTIME_DIR`, and swap
-   `fcntl.flock` for `msvcrt.locking` or a named mutex.
-4. **Detection and doctor.** Use DXGI/`vulkaninfo`/`nvidia-smi` for GPUs and
-   replace the rpm/dnf/journal checks with Windows equivalents (or drop the Xid
-   scan, which has no direct analogue).
-5. **Plugins.** MVTools and RIFE-ncnn-Vulkan are portable upstream projects;
-   our packaging patches would need re-applying and the M0(f) GPU-fault spike
-   re-running on Windows drivers. `mvgpu` is plain C++17 against Vulkan and the
-   VapourSynth API4 headers with shaders compiled by glslang at build time, so a
-   meson build for Windows should be modest work. TensorRT via vs-mlrt is in
-   fact better supported upstream on Windows than on Linux.
-6. **Distribution.** An installer or portable zip, with the AGPL Corresponding
-   Source offer and the plugin licence files carried over (SCOPE §8).
+| Phase | What | State |
+|---|---|---|
+| 1 | Core platform layer: processes, mpv's control channel, folders, locks | **done** (`buttereye/core/osapi/`) |
+| 2 | Doctor, hardware detection and setup checks for Windows | to do |
+| 3 | Windows builds of the four VapourSynth plugins | to do |
+| 4 | Installer (and the GitHub Actions build that makes it) | to do |
 
-Each step is a contained module change because the GUI is already isolated
-behind `buttereye.core.api`. The cost is in testing on real Windows hardware,
-which the project does not have today.
+### Phase 1: the core platform layer (done)
+
+Every call that differs between the two systems now goes through
+`buttereye.core.osapi`; nothing else in the core touches POSIX directly.
+`mypy --platform win32 buttereye` is clean, which is the check that nothing was
+missed.
+
+| | Linux | Windows |
+|---|---|---|
+| mpv control | Unix socket, `SO_PEERCRED` | named pipe `\\.\pipe\buttereye-<hash>`; the pipe's server process must run as this user (its token SID). A marker file in the runtime folder stands for the pipe, so discovery and cleanup work unchanged |
+| mpv lifetime | `posix_spawnp(setsid)`, pidfd | `Popen` that breaks away from ButterEye's job; polled |
+| process groups | new session, SIGTERM then SIGKILL | the leader's process tree. ButterEye runs in a kill-on-close job object, so a crashed window never leaves a render or a probe running. The polite stop closes the tree's windows (mpv quits normally); a tree without windows is terminated at once |
+| folders | XDG | settings in `%APPDATA%\ButterEye`, the rest in `%LOCALAPPDATA%\ButterEye` (`data`, `cache`, `state`, `run`) |
+| private folder check | 0700, own uid, not a symlink | owned by this user's SID, not a reparse point (junction or link) |
+| locks | `flock` | `msvcrt.locking` on a lock file |
+| storage cleaning | directory file descriptors with `O_NOFOLLOW` | `lstat` walk; links and junctions are removed as links, never followed |
+| render priority | renice the group | below-normal priority class at spawn |
+
+The Linux-only spots that phase 1 leaves for phase 2 are the doctor's checks
+(`rpm`, `dnf`, `journalctl`, sysfs) and hardware detection; they don't crash on
+Windows, but their advice is Fedora advice. The plugin and model folders on
+Windows sit next to the installation (`BUTTEREYE_HOME`, else the folder above the
+package): phase 4 fixes that layout.
+
+### Testing the Windows code
+
+`tests/windows/` exercises the Windows half against the real Windows API: job
+objects, process trees, named pipes with the peer check, locks, junction-safe
+cleaning, settings saved over an existing file, and a real `mpv.exe` driven
+over its pipe. On Windows it runs with plain `pytest`; on the Linux dev box,
+`tools/wine-tests.sh` runs it under Wine with a Windows Python (one-time setup
+in the script's header). Wine is a stand-in, not proof: the installer phase is
+tested on real Windows before any release.
+
+### Remaining phases
+
+1. **Detection and doctor (phase 2).** DXGI/`vulkaninfo`/`nvidia-smi` for GPUs;
+   checks for mpv's `vapoursynth` filter, VapourSynth and the plugins by file
+   instead of rpm; drop the Xid scan, which has no direct analogue.
+2. **Plugins (phase 3).** MVTools and RIFE-ncnn-Vulkan are portable upstream
+   projects; our packaging patches would need re-applying and the M0(f)
+   GPU-fault spike re-running on Windows drivers. `mvgpu` is plain C++17 against
+   Vulkan and the VapourSynth API4 headers with shaders compiled by glslang at
+   build time, so a meson build for Windows should be modest work. TensorRT via
+   vs-mlrt is better supported upstream on Windows than on Linux.
+3. **Distribution (phase 4).** An installer built on GitHub's Windows runners,
+   with the AGPL Corresponding Source offer and the plugin licence files carried
+   over (SCOPE §8).
 
 ## macOS: the realistic path
 

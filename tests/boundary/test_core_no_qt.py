@@ -20,7 +20,8 @@ after_api = sorted(m for m in sys.modules if m.split(".")[0] in QT)
 subsystems_at_api = sorted(
     m for m in sys.modules
     if m.startswith("buttereye.core.") and m.split(".")[2] not in (
-        "api", "types", "errors", "events", "ops", "i18n", "commands", "capabilities", "filelog"
+        "api", "types", "errors", "events", "ops", "i18n", "commands", "capabilities", "filelog",
+        "osapi",
     )
 )
 import buttereye.core as core

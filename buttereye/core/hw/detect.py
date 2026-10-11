@@ -20,6 +20,7 @@ import asyncio
 import functools
 import os
 import re
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -424,10 +425,13 @@ def interpolation_pci(probe: HwProbe) -> str | None:
 
 
 def cpu_threads() -> int:
-    try:
-        return len(os.sched_getaffinity(0))
-    except AttributeError, OSError:
-        return os.cpu_count() or 1
+    """Threads this process may run on (its affinity on Linux)."""
+    if sys.platform != "win32":
+        try:
+            return len(os.sched_getaffinity(0))
+        except OSError:
+            pass
+    return os.process_cpu_count() or 1
 
 
 async def probe_hardware(

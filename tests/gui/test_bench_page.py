@@ -383,7 +383,8 @@ def test_real_bench_through_the_gui(qtbot: Any, xdg_env: Any, tmp_path: Any) -> 
         result = page.shown_result()
         assert result is not None
         labels = [m.label for m in result.measurements]
-        assert labels == ["rife-v4.22-lite", "mvtools"]
+        # mvgpu is measured too where its plugin is installed (buttereye-vs-mvgpu)
+        assert labels in (["rife-v4.22-lite", "mvtools"], ["rife-v4.22-lite", "mvgpu", "mvtools"])
         assert set(page.op_rows()) == set(labels)
         assert page.plot.rows() == result.measurements
         for r, m in enumerate(result.measurements):

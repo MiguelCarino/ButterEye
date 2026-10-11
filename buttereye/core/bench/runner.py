@@ -40,7 +40,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from buttereye.core import capabilities
+from buttereye.core import capabilities, osapi
 from buttereye.core.backends import trt
 from buttereye.core.bench import faults, measure, store
 from buttereye.core.capabilities import ProviderRef
@@ -396,7 +396,7 @@ def find_tools(paths: Paths) -> Tools:
         )
     return Tools(
         vspipe=vspipe,
-        mpv=shutil.which("mpv"),
+        mpv=osapi.executable("mpv"),
         vpy=VPY,
         plugin_dir=paths.rpm_plugin_dir,
         model_dir=paths.rpm_data_dir / MODEL_SUBDIR,
