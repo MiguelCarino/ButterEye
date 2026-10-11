@@ -32,6 +32,7 @@ SYNCHRONIZE = 0x00100000
 STILL_ACTIVE = 259
 TOKEN_QUERY = 0x0008
 TOKEN_USER_CLASS = 1  # TokenUser
+TOKEN_OWNER_CLASS = 4  # TokenOwner
 TH32CS_SNAPPROCESS = 0x00000002
 INVALID_HANDLE_VALUE = HANDLE(-1).value
 SE_FILE_OBJECT = 1
@@ -144,19 +145,22 @@ def _sid_string(psid: int | None) -> str | None:
         _k32.LocalFree(ctypes.cast(out, ctypes.c_void_p))
 
 
-def _token_user(process: int) -> str | None:
+def _token_user(process: int, info_class: int = TOKEN_USER_CLASS) -> str | None:
+    """The SID ``info_class`` names in ``process``'s token: TokenUser (who it runs
+    as) or TokenOwner (the owner its new files get)."""
     token = HANDLE()
     if not _adv.OpenProcessToken(process, TOKEN_QUERY, ctypes.byref(token)):
         return None
     try:
         size = DWORD(0)
-        _adv.GetTokenInformation(token, TOKEN_USER_CLASS, None, 0, ctypes.byref(size))
+        _adv.GetTokenInformation(token, info_class, None, 0, ctypes.byref(size))
         if not size.value:
             return None
         buf = ctypes.create_string_buffer(size.value)
-        if not _adv.GetTokenInformation(token, TOKEN_USER_CLASS, buf, size, ctypes.byref(size)):
+        if not _adv.GetTokenInformation(token, info_class, buf, size, ctypes.byref(size)):
             return None
-        # TOKEN_USER starts with SID_AND_ATTRIBUTES, whose first member is the PSID
+        # TOKEN_USER starts with SID_AND_ATTRIBUTES, whose first member is the PSID;
+        # TOKEN_OWNER is just the PSID
         return _sid_string(ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0])
     finally:
         _k32.CloseHandle(token)
@@ -170,6 +174,18 @@ def my_sid() -> str | None:
     if not _ME:
         _ME.append(_token_user(_k32.GetCurrentProcess()))
     return _ME[0]
+
+
+_OWNER: list[str | None] = []
+
+
+def my_owner_sid() -> str | None:
+    """The owner this process's new files and folders get, cached. Usually
+    ``my_sid()``; for an administrator on Windows Server (the default policy) or
+    an elevated process, the Administrators group (``S-1-5-32-544``)."""
+    if not _OWNER:
+        _OWNER.append(_token_user(_k32.GetCurrentProcess(), TOKEN_OWNER_CLASS))
+    return _OWNER[0]
 
 
 def process_sid(pid: int) -> str | None:
@@ -338,6 +354,7 @@ __all__ = [
     "FILE_ATTRIBUTE_REPARSE_POINT",
     "ensure_job",
     "file_owner_sid",
+    "my_owner_sid",
     "my_sid",
     "pid_alive",
     "pipe_server_pid",

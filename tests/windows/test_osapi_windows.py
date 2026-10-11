@@ -69,6 +69,7 @@ def test_a_file_we_make_is_ours(tmp_path: Path) -> None:
     f = tmp_path / "mine.txt"
     f.write_text("x")
     assert w.my_sid() is not None and w.my_sid().startswith("S-1-")
+    assert w.my_owner_sid() is not None  # whom our new files belong to (may be a group)
     assert osapi.owned_by_me(f, os.lstat(f))
 
 

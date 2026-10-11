@@ -71,10 +71,13 @@ def is_link(st: os.stat_result) -> bool:
 
 
 def owned_by_me(path: Path, st: os.stat_result) -> bool:
-    """``path`` (already ``lstat``-ed as ``st``) belongs to this user."""
+    """``path`` (already ``lstat``-ed as ``st``) belongs to this user. On Windows
+    its owner is this user, or the owner this process gives what it creates: for
+    an administrator on Windows Server, or elevated, that is the Administrators
+    group, so a folder ButterEye just made would otherwise not count as its own."""
     if sys.platform == "win32":
-        me = w.my_sid()
-        return me is not None and w.file_owner_sid(path) == me
+        mine = {w.my_sid(), w.my_owner_sid()} - {None}
+        return bool(mine) and w.file_owner_sid(path) in mine
     return st.st_uid == os.getuid()
 
 

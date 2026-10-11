@@ -8,8 +8,9 @@ built DLLs (``packaging/windows/build-plugins.sh``; ``tools/wine-tests.sh`` sets
 it). Needs the ``vapoursynth`` and ``numpy`` wheels. The RIFE test also needs
 ``BUTTEREYE_TEST_MODELS`` (the rife-ncnn-models folder) and a Vulkan GPU, which
 Wine passes through from the host. librife.dll and libmvgpu.dll import Windows'
-Vulkan loader (vulkan-1.dll, which a GPU driver installs): on a PC without one
-(GitHub's Windows runners) their tests skip and MVTools is tested alone.
+Vulkan loader (vulkan-1.dll) and run on a Vulkan device: on a PC without a
+graphics driver (GitHub's Windows runners have the loader, but no device) they
+are only loaded, their interpolation tests skip, and MVTools is tested alone.
 
 The check is the one tests/integration/test_mvgpu_real.py makes on Linux: a
 textured square moving 16 px a frame must sit 8 px further on in the in-between
@@ -42,14 +43,37 @@ FILES = {"mv": "mvtools.dll", "rife": "librife.dll", "mvgpu": "libmvgpu.dll"}
 GPU_PLUGINS = ("rife", "mvgpu")
 
 
-def _no_vulkan_loader() -> str | None:
-    """Why the GPU plugins can't load here, or None: they import vulkan-1.dll."""
+def _no_vulkan(*, device: bool = True) -> str | None:
+    """Why the GPU plugins can't run here, or None: they need a Vulkan device
+    (vulkan-1.dll, from a graphics driver, and a driver that lists a GPU)."""
     import ctypes
 
     try:
-        ctypes.WinDLL("vulkan-1")  # type: ignore[attr-defined,unused-ignore]
+        vk = ctypes.WinDLL("vulkan-1")  # type: ignore[attr-defined,unused-ignore]
     except OSError as exc:
         return f"no Vulkan loader (vulkan-1.dll) on this PC: {exc}"
+    if not device:
+        return None
+
+    class InstanceInfo(ctypes.Structure):  # VkInstanceCreateInfo, nothing enabled
+        _fields_ = [
+            ("sType", ctypes.c_int), ("pNext", ctypes.c_void_p), ("flags", ctypes.c_uint32),
+            ("pApplicationInfo", ctypes.c_void_p), ("enabledLayerCount", ctypes.c_uint32),
+            ("ppEnabledLayerNames", ctypes.c_void_p), ("enabledExtensionCount", ctypes.c_uint32),
+            ("ppEnabledExtensionNames", ctypes.c_void_p),
+        ]  # fmt: skip
+
+    instance = ctypes.c_void_p()
+    rc = vk.vkCreateInstance(ctypes.byref(InstanceInfo(1)), None, ctypes.byref(instance))
+    if rc != 0:  # -9: VK_ERROR_INCOMPATIBLE_DRIVER, a loader but no driver
+        return f"Vulkan has no driver on this PC (vkCreateInstance returned {rc})"
+    try:
+        count = ctypes.c_uint32()
+        vk.vkEnumeratePhysicalDevices(instance, ctypes.byref(count), None)
+        if not count.value:
+            return "Vulkan lists no device on this PC"
+    finally:
+        vk.vkDestroyInstance(instance, None)
     return None
 
 
@@ -58,7 +82,7 @@ def _core(*namespaces: str) -> object:
     plugin skips the test when this PC has no Vulkan loader."""
     core = vs.core  # type: ignore[union-attr]
     for ns in namespaces or tuple(FILES):
-        if ns in GPU_PLUGINS and (why := _no_vulkan_loader()):
+        if ns in GPU_PLUGINS and (why := _no_vulkan(device=False)):  # they import it
             pytest.skip(why)
         if not hasattr(core, ns):
             core.std.LoadPlugin(str(Path(PLUGINS) / FILES[ns]))
@@ -122,6 +146,8 @@ def test_mvtools_moves_the_square() -> None:
 
 
 def test_mvgpu_moves_the_square() -> None:
+    if why := _no_vulkan():
+        pytest.skip(why)
     core = _core("mvgpu")
     src = _source(core)
     try:
@@ -138,6 +164,8 @@ def test_mvgpu_moves_the_square() -> None:
 
 @pytest.mark.skipif(not MODELS, reason="BUTTEREYE_TEST_MODELS not set")
 def test_rife_moves_the_square() -> None:
+    if why := _no_vulkan():
+        pytest.skip(why)
     core = _core("rife")
     src = _source(core)
     rgb = core.resize.Bicubic(src, format=vs.RGBS, matrix_in_s="709")  # type: ignore[attr-defined,union-attr]
@@ -170,7 +198,7 @@ def test_buttereyes_speed_test_script_runs_each_engine(backend: str) -> None:
 
     if backend == "rife" and not MODELS:
         pytest.skip("BUTTEREYE_TEST_MODELS not set")
-    if backend != "mvtools" and (why := _no_vulkan_loader()):
+    if backend != "mvtools" and (why := _no_vulkan()):
         pytest.skip(why)
     vs_dir = Path(vs.__file__).parent  # type: ignore[union-attr]
     vspipe = next(

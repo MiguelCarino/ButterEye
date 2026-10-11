@@ -51,15 +51,38 @@ def _wine() -> bool:
     return hasattr(ntdll, "wine_get_version")
 
 
-def _no_vulkan_loader() -> str | None:
+def _no_vulkan(*, device: bool = True) -> str | None:
     """Why the GPU plugins can't run here, or None: librife.dll and libmvgpu.dll
-    import vulkan-1.dll, which a GPU driver installs (GitHub's runners have none)."""
+    need a Vulkan device (vulkan-1.dll, from a graphics driver, and a driver that
+    lists a GPU; GitHub's runners have the loader but no driver)."""
     import ctypes
 
     try:
-        ctypes.WinDLL("vulkan-1")  # type: ignore[attr-defined,unused-ignore]
+        vk = ctypes.WinDLL("vulkan-1")  # type: ignore[attr-defined,unused-ignore]
     except OSError as exc:
         return f"no Vulkan loader (vulkan-1.dll) on this PC: {exc}"
+    if not device:
+        return None
+
+    class InstanceInfo(ctypes.Structure):  # VkInstanceCreateInfo, nothing enabled
+        _fields_ = [
+            ("sType", ctypes.c_int), ("pNext", ctypes.c_void_p), ("flags", ctypes.c_uint32),
+            ("pApplicationInfo", ctypes.c_void_p), ("enabledLayerCount", ctypes.c_uint32),
+            ("ppEnabledLayerNames", ctypes.c_void_p), ("enabledExtensionCount", ctypes.c_uint32),
+            ("ppEnabledExtensionNames", ctypes.c_void_p),
+        ]  # fmt: skip
+
+    instance = ctypes.c_void_p()
+    rc = vk.vkCreateInstance(ctypes.byref(InstanceInfo(1)), None, ctypes.byref(instance))
+    if rc != 0:  # -9: VK_ERROR_INCOMPATIBLE_DRIVER, a loader but no driver
+        return f"Vulkan has no driver on this PC (vkCreateInstance returned {rc})"
+    try:
+        count = ctypes.c_uint32()
+        vk.vkEnumeratePhysicalDevices(instance, ctypes.byref(count), None)
+        if not count.value:
+            return "Vulkan lists no device on this PC"
+    finally:
+        vk.vkDestroyInstance(instance, None)
     return None
 
 
@@ -177,19 +200,20 @@ def test_doctor_reports_the_installed_plugins(installed: Installed) -> None:
         "packages.licence_files", "packages.vcruntime", "render.ffms2",
     ):  # fmt: skip
         assert sev.get(fid) == "ok", (fid, sev)
-    if (Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "vulkan-1.dll").exists():
+    if not _no_vulkan():
         # the bundled vulkaninfo answers (a timeout would be "vulkan.devices")
         assert sev.get("vulkan.loader") == "ok" and "vulkan.devices" not in sev, sev
     if MPV:  # mpv runs the bundled VapourSynth (VSSCRIPT_PATH set by ButterEye)
         assert sev.get("mpv.vf_vapoursynth") == "ok", sev
-        if _no_vulkan_loader():
-            # RIFE can't load without vulkan-1.dll and the doctor says why; MVTools must
-            plugins = findings["probe.plugins"]
+        plugins = findings["probe.plugins"]
+        if _no_vulkan(device=False):
+            # RIFE can't load without vulkan-1.dll and the doctor says why
             assert plugins["severity"] == "degraded", plugins
             assert "Vulkan loader" in json.dumps(plugins["title"]), plugins
-            assert any(e.startswith("mv: loaded from") for e in plugins["evidence"]), plugins
-        else:
-            assert sev.get("probe.plugins") == "ok", sev
+        elif not _no_vulkan():
+            assert plugins["severity"] == "ok", plugins
+        # with or without a GPU, MVTools loads inside mpv from the install folder
+        assert any(e.startswith("mv: loaded from") for e in plugins["evidence"]), plugins
         assert res.returncode == 0, (res.returncode, sev)
 
 
@@ -203,7 +227,7 @@ def test_plain_output_survives_a_pipe(installed: Installed) -> None:
 def test_bundled_vspipe_runs_the_speed_test_script(installed: Installed, backend: str) -> None:
     from buttereye.core.bench import measure
 
-    if backend != "mvtools" and (why := _no_vulkan_loader()):
+    if backend != "mvtools" and (why := _no_vulkan()):
         pytest.skip(why)
     f = installed.folder
     ud = {
