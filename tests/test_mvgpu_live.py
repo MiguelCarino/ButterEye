@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.bench import runner
 from buttereye.core.doctor import checks_pkgs as pk
 from buttereye.core.events import Notice
@@ -65,12 +66,15 @@ bench_history = _bench_history_fixture
 no_xid = _no_xid_fixture
 
 MVGPU_4K = 260.0  # in mpv, 4K 2x
+#: the plugin file as this platform names it (plain ``libmvgpu.so`` on Linux), which
+#: is the name both the detection code and a planted fixture must use
+MVGPU_SO = osapi.plugin_file("libmvgpu.so")
 
 
 def _mvgpu_paths(tmp_path: Path, *, rife: bool = True, mvgpu: bool = True) -> Any:
     paths = _paths(tmp_path, rife=rife)
     if mvgpu:
-        (paths.rpm_plugin_dir / "libmvgpu.so").write_bytes(b"")
+        (paths.rpm_plugin_dir / MVGPU_SO).write_bytes(b"")
     return paths
 
 
@@ -110,7 +114,7 @@ def test_installed_backends_finds_the_plugin_file(tmp_path: Path) -> None:
     model_dir = paths.rpm_data_dir / "rife-ncnn-models"
     found = decide.installed_backends(paths.rpm_plugin_dir, model_dir)
     assert found == {BackendId.MVGPU, BackendId.MVTOOLS}
-    (paths.rpm_plugin_dir / "libmvgpu.so").unlink()
+    (paths.rpm_plugin_dir / MVGPU_SO).unlink()
     assert BackendId.MVGPU not in decide.installed_backends(paths.rpm_plugin_dir, model_dir)
 
 
@@ -416,6 +420,8 @@ def test_user_data_and_frames_for_mvgpu() -> None:
 def test_template_has_the_mvgpu_backend() -> None:
     text = g.render_script()
     assert "def _mvgpu(clip, cfg, target):" in text
+    # the Linux name is what the script says; ``_load`` turns it into the platform's
+    # own (.dll, .dylib) at load time, so the template text itself never changes
     assert "_load('mvgpu', 'libmvgpu.so')" in text  # by path from the private directory
     assert "elif backend == 'mvgpu':" in text
 
@@ -441,7 +447,7 @@ def test_template_mvgpu_marks_scene_cuts_and_passes_the_device() -> None:
     ns["_load"] = lambda namespace, filename: seen.setdefault("loaded", (namespace, filename))
     src = vs.core.std.BlankClip(format=vs.YUV422P10, width=64, height=32, length=4)
     ns["_mvgpu"](src, {"sc_threshold": 0.12, "gpu_id": 1}, Fraction(48))
-    assert seen["loaded"] == ("mvgpu", "libmvgpu.so")
+    assert seen["loaded"] == ("mvgpu", "libmvgpu.so")  # as passed; the stub _load renames nothing
     assert (seen["fps_num"], seen["fps_den"], seen["device"]) == (48, 1, 1)
     clip = seen["clip"]
     assert clip.format.subsampling_h == 1 and clip.format.bits_per_sample == 10  # 4:2:0
@@ -497,9 +503,9 @@ def test_doctor_reports_the_plugin(tmp_path: Path) -> None:
     db = pk.RpmDb(True, {})
     f = pk.mvgpu_finding(db, paths)
     assert (f.id, f.severity) == ("packages.mvgpu", Severity.OK)
-    assert f.evidence == (str(paths.rpm_plugin_dir / "libmvgpu.so"),)
+    assert f.evidence == (str(paths.rpm_plugin_dir / MVGPU_SO),)
     assert f in pk.package_findings(db, paths)
-    (paths.rpm_plugin_dir / "libmvgpu.so").unlink()
+    (paths.rpm_plugin_dir / MVGPU_SO).unlink()
     f = pk.mvgpu_finding(db, paths)
     assert f.severity is Severity.INFO and f.code is None
     assert f.commands == ("sudo dnf install buttereye-vs-mvgpu",)

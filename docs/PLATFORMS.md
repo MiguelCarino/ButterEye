@@ -10,26 +10,35 @@ landed on 2026-10-11 and are described below: there is now a Windows installer,
 tested under Wine on the Linux dev box and, in CI, installed and tested on GitHub's
 Windows Server 2025 machines (no GPU there). It has **not yet been used on a real
 Windows desktop PC with a GPU**, so it is not released. No macOS build has been
-made: macOS phase 0 (2026-10-12) makes ButterEye's own test suite and its
-three-platform type check run and pass on an Apple Silicon Mac, which is a gate
-against later breakage, not support.
+made: macOS phases 0 and 1 (both 2026-10-12) make the three-platform type check
+and ButterEye's own macOS tests run and pass on an Apple Silicon Mac, and give the
+platform layer a third value — the core's hot paths (process liveness, the private
+runtime folder, mpv's control channel, locks, plugin file names, durable renames)
+all ask `buttereye.core.osapi` for the platform's answer instead of calling Linux
+directly. They do **not** empty the core of Linux-only calls: the doctor and
+detection modules still read `/proc` and `/usr/lib64` themselves, and "What phase
+1 does not do" below names each one and the phase that owns it. So this is a
+platform layer and a gate against later breakage, not support: the doctor still
+answers a Mac with Fedora advice (phase 2, below), and a dozen `tests/core` tests
+had to be taught that there are three platforms before the gate was green (phase
+1, below).
 
 ## Summary
 
 | Piece | Linux (Fedora 44/45) | Windows | macOS |
 |---|---|---|---|
-| Python core (`buttereye.core`) | supported | platform layer, detection and doctor done (phases 1-2) | needs a smaller platform layer; the peer check and the thread count work (phase 0), paths, process inspection and detection do not |
+| Python core (`buttereye.core`) | supported | platform layer, detection and doctor done (phases 1-2) | the platform layer is done and three-valued (phase 1): peer check, process state, process exit watch, folders, locks, durable saves, plugin names. Detection, the doctor and setup are not (phase 2) |
 | PySide6 GUI | supported | bundled by the installer; opens under Wine, Qt loads on Windows Server 2025 (CI); the window is untried on a real desktop | Qt itself runs; inherits the core's gaps (`fcntl` is available) |
 | mpv control (JSON IPC) | Unix sockets + socketpair | **named pipes**, done; tested under Wine with a real `mpv.exe` | Unix sockets work; `SO_PEERCRED` does not exist, so the uid comes from `LOCAL_PEERCRED` and the pid from `LOCAL_PEERPID` (phase 0, measured against a Homebrew `mpv`) |
-| mpv `vapoursynth` filter | distro mpv has it | depends on the mpv build | Homebrew's `mpv` formula (0.41.0 revision 10, exactly SCOPE's minimum) has it: `vapoursynth`, `vulkan-loader` and `molten-vk` are required dependencies and there is an arm64 bottle, so it is a bottle pour, not an open question. The mpv.io / stolendata app bundle, which a Mac user is likelier to have already, is 0.40.0 **without** the filter (0 hits in `strings`; `--vf=help` lists only `format`, `lavfi`, `lavfi-bridge`, `sub`), and that cask has been disabled in Homebrew since 2026-09-01 for failing Gatekeeper |
-| VapourSynth + `vspipe` | Fedora packages | bundled by the installer (the official wheel, inside its own Python) | available (e.g. Homebrew); untested here |
-| `buttereye-vs-mvtools` | COPR RPM | `mvtools.dll`, cross-built (phase 3) | Homebrew ships `vapoursynth-mvtools` 29 as an arm64 bottle. Upstream's `meson.build` already takes the aarch64 branch and bundles `sse2neon.h`, and on an M2 clang -O3 auto-vectorises the plain-C SAD to NEON at 227.6 M SAD/s for 16×16, 1.3× faster than the same SSE2 kernel through sse2neon |
+| mpv `vapoursynth` filter | distro mpv has it | depends on the mpv build | **measured on the binary, not inferred from the formula**: Homebrew's `mpv` is installed here as 0.41.0 (exactly SCOPE's minimum) and `mpv --vf=help` lists `vapoursynth`. The mpv.io / stolendata app bundle, which a Mac user is likelier to have already, is 0.40.0 **without** the filter (0 hits in `strings`; `--vf=help` lists only `format`, `lavfi`, `lavfi-bridge`, `sub`), and that cask has been disabled in Homebrew since 2026-09-01 for failing Gatekeeper. Having the filter is not enough: Homebrew's mpv cannot find VSScript at all without `VSSCRIPT_PATH` or `DYLD_LIBRARY_PATH` (measured; phase 1's phase-4 blocker, below) |
+| VapourSynth + `vspipe` | Fedora packages | bundled by the installer (the official wheel, inside its own Python) | installed and run here: Homebrew's `vspipe` reports **VapourSynth Core R81**, and autoloads from `/opt/homebrew/lib/python3.14/site-packages/vapoursynth/plugins/`, which holds `mvtools.dylib` and `libffms2.dylib` |
+| `buttereye-vs-mvtools` | COPR RPM | `mvtools.dll`, cross-built (phase 3) | **it really interpolates on arm64**: a 24-frame clip through `mv.Super`/`mv.Analyse`/`mv.FlowFPS` came out of `vspipe` as 48 frames at 3484 fps, with `mvtools.dylib` autoloaded. Homebrew ships `vapoursynth-mvtools` 29 as an arm64 bottle. Upstream's `meson.build` already takes the aarch64 branch and bundles `sse2neon.h`, and on an M2 clang -O3 auto-vectorises the plain-C SAD to NEON at 227.6 M SAD/s for 16×16, 1.3× faster than the same SSE2 kernel through sse2neon |
 | `buttereye-vs-rife-ncnn` | COPR RPM (bundled ncnn) | `librife.dll`, cross-built with a Windows path fix (phase 3) | plausible, **unmeasured**: ncnn upstream already does the portability dance mvgpu lacks and has a full Apple path, and brew's `ncnn` 20260526 is built against `molten-vk`, `glslang` and `spirv-tools` — but nothing has rendered a frame |
-| `buttereye-vs-mvgpu` (Vulkan compute) | COPR RPM | `libmvgpu.dll`, cross-built (phase 3) | works on MoltenVK 1.4.2 (M2) bar three lines: all seven compute shaders compile to SPIR-V, translate to MSL without a warning, create all eight pipelines and dispatch correctly (`search.comp` found the true half-vector in 16/16 blocks at workgroup 512, `unpack.comp` 1024/1024 bit-correct samples), and the limits are not tight (`maxComputeWorkGroupInvocations` 1024 against the 512 needed). The blocker: `vkCreateInstance` (`mvgpu/src/mvgpu.cpp:329-331`, API 1.1, no extensions) returns `VK_ERROR_INCOMPATIBLE_DRIVER`, because MoltenVK's ICD says `"is_portability_driver": true` and the loader hides it until the app enables `VK_KHR_portability_enumeration` and sets `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR` |
-| ffms2 (render's source filter) | Fedora package | `ffms2.dll`, built from source in the same chroot (phase 4) | a Homebrew bottle (`ffms2` 5.0), so the Windows source-offer problem does not arise |
-| TensorRT (experimental) | user-built `vstrt` | not yet (vs-mlrt is Windows-first upstream, so it is possible) | **permanently** not possible: there is no CUDA or TensorRT for macOS, and no Apple Silicon Mac has an NVIDIA GPU |
+| `buttereye-vs-mvgpu` (Vulkan compute) | COPR RPM | `libmvgpu.dll`, cross-built (phase 3) | works on MoltenVK 1.4.2 (M2) bar three lines: all seven compute shaders compile to SPIR-V, translate to MSL without a warning, create all eight pipelines and dispatch correctly (`search.comp` found the true half-vector in 16/16 blocks at workgroup 512, `unpack.comp` 1024/1024 bit-correct samples), and the limits are not tight (`maxComputeWorkGroupInvocations` 1024 against the 512 needed). The blocker: `vkCreateInstance` (`mvgpu/src/mvgpu.cpp:329-331`, API 1.1, no extensions) returns `VK_ERROR_INCOMPATIBLE_DRIVER`, because MoltenVK's ICD says `"is_portability_driver": true` and the loader hides it until the app enables `VK_KHR_portability_enumeration` and sets `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR`. A tool that does enable it sees a real device: `vulkaninfo` here reports `deviceName` "Apple M2", `driverName` MoltenVK (`driverID` `DRIVER_ID_MOLTENVK`, `driverInfo` 1.4.2) at `apiVersion` 1.4.357 — not the mock ICD. Its `deviceType` is `PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU`, which is a phase-2 problem on its own (below) |
+| ffms2 (render's source filter) | Fedora package | `ffms2.dll`, built from source in the same chroot (phase 4) | a Homebrew bottle (`ffms2` 5.0), so the Windows source-offer problem does not arise; installed here as `libffms2.dylib` in VapourSynth's autoload directory, though nothing has decoded with it yet |
+| TensorRT (experimental) | user-built `vstrt` | not yet (vs-mlrt is Windows-first upstream, so it is possible) | **permanently** not possible: there is no CUDA or TensorRT for macOS, and no Apple Silicon Mac has an NVIDIA GPU. The seam says so as of phase 1 (`osapi.HAS_VSTRT` is False), and the generated script refuses the TensorRT branch before it looks for an engine |
 | Packaging / installs | RPM + COPR | per-user installer with its own Python, Qt and VapourSynth (phase 4) | an app bundle would be new work |
-| `doctor` checks | `rpm -q`, `dnf` lines, `journalctl -k`, sysfs | done: install record, `winget` lines, Vulkan devices (phase 2) | must be rewritten for the platform |
+| `doctor` checks | `rpm -q`, `dnf` lines, `journalctl -k`, sysfs | done: install record, `winget` lines, Vulkan devices (phase 2) | must be rewritten for the platform, and phase 1 does not start that: a full `doctor` run on this Mac today answers with `sudo dnf copr enable`, `libvulkan.so.1` and `usermod -aG systemd-journal`, and reports ffms2 and the Vulkan loader missing while both are installed |
 
 Short version: **the architecture ports, and on Windows the core's plumbing now does too** (phase 1, below). The core is
 a GUI-free asyncio library with the OS-specific parts concentrated in a handful
@@ -41,8 +50,11 @@ far: phase 0, below.
 ## What is Linux-specific today
 
 This section describes the 0.0.1 tree. On Windows, phase 1 (below) replaced
-everything under "mpv IPC and process control" and "Paths and locks"; the
-rest still applies.
+everything under "mpv IPC and process control" and "Paths and locks"; on macOS,
+phase 1 replaced the parts of those two that are not plain POSIX — the peer
+check, the `/proc` read, the pidfd and the runtime directory — and left the
+socket, the process group and `flock` as they were. The rest still applies to
+both.
 
 These are the places a port would have to touch. File paths are relative to the
 repository root.
@@ -451,13 +463,20 @@ non-administrator account (the runner's user is an administrator).
 ## macOS: the realistic path
 
 macOS is closer to Linux for the core and further away for the GPU work. It is
-**not a supported platform**, and phase 0 does not make it one: what it makes is
-a gate. `mypy --platform darwin buttereye` is clean, as `linux` and `win32`
-already were, and `tests/core`, `tests/boundary` and `tests/macos` pass on a
-Mac, so a later phase cannot quietly break either supported platform.
-`.github/workflows/macos.yml` runs both of those on GitHub's Apple Silicon
-runners, and installs nothing from Homebrew: no mpv, no VapourSynth, no
-plugins, because none of that is ported yet.
+**not a supported platform**, and phases 0 and 1 do not make it one: what they
+make is a gate and a platform layer. `mypy --platform darwin buttereye` is
+clean, as `linux` and `win32` already were, which is what stops a later phase
+quietly breaking either supported platform. `tests/macos` and `tests/boundary`
+pass. `tests/core` did not when phase 1's platform layer first landed: twelve of
+its tests assert the Linux folder layout, the `XDG_RUNTIME_DIR` refusal or Linux
+plugin file names, and met the macOS answers instead. Phase 1, below, lists them
+and what each one needed. `tools/macos-tests.sh` is what says whether the gate is
+green; this page does not.
+
+`.github/workflows/macos.yml` runs the type check and the test suite on
+GitHub's Apple Silicon runners, and installs nothing from Homebrew: no mpv, no
+VapourSynth, no plugins, because none of that is ported yet. The measurements
+on this page come from a Mac that does have them.
 
 The measurements below come from one machine: macOS 27.0.1 on an Apple M2
 (arm64), Homebrew's python3.14. **arm64 is the only target measured**, and Intel
@@ -468,15 +487,15 @@ to clean, where `/opt/homebrew` does not.
 | Phase | What | State |
 |---|---|---|
 | 0 | The `IS_MACOS` seam, the three live defects, `tests/macos` and CI | **done** (`buttereye/core/osapi/_darwin.py`) |
-| 1 | The platform layer becomes three-valued | not started |
+| 1 | The platform layer becomes three-valued: libproc in place of `/proc`, the per-user temporary directory in place of `$XDG_RUNTIME_DIR`, `~/Library` folders, `.dylib` plugin names, a kqueue in place of a pidfd | **done** (`buttereye/core/osapi/_darwin.py`, `paths._resolve_macos`) |
 | 2 | Doctor, detection and setup speak macOS | not started |
 | 3 | macOS builds of the plugins | not started |
 | 4 | Distribution through a Homebrew tap | not started |
 | 5 | The real-hardware gate | not started |
 
 - **Core.** Unix sockets, `posix_spawn`, process groups and `fcntl` are all
-  there. Still needed: a private runtime directory without `$XDG_RUNTIME_DIR`,
-  and macOS paths (`~/Library/...`).
+  there. The two things that were missing — a private runtime directory without
+  `$XDG_RUNTIME_DIR`, and macOS paths (`~/Library/...`) — are phase 1, below.
 - **Peer credentials** take three constants Python does not export. The uid
   comes from `LOCAL_PEERCRED` (level 0, an `xucred` of 76 bytes read as
   `=IIh`, whose `cr_version` must be 0 before `cr_uid` is worth trusting) and
@@ -488,20 +507,27 @@ to clean, where `/opt/homebrew` does not.
   phase-0 defect: the connect retry in `buttereye/core/mpvctl/launcher.py` now
   waits out that reset as it already waited out a socket nobody serves yet.
 - **Process inspection without `/proc`** is one call site, `osapi.pid_alive`,
-  whose `OSError` fallback silently reports every zombie as alive: a
+  whose `OSError` fallback silently reported every zombie as alive: a
   reaped-but-unwaited mpv answers `os.kill(pid, 0)` while `sysctl` says
   `p_stat` is `SZOMB`. The answer is libproc's `proc_pidinfo` (1.04 µs a call,
-  against 2.25 ms for `ps`), which is phase 1.
-- **pidfd** is not an open question. `os.pidfd_open` does not exist on macOS,
-  the `not hasattr` arm already returns `None`, and the Windows-style poll
-  fallback already works; kqueue's `EVFILT_PROC`/`NOTE_EXIT` is the exact
-  equivalent if the 10 Hz wakeups ever matter.
+  against 2.25 ms for `ps`); phase 1 did that.
+- **pidfd** was never a blocker: `os.pidfd_open` does not exist on macOS, the
+  `not hasattr` arm already returned `None`, and the Windows-style poll fallback
+  already worked. Phase 1 took the exact equivalent anyway — a kqueue holding
+  one `EVFILT_PROC`/`NOTE_EXIT` filter — because it works for a pid ButterEye is
+  not the parent of, which is the shape of an mpv it attached to.
 - **The plugin extension is `.dylib`**, from VapourSynth R81's own
-  `src/core/vscore.cpp:65-69`, which governs both a manifest load and the
-  extension filter of the autoload directory. ButterEye has two copies of the
-  `.so` → `.dll` rule, `osapi.plugin_file` and a second inside the `_load`
-  helper of `buttereye/core/scriptgen/template.vpy`; each carries its own
-  comment saying the plugins are named for Linux, and both need the third value.
+  `VSCore::libraryExtension` (`src/core/vscore.cpp`), which governs both a
+  manifest load and the extension filter of the autoload directory. Only the
+  extension changes: Homebrew's files are `mvtools.dylib` and `libffms2.dylib`,
+  the same stems Linux has. ButterEye keeps **four** copies of that rule, and
+  phase 1 gave all four the third value: `osapi.plugin_file`, and the plugin
+  loader of each generated script — `_load` in
+  `buttereye/core/scriptgen/template.vpy`, `load` in
+  `buttereye/core/bench/bench.vpy` and `_load` in
+  `buttereye/core/doctor/smoke.vpy`. The three copies exist because those
+  scripts run inside VapourSynth's Python, not ButterEye's, where `os.name` is
+  `posix` and would have asked for the Linux name.
 - **GPU.** macOS has **no native Vulkan**. RIFE-ncnn-Vulkan and `mvgpu` can
   only run through **MoltenVK** (Vulkan on Metal). For `mvgpu` that path is now
   measured and the one blocker is the three lines of instance creation named in
@@ -528,9 +554,203 @@ Two numbers nothing else in the repository writes down:
   "cleared at logout": `dirhelper`
   (`/System/Library/LaunchDaemons/com.apple.bsd.dirhelper.plist`) runs daily at
   03:35 and deletes what is older than three days
-  (`CLEAN_FILES_OLDER_THAN_DAYS=3`). `buttereye/core/storage.py` tells the user
-  "cleared at logout" for the runtime directory, which is wrong on Windows too:
-  a known inaccuracy, left alone here.
+  (`CLEAN_FILES_OLDER_THAN_DAYS=3`). Phase 1 puts ButterEye's runtime directory
+  there, so this is now a cost it carries, written up under phase 1 below.
+  `storage.py` used to tell every user "cleared at logout"; it now says "cleared
+  once three days old" on macOS and "nothing clears these for you" on Windows,
+  where the folder is part of the user's profile and the old wording was simply
+  wrong.
+
+### Phase 1: the platform layer becomes three-valued (done)
+
+The seam is three-valued, and the core's hot paths all go through it: process
+liveness, the private runtime folder, mpv's control channel, locks, plugin file
+names and durable renames ask `buttereye.core.osapi` rather than POSIX. Linux-only
+calls do remain in the core, every one of them in the doctor and detection modules
+a later phase owns; "What phase 1 does not do" below names each file and its phase.
+`mypy --platform darwin buttereye` is clean, as `linux` and `win32` are, and
+`tests/macos` covers the four new calls and the folder layout on the machine
+they are written for.
+
+**The platform layer first landed with twelve `tests/core` failures on a Mac**,
+all of one kind: a test in a file phase 1 did not own asserts a Linux answer that
+is now a macOS answer.
+
+- five in `tests/core/test_paths.py`, which check the XDG table and the
+  `XDG_RUNTIME_DIR` refusal against `resolve` — and `resolve` takes the
+  `_resolve_macos` branch here, where there is nothing to refuse;
+- four in `tests/core/test_setup_cancel.py`: three through an `only_logs`
+  helper that expects `state/buttereye/logs` and finds `Library/Logs/ButterEye`
+  (the log went where it should; the helper looks in one place), and one
+  because `mpv_include` is now inside `$HOME`, so the `include=` line comes
+  back abbreviated as `~/Library/...` where the test's own comment reads "XDG
+  config is outside HOME";
+- three in `tests/core/test_doctor_fixtures.py`, whose fixture install plants
+  `librife.so` and `mvtools.so` while the doctor now asks `osapi.plugin_file`
+  and looks for `.dylib`, so it reports them missing and blocks.
+
+None of the twelve is a defect in the platform layer, and none may be made to
+pass by weakening an assertion. The plugin-name ones are fixed by asking the seam:
+a fixture that wants a plugin's file name calls `osapi.plugin_file` for it, which
+on Linux is the identity function and hands back exactly the `.so` the fixture
+hardcoded before, so Linux behaviour does not move and the test keeps testing what
+it tested. The folder-layout ones are genuinely about the Linux XDG table and the
+`XDG_RUNTIME_DIR` refusal, so they need a platform-aware expectation rather than a
+seam call. A red gate is why phase 1 did not land the first time, and
+`tools/macos-tests.sh` — not this page — is what says it is green.
+
+`_darwin.py` holds four functions in 222 lines, against `_win32.py`'s 394, and
+that is the shape of the problem rather than less care: macOS is POSIX. The
+process group already does what a Windows job object is for, signals reach mpv
+so there is no `WM_CLOSE` problem, a uid comparison replaces a token SID, and
+`flock` replaces a named mutex. Most rows below are the Linux code, unchanged.
+
+| | Linux | macOS |
+|---|---|---|
+| mpv control | Unix socket, `SO_PEERCRED` | the same Unix socket. The peer's uid comes from `LOCAL_PEERCRED` (an `xucred`, trusted only when `cr_version` is 0) and its pid from `LOCAL_PEERPID`; Python exports `socket.LOCAL_PEERCRED` but neither `SOL_LOCAL` nor `LOCAL_PEERPID`, so both are spelled out in `_darwin.peer_cred`. It fails closed — a short answer, an unexpected version, or any errno but `ENOTCONN` refuses the peer rather than raising. `ENOTCONN` means there is no connected peer (it has gone, or there never was one) and becomes a `ConnectionResetError` the launcher's connect retry waits out. Phase 0 |
+| process liveness | `os.kill(pid, 0)`, then state `Z`/`X` in `/proc/<pid>/stat` | the same `os.kill` first — it is the only thing that answers for another user's process, where macOS gives `EPERM` and world-readable `/proc` gives a state — then libproc's `proc_pidinfo` with `PROC_PIDTBSDINFO` (`_darwin.pid_alive`), 1.04 µs a call. It fails with `ESRCH` for a zombie, which is exactly what the `/proc` read computes. `ps` was rejected on more than its 2.25 ms: `ps -o comm=` prints whatever `argv[0]` says (`exec -a averylongname /bin/sleep` reports the fake name, while `proc_pidpath` still reports `/bin/sleep`), and SCOPE §4.3's threat is a same-uid process pretending to be mpv |
+| mpv lifetime | `posix_spawnp(setsid)`, a pidfd the loop watches | the same spawn; `os.pidfd_open` does not exist, so `osapi.DetachedChild.open_pidfd` returns a kqueue carrying one `EVFILT_PROC`/`NOTE_EXIT` filter (`_darwin.exit_watch`). It needs no parent relationship — measured against an orphan reparented to `launchd`, which is the shape of an mpv ButterEye attached to rather than started — and it is level-triggered, so the descriptor stays readable without the event being dequeued. macOS therefore does **not** fall back to the 10 Hz poll; the poll is still what answers when the filter cannot be registered |
+| process groups | new session, `SIGTERM` then `SIGKILL` | the same, unchanged. One trap, left alone deliberately: `create_subprocess_exec(process_group=<leader>)` fails with `PermissionError` on macOS when the leader was spawned with `start_new_session=True`, so the `vspipe`/`ffmpeg` pipeline in `render/jobs.py` keeps its explicit `process_group=0` and `process_group=<vspipe pid>` on the POSIX side instead of taking `osapi.group_spawn_kwargs` |
+| folders | XDG | the folders a Mac application uses: settings, data and state under `~/Library/Application Support/ButterEye`, caches under `~/Library/Caches/ButterEye`, and logs under `~/Library/Logs/ButterEye` rather than inside the state folder as on Linux — `~/Library/Logs` is the one place Console.app reads, and a log is the thing a user is asked to hand over. `paths._resolve_macos` does not read the XDG variables for ButterEye's own folders: a Mac user who exports them for other tools did not ask ButterEye to move |
+| the user's mpv config | `~/.config/mpv/mpv.conf` | `~/.config/mpv/mpv.conf`, the one folder that stays XDG. `mpv(1)` for the 0.41.0 build installed here documents `~/.config/mpv` as the standard configuration directory with no macOS exception, overridable by `$XDG_CONFIG_HOME` and `$MPV_HOME`; the only macOS-specific config path it names is `~~osxbundle/`, the read-only resource path inside an app bundle. So ButterEye reads and offers its `include=` line in the same place on both |
+| runtime folder | `$XDG_RUNTIME_DIR/buttereye` | `confstr(_CS_DARWIN_USER_TEMP_DIR)/buttereye` (`_darwin.user_temp_dir`), with `XDG_RUNTIME_DIR` honoured first so a test can point the sockets somewhere. Not `$TMPDIR`: `os.confstr` exposes no Darwin names, and `env -i` loses the variable where the call always answers. Measured here, the directory is 49 bytes long, which is the whole reason for the choice — the session socket under it is 80 bytes against the 103-byte bind limit, where a `$TMPDIR`-rooted pytest `tmp_path` under the same root measures 119 bytes before a socket name is added, which is why `tests/conftest.py` puts the test runtime directory under `/tmp` |
+| private folder check | 0700, own uid, not a symlink | the same function, unchanged: the kernel's directory measures 0700, owner uid 501, not a symlink, on local APFS |
+| locks | `flock` | `flock`, identically, including the part that matters — a holder that is killed releases it. The GUI's single-instance lock is still not taken on macOS, as it is not on Windows: `gui/app.lock_path` resolves `XDG_RUNTIME_DIR` itself and returns `None` without it, and teaching it the two other runtime folders is one decision in two files |
+| plugin files | `mvtools.so` | `mvtools.dylib`: the extension changes and the stem never does (`osapi.plugin_file`, and the three `.vpy` copies of the rule) |
+| durable saves | `fsync` on the directory holding the rename | the same, then `fcntl(F_FULLFSYNC)` on the same descriptor. On macOS `fsync` only hands the data to the drive, which may still hold it in a volatile cache; without the second call a profile saved seconds before a power cut could come back as the old one — never as a damaged one, since the rename stays atomic |
+| storage cleaning | directory file descriptors with `O_NOFOLLOW`; a symlink answers `ELOOP` | the same walk; a symlink answers `ENOTDIR` instead, because `O_DIRECTORY` is consulted first there even for a link that does point at a directory (measured). Narrowing that check to `ELOOP` would have turned a swapped-in symlink from "removed as a link" into an unhandled `OSError` |
+| render priority | renice the group, then `ionice -c2 -n7` | renice works. `ionice` does not exist on macOS, and `render/pipeline.low_priority` builds its prefix from `shutil.which`, so the disk-priority throttle silently drops out — not an error, just absent. `/usr/sbin/taskpolicy -b` and libc's `setiopolicy_np` are the macOS answers; **neither is done**, and this is the one row phase 1 leaves worse than Linux |
+
+**One known cost, not a solved problem.** The runtime folder now lives in the
+per-user temporary directory, and `dirhelper` sweeps that daily at 03:35 for
+anything older than three days (the bullet above). A session left attached to
+one mpv for longer than three days could therefore have its socket unlinked
+underneath it. Nothing in phase 1 prevents that: it is written down here and in
+`paths._resolve_macos` so that whoever meets it recognises it, and the storage
+overview now tells the user "cleared once three days old" instead of Linux's
+"cleared at logout".
+
+**One drift from the plan, worth knowing.** TensorRT's absence is a seam flag,
+`osapi.HAS_VSTRT`, and not `VSTRT_LIB = None`: every caller joins `VSTRT_LIB`
+onto a path, so making it optional would have moved a type error into
+`backends/trt.py` and `doctor/probe.py`. On macOS `VSTRT_LIB` therefore still
+carries the Linux name and nothing is ever found under it; a caller has to ask
+`HAS_VSTRT` before it looks, and phase 2 is where those two files start doing so.
+The generated script refuses the TensorRT branch outright (`_rife_trt` in
+`template.vpy`), ahead of the engine check that would otherwise blame a missing
+engine for something no build can produce.
+
+**Running the gate on a Mac.** `tools/macos-tests.sh` runs the three-platform
+type check and then the test suite with the exclusion list
+`.github/workflows/macos.yml` explains case by case — the same list, kept in
+step by hand, because neither file can call the other. Phase 1 took one
+exclusion off it: `tests/integration/test_live_trt_real.py` used to resolve the
+XDG paths while being imported and so raised BE-2010 during collection, before
+any marker could skip it; with a macOS runtime directory it collects and then
+skips on its `gpu` marker like any other machine without a GPU. What is left is
+seven Alt+letter mnemonic cases that belong to the GUI phase, three tests whose
+*own* helpers read `/proc` for a child's state (not `osapi`'s — two re-implement
+the read inline and the third walks `/proc` for a process tree, in files phase 1
+did not own), and one `tests/gui` race that fails about one run in ten on Linux
+too. Unlike `tools/wine-tests.sh` this script carries no emulation, no second
+Python and no drive-letter translation: the machine is the target.
+
+**What phase 1 does not do.** It does not make macOS supported, and it does not
+make the doctor speak macOS. A full `doctor` run on this Mac today still answers
+with `sudo dnf copr enable`, `libvulkan.so.1` and `usermod -aG systemd-journal`,
+and still reports ffms2 and the Vulkan loader missing while both are installed —
+that is phase 2. Plugin builds are phase 3, distribution phase 4, and the
+real-hardware gate phase 5.
+
+It also does not empty the core of Linux-only calls, and an earlier draft of this
+page claimed it did. These are the ones that are left, each with the phase that
+owns it. They are all in detection and diagnostics, which is the one part of the
+core that asks the operating system questions rather than asking it to do things,
+and so the one part the seam was never going to cover.
+
+| Linux-only call left in the core | Where | Owner |
+|---|---|---|
+| `/proc/sys/kernel/random/boot_id`, to tell this boot's Xid faults from an older boot's | `gpufault.current_boot_id` | phase 2. It returns `None` on `OSError`, so on a Mac the correlation degrades silently rather than failing — the scan still runs, it just cannot discard stale events |
+| `journalctl -k`, the kernel log the Xid scan reads | `gpufault.scan_xid` | phase 2 (macOS has no equivalent to read; the check already reports itself unreadable) |
+| `/usr/lib64/libvulkan.so.1`, `/lib64/libvulkan.so.1` and the Debian multiarch path, plus the ICD folders under `/usr/share` and `/etc` | `checks_vulkan.LOADER_PATHS`, `checks_vulkan.ICD_DIRS` | phase 2 |
+| `/usr/lib64/libffms2.so*`, `/usr/lib/libffms2.so*`, `/usr/lib64/vapoursynth/*ffms2*` | `checks_pkgs.FFMS2_GLOBS` | phase 2 |
+| `/usr/lib64/vapoursynth`, `/usr/lib/vapoursynth` | `probe.AUTOLOAD_DIRS` | phase 2 |
+| `/usr/lib64/libnvinfer.so.11` | `trt.LIBNVINFER` | phase 2. Nothing can ever resolve under it on macOS and `osapi.HAS_VSTRT` already says so; `backends/trt.py` and `doctor/probe.py` are the two files that have to start asking (the drift note above) |
+| `rpm -q` and the `dnf` lines | `checks_pkgs`, `setup`, `licences` | phase 2 |
+| `/proc/<pid>/status` and `/proc/<pid>/stat`, each re-read inline instead of through `osapi.pid_alive` | `_alive` in `tests/test_bench_runner.py`, `_state` in `tests/test_live_review_fixes.py` | whoever owns `tests/`. Two of the three `/proc`-reading tests the gate's exclusion list names, above. A helper that duplicates the read instead of calling the seam has to be taught each platform on its own, which is the cost of not asking |
+| a `/proc` walk for a process tree | `descendants` in `tools/memguard.py` | whoever owns `tools/`. It already skips itself where no capped scope can be made, so it costs the developer workflow, not the application |
+
+**A phase-2 problem phase 1 has already uncovered.** `vulkaninfo` reports the M2
+as `PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU`, which is the truth — the GPU shares
+system memory with the CPU — but `backends/select.py` gates its high-quality
+RIFE model on `dev.device_type == "discrete"` (with a heap threshold). Every
+Apple GPU answers the same way, so an M1 Air and an M3 Ultra would both be
+classified as low-end and always get the lite model. The rule is a Linux
+PCIe-era proxy for "has its own fast memory", and unified memory does not fit
+it; phase 2 has to pick a different test for Apple Silicon rather than widen
+"discrete".
+
+**A phase-4 blocker phase 1 has already uncovered: out of the box, Homebrew's mpv
+cannot load a ButterEye filter at all.** mpv's `vapoursynth` filter loads VSScript
+at run time by `dlopen` of a bare leaf name — `libvsscript.dylib`, then
+`libvapoursynth-script.dylib`; both strings are in `/opt/homebrew/bin/mpv`, next to
+"Failed to load VapourSynth VSScript library", and `otool -L` shows mpv links
+neither. Homebrew puts neither name anywhere the dynamic loader looks. VSScript is
+installed as
+`/opt/homebrew/Cellar/vapoursynth/81/libexec/lib/python3.14/site-packages/vapoursynth/libvsscript.dylib`,
+inside the formula's own libexec virtualenv, and `/opt/homebrew/lib` holds no
+`libvapoursynth*` and no `libvsscript*` at all. Measured on this Mac, with a 1 s
+320x240 clip and a one-line `.vpy` that passes `video_in` straight through:
+
+```
+$ mpv --no-config --vo=null --ao=null --frames=1 --vf=vapoursynth=s.vpy clip.mp4
+[vapoursynth] Failed to load VapourSynth VSScript library: dlopen(
+  libvapoursynth-script.dylib, 0x0006): tried: 'libvapoursynth-script.dylib'
+  (no such file), ... '/usr/lib/libvapoursynth-script.dylib' (no such file, not
+  in dyld cache), 'libvapoursynth-script.dylib' (no such file)
+Exiting... (Errors when loading file)
+```
+
+dyld's own "tried:" list there is the Swift toolchain directories and `/usr/lib`
+and nothing else: a symlink dropped in `/opt/homebrew/lib` would not be found
+either. Two things do work, both measured on the same clip and script, which is
+why this is distribution work and not a wall — each one reaches `VO: [null]
+320x240 yuv444p` with the filter in the chain:
+
+- `VSSCRIPT_PATH` pointed at that `libvsscript.dylib`;
+- `DYLD_LIBRARY_PATH` pointed at the directory holding it, **with no symlink** —
+  which is also the proof that `libvsscript.dylib` is genuinely in mpv's candidate
+  list and not only in its strings, since nothing of the other name exists there.
+
+So **mpv honours `VSSCRIPT_PATH` on every platform, not only Windows**, which is
+where this page describes it above ("Phase 4: the installer", `osapi.use_bundled_runtime`,
+which returns immediately when `not IS_WINDOWS`). macOS is the half-mirror of that
+story: a Homebrew tap can set the variable, or place a file of an expected name
+somewhere dyld searches, and phase 4 is where that decision belongs. Note what is
+*not* broken — `vspipe` and the plugins never go through VSScript's bare-name
+`dlopen`, which is why a real ButterEye `.vpy` already renders here (R81, real
+`libffms2.dylib` and `mvtools.dylib`, 72 frames at 24 fps to 144 at 48 fps, 1432
+fps). Only mpv's in-process filter is affected, so phase 1's live path is the part
+that needs the tap.
+
+**A finding about ButterEye's own code, for its owner to judge: a doctor gate that
+does not gate.** `buttereye play` runs on a machine whose doctor report blocks,
+although `Feature.LIVE` is in `capabilities.DOCTOR_GATED`. Measured during
+phase-1 verification: with a report carrying two blocking findings, `play` returned
+ok with a session id and started a real mpv that played the clip on this hardware
+("Using hardware decoding (videotoolbox-copy)", "VO: [gpu-next] 320x240 nv24").
+`cmd_play` does consult capabilities — `await need(core, Feature.LIVE)` is its
+first line — and the gate still passes, because the `BLOCKED_BY_DOCTOR` branch of
+`capabilities.compute` runs only `if report is not None`, and after its `None`
+initialiser `ButterEye._report` is assigned in exactly one place: the body of
+`ButterEye.doctor()`. A one-shot `buttereye play` process never calls that, so it
+resolves capabilities with no report and nothing in `DOCTOR_GATED` is gated.
+**This is not a macOS finding** — the same is true on Linux and Windows, where it
+has simply never been pointed at. The port only made it visible, by producing a
+machine that blocks for real while the pieces `play` needs happen to work.
+Whether a one-shot command should run the
+doctor first, or whether the gate is meant to be a GUI-session rule only, is the
+owner's call and not this port's to make.
 
 ## What would not change
 

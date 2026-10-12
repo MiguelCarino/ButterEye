@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.api import ButterEye
 from buttereye.core.errors import ButterEyeError, ErrorCode
 from buttereye.core.mpvctl import decide, health, launcher
@@ -350,9 +351,9 @@ def test_backend_resolution(tmp_path: Path) -> None:
     plugins, models = tmp_path / "plugins", tmp_path / "models"
     plugins.mkdir()
     assert decide.installed_backends(plugins, models) == frozenset()
-    (plugins / "mvtools.so").write_bytes(b"")
+    (plugins / osapi.plugin_file("mvtools.so")).write_bytes(b"")
     assert decide.installed_backends(plugins, models) == {BackendId.MVTOOLS}
-    (plugins / "librife.so").write_bytes(b"")
+    (plugins / osapi.plugin_file("librife.so")).write_bytes(b"")
     models.mkdir()
     both = decide.installed_backends(plugins, models)
     assert both == {BackendId.MVTOOLS, BackendId.RIFE_NCNN}

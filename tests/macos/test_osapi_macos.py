@@ -11,10 +11,11 @@ The peer check is tested across a process boundary (a spawned child serves the
 socket), because a check asked about this very process cannot tell a working
 answer from a hardcoded one: both are ``os.getpid()``.
 
-This covers phase 0 only, which is the three places macOS raised
-``AttributeError`` where Linux answered. ``pid_alive`` still reads a reaped but
-unwaited child as alive here (it wants libproc: phase 1) and ``VSTRT_LIB`` still
-carries the Linux name (phase 2), so neither is tested for what it will do later.
+Phase 0's share is the three places macOS raised ``AttributeError`` where Linux
+answered. Phase 1's is the rest of the seam: ``pid_alive`` through libproc rather
+than ``/proc``, the ``.dylib`` extension, and TensorRT refused by the generated
+script, which is where macOS's "never" is actually acted on. The paths half of
+phase 1 is in ``test_paths_macos.py``.
 """
 
 from __future__ import annotations
@@ -23,12 +24,13 @@ import asyncio
 import contextlib
 import json
 import os
-import shutil
+import select
+import signal
 import socket
 import subprocess
 import sys
-import tempfile
-from collections.abc import AsyncIterator, Iterator
+import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -41,26 +43,8 @@ if sys.platform == "darwin":
     from buttereye.core.hw import detect
     from buttereye.core.mpvctl import ipc, launcher
     from buttereye.core.osapi import _darwin as d
-
-
-@pytest.fixture
-def short_dir() -> Iterator[Path]:
-    """A directory a Unix socket can be bound in.
-
-    ``sun_path`` is 104 bytes on macOS, so 103 is the longest path ``bind``
-    accepts. ``tmp_path`` is 119 bytes before a file name is added here, under
-    ``/var/folders/<hash>/T/pytest-of-<user>/...``, and binding in it fails with
-    ``OSError: AF_UNIX path too long`` - which reads like a bug in the test
-    rather than a limit of the platform. ``/tmp`` keeps the whole path near 20.
-
-    ``mkdtemp`` makes it 0700 and owned by us, which is what a runtime directory
-    holding an mpv socket has to be for ``ipc.check_socket_path`` to pass.
-    """
-    path = Path(tempfile.mkdtemp(dir="/tmp", prefix="be-t-"))
-    try:
-        yield path
-    finally:
-        shutil.rmtree(path, ignore_errors=True)
+    from buttereye.core.scriptgen import generator
+    from buttereye.core.testing import scenarios as sc
 
 
 @contextlib.asynccontextmanager
@@ -308,9 +292,230 @@ def test_cpu_threads_counts_this_machines_threads() -> None:
     assert detect.cpu_threads() == os.process_cpu_count()
 
 
-# ---------------------------------------------------------------- not yet ported
-def test_vstrt_lib_is_still_the_linux_name() -> None:
-    """TensorRT needs CUDA, so it cannot exist on macOS and nothing will ever be
-    found under this name. Phase 0 leaves the constant alone: making it None and
-    short-circuiting the trt probe and its doctor check is phase 2's job."""
+# ---------------------------------------------------------------- process state
+def _ps_state(pid: int) -> str:
+    """What ``ps`` says ``pid``'s state is (``Z`` for a zombie), "" when it is gone.
+
+    An oracle outside the code under test, and the only one available: the two
+    ways ButterEye could ask - ``os.kill(pid, 0)`` and ``os.waitpid`` - would
+    respectively lie about a zombie and destroy the thing being measured.
+    """
+    out = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False
+    )
+    return out.stdout.strip()
+
+
+def test_an_exited_but_unwaited_child_is_not_alive() -> None:
+    """The defect phase 1 fixes, and the reason it reads a process without /proc.
+
+    ``pid_alive`` is what tells ops.py and launcher.py that the mpv or vspipe
+    they started has finished. The POSIX body's own ``os.kill(pid, 0)`` cannot
+    answer it: a zombie - a child that has exited and not been waited for -
+    still accepts signal 0, which is asserted below so the test says what it is
+    measuring. Linux reads ``/proc/<pid>/stat`` for the Z, and on macOS that
+    open raised FileNotFoundError into an ``except OSError: return True``, so
+    every zombie read as alive and an operation that had ended looked live.
+
+    The child is spawned rather than forked: pytest runs with the memory
+    watchdog's thread alive, and forking a multi-threaded process is deprecated
+    in 3.14. Nothing reaps it in the meantime - ``Popen`` waits only when asked,
+    and 3.14 has no asyncio child watcher that could take an arbitrary child -
+    so the zombie stands until the ``wait()`` below.
+    """
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    try:
+        for _ in range(500):  # dying takes a moment; wait for the state, not a clock
+            if _ps_state(child.pid).startswith("Z"):
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail(f"the child never became a zombie (ps says {_ps_state(child.pid)!r})")
+        os.kill(child.pid, 0)  # no ProcessLookupError: this is what misleads the POSIX body
+        assert osapi.pid_alive(child.pid) is False
+        assert d.pid_alive(child.pid) is False
+    finally:
+        child.wait()
+    # and once it has been waited for the pid is simply gone, which libproc
+    # reports with the same ESRCH as the zombie did
+    assert osapi.pid_alive(child.pid) is False
+
+
+def test_a_running_process_is_alive() -> None:
+    """The other half: libproc must not answer False for a live process either.
+    This one is certainly running, since it is asking."""
+    assert osapi.pid_alive(os.getpid()) is True
+    assert d.pid_alive(os.getpid()) is True
+
+
+def test_a_process_of_another_user_is_still_alive() -> None:
+    """``proc_pidinfo`` returns EPERM for a process we do not own, where Linux's
+    ``/proc`` is world-readable. pid 1 (launchd) is root's, and refusing to
+    answer must not become "it has exited": that would make ButterEye think
+    someone else's mpv had finished and stop driving a session that is running.
+
+    Both doors are asked because they reach different code. ``osapi.pid_alive``
+    answers True from its own ``os.kill(pid, 0)`` PermissionError arm and never
+    gets as far as libproc, so on its own it says nothing about what libproc
+    does with EPERM. ``d.pid_alive`` is the libproc call with nothing in front
+    of it: measured, ``proc_pidinfo(1, PROC_PIDTBSDINFO, ...)`` returns 0 and
+    leaves errno EPERM, which falls to the "any errno but ESRCH is alive" line.
+    Reading that refusal as "gone" is the mutation this catches."""
+    assert osapi.pid_alive(1) is True
+    assert d.pid_alive(1) is True
+
+
+# ---------------------------------------------------------------- libraries
+def test_plugin_file_asks_for_a_dylib() -> None:
+    """The plugins are named for Linux in the code; macOS wants the same stems
+    with ``.dylib``, which is what Homebrew installs (``mvtools.dylib``,
+    ``libffms2.dylib``) and what VapourSynth R81 hardcodes per OS in
+    ``src/core/vscore.cpp``. Only the extension moves: no prefix changes."""
+    assert osapi.plugin_file("mvtools.so") == "mvtools.dylib"
+    assert osapi.plugin_file("librife.so") == "librife.dylib"
+    assert osapi.plugin_file("libmvgpu.so") == "libmvgpu.dylib"
+    assert osapi.plugin_file("libffms2.so") == "libffms2.dylib"
+
+
+def test_plugin_file_leaves_anything_else_exactly_as_it_is() -> None:
+    """The rule is a suffix swap and nothing more. A versioned soname does not
+    end in ``.so`` and is not a plugin file name, and neither is the Python
+    module beside the plugins; both have to come back untouched."""
+    assert osapi.plugin_file("mvtools.dylib") == "mvtools.dylib"
+    assert osapi.plugin_file("vsmlrt.py") == "vsmlrt.py"
+    assert osapi.plugin_file("libsomething.so.1") == "libsomething.so.1"
+
+
+def test_the_vstrt_plugin_name_is_not_swapped_to_a_dylib() -> None:
+    """``VSTRT_LIB`` is the one plugin name that does not go through
+    ``plugin_file``, and that is deliberate: ``trt._vstrt_dirs`` and
+    ``probe.user_vstrt`` glob for it, and a ``.dylib`` there would be a name no
+    build has ever produced for macOS, which reads as "look again" rather than
+    "this cannot exist". So the constant keeps the Linux name while
+    ``plugin_file`` would have said ``libvstrt.dylib``."""
     assert osapi.VSTRT_LIB == "libvstrt.so"
+    assert osapi.plugin_file(osapi.VSTRT_LIB) == "libvstrt.dylib"  # not what callers use
+
+
+@pytest.mark.integration  # needs vspipe, which evaluates the script
+def test_the_generated_script_refuses_tensorrt_outright(tmp_path: Path) -> None:
+    """TensorRT needs CUDA, no Apple Silicon Mac has an NVIDIA GPU, and that is
+    permanent rather than pending. ``template.vpy``'s ``_rife_trt`` is the one
+    place in the tree that acts on it, so it is the one place worth testing.
+
+    Real ``vspipe`` evaluating a real generated script, asked for the
+    ``rife-trt`` backend over a blank source, so nothing but VapourSynth itself
+    has to be installed. The refusal has to come from the macOS arm and not from
+    the engine check three lines below it: an unbuilt engine says "not built
+    yet", which sends the user off to build one, and no build on this machine
+    can ever produce it. Deleting that arm is the mutation this catches - the
+    message then becomes the engine one.
+
+    The seam's own ``HAS_VSTRT`` is not asserted here, because a test of its
+    value would be a test of a line of source. What reads it is
+    ``trt._vstrt_dirs``, the one place that looks for vstrt at all -- doctor's
+    probe asks through it too -- and
+    ``test_a_planted_vstrt_is_not_found_on_macos`` covers that."""
+    script = tmp_path / "gen.vpy"
+    generator.write_script(script)
+    user_data = {
+        "v": 1,
+        "gen": 1,
+        "target_fps": [60, 1],
+        "source": {"kind": "blank", "width": 640, "height": 360, "fps": [24, 1], "length": 48},
+        "backend": "rife-trt",
+        # an engine folder with no ready.json in it, which is what the check
+        # below the macOS arm complains about: without that arm this run would
+        # reach it and blame the missing engine
+        "trt": {"engine_dir": os.fspath(tmp_path / "engines" / "v4_26-640x360-fp16-h-0")},
+    }
+    res = subprocess.run(
+        ["vspipe", "-a", "user_data=" + json.dumps(user_data), "--info", os.fspath(script), "-"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert res.returncode != 0, res.stdout
+    assert "TensorRT is not available on macOS" in res.stderr
+    assert "not built yet" not in res.stderr, "it got as far as the engine check"
+
+
+# ---------------------------------------------------------------- watching an exit
+def test_the_exit_watch_sees_a_process_that_is_not_our_child() -> None:
+    """macOS has no ``pidfd_open``; a kqueue ``EVFILT_PROC``/``NOTE_EXIT`` filter
+    is the same watchable descriptor, and this is the case that decides whether it
+    can replace the 10 Hz poll at all.
+
+    ButterEye watches mpv processes it did not start - ``buttereye attach``, and
+    any mpv that outlived the GUI that launched it - so a watch that only worked
+    for a child would be no use. The process here is a grandchild whose parent
+    exited immediately, so it has been reparented to launchd: ours by uid, not by
+    descent. It is killed rather than left to finish, which also leaves no zombie
+    behind, since launchd reaps what it has adopted.
+    """
+    orphan = (
+        "import os, subprocess, sys\n"
+        # the null device, not the inherited pipe: a grandchild holding the write
+        # end open would keep the run() below waiting for the whole sleep
+        "child = subprocess.Popen(['sleep', '30'], stdin=subprocess.DEVNULL,\n"
+        "                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "sys.stdout.write(f'{child.pid}\\n')\n"
+        "sys.stdout.flush()\n"
+        "os._exit(0)\n"  # exit without waiting: the sleep is handed to launchd
+    )
+    first = subprocess.run(
+        [sys.executable, "-c", orphan], capture_output=True, text=True, check=True, timeout=60
+    )
+    pid = int(first.stdout)
+    assert _ps_state(pid), "the orphan was gone before the watch could be made"
+    ppid = subprocess.run(
+        ["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    assert ppid == "1", f"it is still ours by descent (ppid {ppid}), so this proves nothing"
+    fd = osapi.DetachedChild(pid).open_pidfd()
+    assert fd is not None, "no kqueue for an orphan: the poll fallback would be the answer"
+    try:
+        assert select.select([fd], [], [], 0)[0] == [], "readable while the process is running"
+        os.kill(pid, signal.SIGKILL)
+        assert select.select([fd], [], [], 10.0)[0] == [fd], "the exit never woke the watch"
+        # level-triggered, because MpvProcess never dequeues the event: the
+        # descriptor has to stay readable or the loop would hang on the next wait
+        assert select.select([fd], [], [], 0)[0] == [fd]
+    finally:
+        os.close(fd)
+
+
+def test_there_is_no_exit_watch_for_a_process_that_has_already_gone() -> None:
+    """ESRCH when the filter cannot be registered, and None rather than a
+    descriptor that would never fire. The caller then polls, and its first poll
+    already sees the exit, so nothing waits forever."""
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    assert d.exit_watch(child.pid) is None
+
+
+def test_a_planted_vstrt_is_not_found_on_macos(tmp_path: Path) -> None:
+    """``trt._vstrt_dirs`` refuses on macOS even with a plugin sitting there.
+
+    It is the one place anything looks for vstrt -- ``doctor.probe.user_vstrt``
+    asks through it -- so this is where ``osapi.HAS_VSTRT`` earns its keep.
+
+    Both names are planted on purpose. ``VSTRT_LIB`` keeps the Linux spelling on
+    macOS (it is the only plugin name that does not go through ``plugin_file``),
+    so that is what the glob would match and what makes the guard load-bearing:
+    without it this directory is found and a CUDA-only backend gets offered on a
+    machine that can never run it. The ``.dylib`` is what a real macOS build
+    would be called, and must not be found either. Planting only the ``.dylib``
+    would pass whether the guard is there or not -- the glob would simply miss
+    it -- which is a test of the accident rather than of the fix.
+    """
+    from buttereye.core.backends import trt
+
+    paths = sc.fake_paths(root=tmp_path)
+    built = paths.data_dir / trt.VSTRT_SUBDIR / "v15.0"
+    built.mkdir(parents=True)
+    for name in (osapi.VSTRT_LIB, osapi.plugin_file(osapi.VSTRT_LIB)):
+        (built / name).write_bytes(b"\xcf\xfa\xed\xfe")  # Mach-O magic, so it looks real
+    assert sorted(p.name for p in built.iterdir()) == ["libvstrt.dylib", "libvstrt.so"]
+    assert trt._vstrt_dirs(paths) == []

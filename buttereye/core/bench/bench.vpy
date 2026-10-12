@@ -19,6 +19,7 @@
 #   width/height/frames   size and length of the generated vspipe source
 import json
 import os
+import sys
 
 import vapoursynth as vs
 
@@ -33,6 +34,8 @@ cfg = json.loads(_raw)
 def load(namespace, filename):
     if os.name == 'nt' and filename.endswith('.so'):  # Windows builds are .dll
         filename = filename[:-3] + '.dll'
+    elif sys.platform == 'darwin' and filename.endswith('.so'):  # macOS builds are .dylib
+        filename = filename[:-3] + '.dylib'
     if not hasattr(core, namespace):
         core.std.LoadPlugin(os.path.join(cfg['plugin_dir'], filename))
 

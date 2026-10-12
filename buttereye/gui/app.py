@@ -130,6 +130,17 @@ def settings_file(env: Mapping[str, str]) -> Path:
 
 
 def lock_path(env: Mapping[str, str]) -> Path | None:
+    """Where the single-instance lock lives, or None to run without one (R14).
+
+    ``None`` is every platform but Linux today: neither Windows nor macOS sets
+    ``XDG_RUNTIME_DIR``, and the GUI resolves its own paths from the environment
+    rather than calling ``core.paths.resolve`` (it needs the lock before the core
+    is open, and ``resolve`` raises BE-2010 rather than answering). Giving the
+    other two a lock means teaching this function the runtime directory
+    ``core.paths`` picks for them -- the user's profile on Windows, the per-user
+    temporary directory on macOS -- and that is one decision in two files, not a
+    second copy of the rule here.
+    """
     runtime = env.get("XDG_RUNTIME_DIR", "")
     if not runtime or not os.path.isabs(runtime):
         return None
@@ -161,7 +172,16 @@ def _check_private_dir(path: Path) -> None:
 
 class InstanceLock:
     """An exclusive lock (``osapi.try_lock``) held for the life of the window.
-    Never chmods anything."""
+    Never chmods anything.
+
+    ``flock`` behaves the same on macOS as on Linux, including the part that
+    matters: a holder that is killed releases it. It is not available on every
+    file system, though -- an SMB or AFP mount can refuse it with an ``OSError``
+    rather than a ``BlockingIOError`` -- which is why ``main`` treats a plain
+    ``OSError`` as "run unlocked". The lock itself is never on such a mount,
+    since it lives in the runtime directory, which is local on all three
+    platforms.
+    """
 
     def __init__(self, path: Path) -> None:
         self.path = path

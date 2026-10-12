@@ -10,12 +10,20 @@ On Windows (docs/PLATFORMS.md) the same folders live under the user's profile:
 settings in ``%APPDATA%\\ButterEye``, everything else in
 ``%LOCALAPPDATA%\\ButterEye`` (``data``, ``cache``, ``state``, and ``run`` for the
 runtime folder, which Windows has no XDG equivalent of).
+
+On macOS the folders are the ones a Mac application uses: settings, data and
+state in a folder each (``config``, ``data``, ``state``) under
+``~/Library/Application Support/ButterEye``, caches under
+``~/Library/Caches/ButterEye``, logs under ``~/Library/Logs/ButterEye`` (where
+Console.app looks), and the runtime folder under the per-user temporary
+directory the system makes at login, because macOS sets no ``XDG_RUNTIME_DIR``.
 """
 
 from __future__ import annotations
 
 import os
 import stat
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -24,9 +32,14 @@ from buttereye.core.doctor.text import M
 from buttereye.core.errors import ButterEyeError, ErrorCode
 from buttereye.core.types import Paths
 
+if sys.platform == "darwin":
+    from buttereye.core.osapi import _darwin
+
 APP = "buttereye"
 #: the folder name under %APPDATA% / %LOCALAPPDATA% (Windows convention: the product name)
 WINDOWS_APP = "ButterEye"
+#: the folder name under ~/Library (macOS convention: the product name, as on Windows)
+MACOS_APP = "ButterEye"
 
 
 def _xdg(env: Mapping[str, str], var: str, home: Path, default: str) -> Path:
@@ -90,11 +103,15 @@ def resolve(env: Mapping[str, str] | None = None) -> Paths:
 
     Raises ``ButterEyeError(RUNTIME_DIR_UNSAFE)`` when ``XDG_RUNTIME_DIR`` is unset,
     relative or unsafe, or when an existing ``$XDG_RUNTIME_DIR/buttereye`` is not a
-    0700 directory owned by this user.
+    0700 directory owned by this user. macOS has no ``XDG_RUNTIME_DIR`` to be
+    unset: without it ``_resolve_macos`` uses the system's per-user temporary
+    directory, which is private already.
     """
     e: Mapping[str, str] = os.environ if env is None else env
     if osapi.IS_WINDOWS:
         return _resolve_windows(e)
+    if osapi.IS_MACOS:
+        return _resolve_macos(e)
     home_s = e.get("HOME", "")
     home = Path(home_s) if home_s and os.path.isabs(home_s) else Path(os.path.expanduser("~"))
     config = _xdg(e, "XDG_CONFIG_HOME", home, ".config")
@@ -164,6 +181,97 @@ def _resolve_windows(e: Mapping[str, str]) -> Paths:
     )
 
 
+def _macos_runtime_base(e: Mapping[str, str]) -> Path:
+    """The folder the macOS runtime folder goes in: ``XDG_RUNTIME_DIR`` when
+    something has set it, else this user's temporary directory.
+
+    macOS never sets the variable itself, so the second answer is the normal one;
+    the first is kept because a test and the macOS CI job have to be able to put
+    the sockets somewhere of their own choosing. What the system supplies is
+    ``confstr(_CS_DARWIN_USER_TEMP_DIR)``, a 0700 directory under ``/var/folders``
+    owned by this uid: ``check_private_dir`` applies to it unchanged. It is also
+    49 bytes long, which is the reason to prefer it -- macOS binds at most 103
+    bytes of ``sun_path`` where Linux takes 107, a session socket under it
+    measures 80, and a ``$TMPDIR``-rooted pytest directory is already 136.
+
+    Its one cost, which is not hidden: ``dirhelper`` runs daily and deletes files
+    there that are more than three days old, so a session left attached for longer
+    could in principle lose its socket.
+
+    Raises ``ButterEyeError(RUNTIME_DIR_UNSAFE)`` when ``confstr`` answers with
+    nothing or with something that is not an absolute path, which is the place
+    Linux raises it for an unset ``XDG_RUNTIME_DIR``: BE-2010 stays the only way
+    this can fail, rather than an ``OSError`` no caller above here handles.
+    """
+    run_s = e.get("XDG_RUNTIME_DIR", "")
+    if run_s and os.path.isabs(run_s):
+        return Path(run_s)
+    if sys.platform == "darwin":
+        try:
+            return _darwin.user_temp_dir()
+        except OSError as exc:
+            raise ButterEyeError(
+                ErrorCode.RUNTIME_DIR_UNSAFE,
+                M(
+                    "macOS did not name a private folder for ButterEye's sockets: {why}.",
+                    {"why": exc.strerror or str(exc)},
+                ),  # fmt: skip
+                M("Log out and back in, so the system creates it again."),
+            ) from None
+    raise AssertionError("the macOS runtime folder was asked for on another platform")
+
+
+def _resolve_macos(e: Mapping[str, str]) -> Paths:
+    """macOS: one folder per role under ``~/Library``, as on Windows, and a runtime
+    folder the system supplies instead of ``$XDG_RUNTIME_DIR``
+    (``_macos_runtime_base``). The XDG variables are not read for ButterEye's own
+    folders here: a Mac user who has them exported for other tools did not ask
+    ButterEye to move out of ``~/Library``.
+    """
+    home_s = e.get("HOME", "")
+    home = Path(home_s) if home_s and os.path.isabs(home_s) else Path(os.path.expanduser("~"))
+    library = home / "Library"
+    base = library / "Application Support" / MACOS_APP
+    # mpv on macOS reads ~/.config/mpv like everywhere else, and honours MPV_HOME
+    # and XDG_CONFIG_HOME there too (mpv(1), "FILES ON MACOS": only the cache and
+    # watch_later move to ~/Library). So this one folder stays XDG, not Library.
+    mpv_home = e.get("MPV_HOME", "")
+    mpv_dir = (
+        Path(mpv_home)
+        if mpv_home and os.path.isabs(mpv_home)
+        else _xdg(e, "XDG_CONFIG_HOME", home, ".config") / "mpv"
+    )
+
+    run = _macos_runtime_base(e)
+    check_private_dir(run, must_exist=True)
+    runtime_dir = run / APP
+    check_private_dir(runtime_dir, must_exist=False)
+
+    state_dir = base / "state"
+    # config in a folder of its own, not at the root of base: storage.locations()
+    # builds its CONFIG row from config_file.parent, and base is the parent of the
+    # data, state and jobs rows too, so a config.toml sitting directly in base
+    # would make that row report every byte of them -- a user with 10 GiB of
+    # models would read "Settings, profiles and rules: 10 GiB" and a doubled
+    # total. Linux and Windows keep config under a separate root entirely, so the
+    # extra level is also what makes the three layouts the same shape.
+    config_dir = base / "config"
+    return Paths(
+        config_file=config_dir / "config.toml",
+        mpv_include=config_dir / "mpv" / "buttereye.conf",
+        user_mpv_conf=mpv_dir / "mpv.conf",
+        data_dir=base / "data",
+        cache_dir=library / "Caches" / MACOS_APP,
+        state_dir=state_dir,
+        # not state_dir/logs as on Linux: ~/Library/Logs is the one place
+        # Console.app reads, and a log is the thing a user is asked to hand over
+        logs_dir=library / "Logs" / MACOS_APP,
+        jobs_dir=state_dir / "jobs",
+        bench_file=state_dir / "bench.json",
+        runtime_dir=runtime_dir,
+    )
+
+
 def install_dir() -> Path:
     """Windows: the folder ButterEye is installed in (its plugins and models sit
     next to it, where Linux has /usr/lib64 and /usr/share). ``BUTTEREYE_HOME``
@@ -194,6 +302,7 @@ def ensure_logs_dir(paths: Paths) -> Path:
 
 __all__ = [
     "APP",
+    "MACOS_APP",
     "WINDOWS_APP",
     "install_dir",
     "resolve",

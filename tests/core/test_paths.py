@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.errors import ButterEyeError, ErrorCode
 from buttereye.core.paths import ensure_runtime_dir, resolve
 
@@ -34,7 +35,26 @@ def _env(tmp_path: Path, **over: str) -> dict[str, str]:
     return env
 
 
-def test_xdg_table(tmp_path: Path) -> None:
+@pytest.fixture
+def xdg_layout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ask ``resolve()`` for the XDG table whatever platform the tests run on.
+
+    ``resolve()`` picks its branch from ``osapi.IS_MACOS`` when it is called, so
+    clearing that is enough to get the Linux one, and all that branch then does is
+    plain POSIX (read the environment, ``lstat``, st_uid, mode bits): a Mac
+    answers with the same table from the same environment. So the tests below go
+    on checking the XDG contract (SCOPE §4.6) on macOS instead of being skipped
+    there - resolve() on a Mac otherwise answers with the ~/Library paths that
+    tests/macos/test_paths_macos.py asserts, and these assertions would have
+    nothing left to say.
+
+    Nothing changes on Linux, where the flag is already False, or on Windows,
+    where ``IS_WINDOWS`` is read first and is deliberately left alone.
+    """
+    monkeypatch.setattr(osapi, "IS_MACOS", False)
+
+
+def test_xdg_table(tmp_path: Path, xdg_layout: None) -> None:
     p = resolve(_env(tmp_path))
     assert p.config_file == tmp_path / "cfg/buttereye/config.toml"
     assert p.mpv_include == tmp_path / "cfg/buttereye/mpv/buttereye.conf"
@@ -52,7 +72,7 @@ def test_xdg_table(tmp_path: Path) -> None:
     assert not (tmp_path / "cfg").exists()
 
 
-def test_defaults_and_relative_values_ignored(tmp_path: Path) -> None:
+def test_defaults_and_relative_values_ignored(tmp_path: Path, xdg_layout: None) -> None:
     env = _env(tmp_path)
     for k in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
         del env[k]
@@ -71,7 +91,7 @@ def test_mpv_home(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("value", ["", "relative/run"])
-def test_runtime_unset_or_relative(tmp_path: Path, value: str) -> None:
+def test_runtime_unset_or_relative(tmp_path: Path, value: str, xdg_layout: None) -> None:
     env = _env(tmp_path, XDG_RUNTIME_DIR=value)
     with pytest.raises(ButterEyeError) as ei:
         resolve(env)
@@ -130,7 +150,9 @@ def test_resolve_from_environment(xdg_env: object) -> None:
     assert str(p.runtime_dir).startswith(os.environ["XDG_RUNTIME_DIR"])
 
 
-def test_xdg_dotdot_values_ignored_and_values_normalised(tmp_path: Path) -> None:
+def test_xdg_dotdot_values_ignored_and_values_normalised(
+    tmp_path: Path, xdg_layout: None
+) -> None:
     env = _env(tmp_path)
     env["XDG_CACHE_HOME"] = str(tmp_path / "home/.cache/../../../usr/share")
     env["XDG_DATA_HOME"] = str(tmp_path) + "//data/./x/"

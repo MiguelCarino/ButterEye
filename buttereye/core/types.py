@@ -4,10 +4,16 @@
 
 Every type is a frozen, slotted dataclass or an enum. Editors derive new values
 with ``dataclasses.replace``. No Qt type may appear here.
+
+The one thing here that is not a type is where ``Paths``'s two packaged locations
+default to (``homebrew_prefix``, ``macos_plugin_dir``). ``scriptgen`` has to give
+the generated scripts the same answer, and this is the only module both it and
+the field default can see: ``paths`` imports this one, not the other way round.
 """
 
 from __future__ import annotations
 
+import os
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -17,6 +23,8 @@ from fractions import Fraction
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, NewType
+
+from buttereye.core import osapi
 
 OpId = NewType("OpId", str)
 SessionId = NewType("SessionId", str)
@@ -38,6 +46,109 @@ class Msg:  # translatable core text; key = English gettext msgid
     params: Mapping[str, str | int | float] = field(default_factory=_empty)
 
 
+# ---------- the packaged plugins and models (§7.1) ----------
+#: Fedora: the RPMs patch VapourSynth's plugindir to this private directory, so
+#: ButterEye's plugins are never autoloaded and a generated script names the copy
+#: it loads. Windows overrides both fields from the install folder
+#: (``paths._resolve_windows``); macOS answers below.
+_FEDORA_PLUGIN_DIR = Path("/usr/lib64/buttereye/vapoursynth")
+_FEDORA_DATA_DIR = Path("/usr/share/buttereye")
+
+#: Homebrew's prefix, Apple Silicon first. ``/usr/local`` exists on Macs that have
+#: no Homebrew at all, which is why a prefix has to be recognised by the ``brew``
+#: inside it rather than by being there.
+_BREW_PREFIXES = (Path("/opt/homebrew"), Path("/usr/local"))
+#: Homebrew VapourSynth's autoload directory, relative to the prefix
+#: (``_brew_autoload_dir`` says why the Python version is a wildcard)
+_BREW_AUTOLOAD_GLOB = "lib/python3.*/site-packages/vapoursynth/plugins"
+
+
+def homebrew_prefix() -> Path:
+    """Homebrew's prefix on this Mac.
+
+    ``HOMEBREW_PREFIX`` first: a brew shell exports it, and it is the only way a
+    prefix nobody could guess can be known. It cannot be the whole answer, because
+    an app launched from Finder inherits neither that variable nor a PATH that
+    would find ``brew`` (measured: ``launchctl getenv PATH`` answers nothing), so
+    the two canonical prefixes are then tried on disk.
+
+    With no Homebrew anywhere the answer is ``/opt/homebrew``: the Apple Silicon
+    prefix, and the only one measured (docs/PLATFORMS.md). Nothing is found under
+    it, which is the truth about such a machine, where a Linux path would be a
+    wrong answer wearing the shape of a right one.
+    """
+    value = os.environ.get("HOMEBREW_PREFIX", "")
+    if value and os.path.isabs(value):
+        return Path(value)
+    for prefix in _BREW_PREFIXES:
+        if (prefix / "bin" / "brew").exists():
+            return prefix
+    return _BREW_PREFIXES[0]
+
+
+def _python_minor(plugins_dir: Path) -> int:
+    """The minor version in ``…/python3.<minor>/site-packages/vapoursynth/plugins``."""
+    minor = plugins_dir.parts[-4].removeprefix("python3.")
+    return int(minor) if minor.isdigit() else -1
+
+
+def _brew_autoload_dir(prefix: Path) -> Path | None:
+    """Homebrew VapourSynth's autoload directory under ``prefix``, or None.
+
+    The ``vapoursynth`` formula installs into a virtualenv of its own under
+    ``libexec`` and then symlinks ``<prefix>/lib/python3.<minor>/site-packages/
+    vapoursynth/plugins`` into it, under the comment "Automatically load plugins
+    installed in separate formulae". That linked directory is what the core scans,
+    and it is where each plugin formula (``vapoursynth-mvtools``, ``ffms2``) drops
+    its ``.dylib``. The Python minor version is whichever ``python@3.x`` the
+    formula depends on today, so it is globbed rather than written down; a
+    directory left behind by an earlier one is possible, so the newest wins.
+    """
+    try:
+        found = [d for d in prefix.glob(_BREW_AUTOLOAD_GLOB) if d.is_dir()]
+    except OSError:
+        return None
+    return max(found, key=_python_minor, default=None)
+
+
+def macos_plugin_dir() -> Path:
+    """The directory ButterEye loads its VapourSynth plugins from on macOS.
+
+    ButterEye's own ``<brew prefix>/lib/buttereye/vapoursynth`` when it is there,
+    the analogue of Fedora's ``%{_libdir}/buttereye/vapoursynth`` and of the
+    Windows installer's ``<install>\\vapoursynth``: ButterEye keeps a private,
+    non-autoloaded directory on every platform, so a script names the copy it
+    loads instead of inheriting whatever the system autoloads (§7.1, and the
+    reason the RPM patches plugindir). The Homebrew tap of phase 4 fills it.
+
+    Until something does, Homebrew VapourSynth's autoload directory, which on a
+    Mac with the bottles really holds a ``mvtools.dylib`` that interpolates. It is
+    a fallback and not the answer: a plugin there is already autoloaded, so
+    ``_load`` in the generated scripts skips the ``LoadPlugin`` (a second copy of
+    a namespace fails), and the version is Homebrew's choice rather than one
+    ButterEye packaged and measured.
+
+    With neither, ButterEye's own directory, so that every caller names the place
+    a tap would install into rather than a directory nobody owns.
+    """
+    prefix = homebrew_prefix()
+    own = prefix / "lib" / "buttereye" / "vapoursynth"
+    if own.is_dir():
+        return own
+    return _brew_autoload_dir(prefix) or own
+
+
+def _packaged_plugin_dir() -> Path:
+    return macos_plugin_dir() if osapi.IS_MACOS else _FEDORA_PLUGIN_DIR
+
+
+def _packaged_data_dir() -> Path:
+    """Where the RIFE models live. On macOS ``<brew prefix>/share/buttereye``, the
+    analogue of Fedora's ``%{_datadir}/buttereye``: no fallback, because Homebrew
+    has no models of its own to find, so nothing is there until a tap ships them."""
+    return homebrew_prefix() / "share" / "buttereye" if osapi.IS_MACOS else _FEDORA_DATA_DIR
+
+
 # ---------- paths (§4.6) ----------
 @dataclass(frozen=True, slots=True)
 class Paths:
@@ -51,8 +162,10 @@ class Paths:
     jobs_dir: Path
     bench_file: Path
     runtime_dir: Path  # $XDG_RUNTIME_DIR/buttereye (0700, verified, never chmod-ed)
-    rpm_plugin_dir: Path = Path("/usr/lib64/buttereye/vapoursynth")
-    rpm_data_dir: Path = Path("/usr/share/buttereye")
+    # the name is Fedora-shaped; the field is "wherever this platform's packaged
+    # plugins and models are" (Windows: the install folder, macOS: Homebrew's prefix)
+    rpm_plugin_dir: Path = field(default_factory=lambda: _packaged_plugin_dir())
+    rpm_data_dir: Path = field(default_factory=lambda: _packaged_data_dir())
 
 
 # ---------- enums ----------
@@ -762,6 +875,8 @@ __all__ = [
     "CandidateId",
     "Msg",
     "Paths",
+    "homebrew_prefix",
+    "macos_plugin_dir",
     "Severity",
     "Section",
     "BackendId",

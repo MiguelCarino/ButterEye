@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.backends import trt
 from buttereye.core.doctor.probe import trt_version_of, version_text
 from buttereye.core.render import probe as rprobe
@@ -41,6 +42,12 @@ def _install_tree(tmp_path: Path, *, onnx: bool = True, python: bool = True) -> 
 
 @pytest.fixture
 def trt_libs(monkeypatch: pytest.MonkeyPatch) -> None:
+    # TensorRT cannot exist on macOS, so osapi.HAS_VSTRT is False there and
+    # _vstrt_dirs refuses before it looks. The discovery and problem-reporting
+    # logic below is the same on every platform, so say TensorRT is possible and
+    # keep testing it here; that macOS refuses at all is
+    # tests/macos/test_osapi_macos.py's assertion, not this file's.
+    monkeypatch.setattr(osapi, "HAS_VSTRT", True)
     monkeypatch.setattr(trt, "trt_version", lambda: "11.3.0")
 
 

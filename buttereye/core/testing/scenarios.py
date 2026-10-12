@@ -18,6 +18,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from buttereye import __version__
+from buttereye.core import osapi
 from buttereye.core.capabilities import unavailable_state
 from buttereye.core.errors import (
     ButterEyeError,
@@ -26,6 +27,7 @@ from buttereye.core.errors import (
     FilterFailed,
 )
 from buttereye.core.events import Event, HealthChanged, SessionChanged
+from buttereye.core.paths import resolve
 from buttereye.core.types import (
     BackendId,
     BackendStatus,
@@ -151,7 +153,18 @@ XID_LINES = (
 
 
 def fake_paths(root: Path | None = None, env: Mapping[str, str] | None = None) -> Paths:
-    """Display-only Paths. FakeCore never reads or writes them."""
+    """Display-only Paths. FakeCore never reads or writes them.
+
+    Given an environment instead of a ``root``, the answer has to be the layout
+    the machine really uses: the callers that pass one (tests/integration) hand
+    these paths to a real session, which binds a socket in ``runtime_dir`` and
+    reads the config file. On macOS that is not the XDG table below - the folders
+    are under ``~/Library`` and nothing creates ``/run/user/1000`` - so ask
+    ``paths.resolve``, which also keeps this in step when a macOS folder moves.
+    Linux needs the table because ``resolve()`` refuses an unset
+    ``XDG_RUNTIME_DIR`` where this invents one; macOS has nothing to invent,
+    since ``resolve()`` falls back to the system's per-user temporary directory.
+    """
     if root is not None:
         cfg, data, cache, state, run = (
             root / d for d in ("config", "data", "cache", "state", "run")
@@ -159,6 +172,8 @@ def fake_paths(root: Path | None = None, env: Mapping[str, str] | None = None) -
         home = root / "home"
     else:
         e = os.environ if env is None else env
+        if osapi.IS_MACOS:
+            return resolve(e)
         home = Path(e.get("HOME", "/home/user"))
         cfg = Path(e.get("XDG_CONFIG_HOME") or home / ".config")
         data = Path(e.get("XDG_DATA_HOME") or home / ".local/share")
@@ -166,7 +181,7 @@ def fake_paths(root: Path | None = None, env: Mapping[str, str] | None = None) -
         state = Path(e.get("XDG_STATE_HOME") or home / ".local/state")
         run = Path(e.get("XDG_RUNTIME_DIR") or "/run/user/1000")
     state_dir = state / "buttereye"
-    return Paths(
+    fake = Paths(
         config_file=cfg / "buttereye" / "config.toml",
         mpv_include=cfg / "buttereye" / "mpv" / "buttereye.conf",
         user_mpv_conf=home / ".config" / "mpv" / "mpv.conf",
@@ -177,6 +192,21 @@ def fake_paths(root: Path | None = None, env: Mapping[str, str] | None = None) -
         jobs_dir=state_dir / "jobs",
         bench_file=state_dir / "bench.json",
         runtime_dir=run / "buttereye",
+    )
+    if root is None:
+        return fake
+    # The ``root`` arm is the display-only fake, and what it is a fake OF is a
+    # Fedora dev box: the "devbox" scenarios describe rpm-owned plugins and the GUI
+    # offers "sudo dnf remove" for them. So pin the two packaged directories to
+    # Fedora's rather than inherit the Paths defaults, which phase 1 made answer for
+    # the host platform -- on a Mac they name Homebrew's prefix, which no dnf ever
+    # installed into, and the storage page then shows "rpm -qf /opt/homebrew/..."
+    # where the fake means to show a dnf line. Linux and Windows already default to
+    # these exact two paths, so the fake is unchanged there.
+    return dataclasses.replace(
+        fake,
+        rpm_plugin_dir=Path("/usr/lib64/buttereye/vapoursynth"),
+        rpm_data_dir=Path("/usr/share/buttereye"),
     )
 
 

@@ -88,6 +88,12 @@ class TrtInstall:
 
 
 def _vstrt_dirs(paths: Paths) -> list[Path]:
+    # The one place that looks for vstrt at all: doctor's probe asks through here
+    # too. Where TensorRT cannot exist, say so rather than globbing for a name
+    # that will never be on disk -- otherwise macOS gets the right answer only
+    # because the Linux file name happens not to match (osapi.HAS_VSTRT).
+    if not osapi.HAS_VSTRT:
+        return []
     root = paths.data_dir / VSTRT_SUBDIR
     found = [p.parent for p in root.glob(f"*/{osapi.VSTRT_LIB}") if p.is_file()]
     # newest build first (by modification time, then name)

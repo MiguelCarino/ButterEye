@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.api import ButterEye
 from buttereye.core.doctor import gpufault
 from buttereye.core.errors import ButterEyeError, ErrorCode, FilterFailed
@@ -62,6 +63,10 @@ from buttereye.core.types import (
 pytestmark = [pytest.mark.integration, pytest.mark.devbox]
 
 PLUGIN_DIR = Path("/usr/lib64/buttereye/vapoursynth")
+#: the plugin files as this platform names them -- the guards below ask whether the
+#: real plugin is installed, so they must use the name VapourSynth would load
+MVTOOLS_SO = osapi.plugin_file("mvtools.so")
+RIFE_SO = osapi.plugin_file("librife.so")
 
 
 def _profile(pid: str, backend: BackendId, kind: TargetKind, model: str | None = None) -> Profile:
@@ -266,7 +271,7 @@ def _ours(vf: Any) -> dict[str, Any] | None:
 
 
 async def test_play_mvtools_toggle_profile_detach(live_env: Live, clip: Path) -> None:
-    if not (PLUGIN_DIR / "mvtools.so").is_file():
+    if not (PLUGIN_DIR / MVTOOLS_SO).is_file():
         pytest.skip("buttereye-vs-mvtools not installed")
     env = live_env
     sid = await env.play(clip, "mv")
@@ -451,7 +456,7 @@ async def test_rife_stall_switches_to_cpu(
     live_env: Live, clip: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """§11.9: a stalled RIFE-ncnn filter is replaced by MVTools once, in place."""
-    if not (PLUGIN_DIR / "mvtools.so").is_file() or not (PLUGIN_DIR / "librife.so").is_file():
+    if not (PLUGIN_DIR / MVTOOLS_SO).is_file() or not (PLUGIN_DIR / RIFE_SO).is_file():
         pytest.skip("needs buttereye-vs-mvtools and buttereye-vs-rife-ncnn")
     env = live_env
     monkeypatch.setattr(generator, "template_text", lambda: _template_with(RIFE_ONLY_FROZEN))
@@ -508,7 +513,7 @@ async def test_mpv_quit_ends_session(live_env: Live, clip: Path) -> None:
 @pytest.mark.gpu
 async def test_rife_live_short(live_env: Live, clip: Path) -> None:
     """RIFE-ncnn in mpv (bundled ncnn build), short: active, frames flow, no stall."""
-    if not (PLUGIN_DIR / "librife.so").is_file():
+    if not (PLUGIN_DIR / RIFE_SO).is_file():
         pytest.skip("buttereye-vs-rife-ncnn not installed")
     env = live_env
     sid = await env.play(clip, "rife")
@@ -602,7 +607,7 @@ async def test_setup_engine_choice_applies_to_builtin_rules(
 ) -> None:
     """Setup chose MVTools: the default rule sends this clip to Quality (shipped
     with RIFE), which must follow the Setup choice."""
-    if not (PLUGIN_DIR / "mvtools.so").is_file():
+    if not (PLUGIN_DIR / MVTOOLS_SO).is_file():
         pytest.skip("buttereye-vs-mvtools not installed")
     base = _config()
     cfg = dataclasses.replace(
@@ -775,7 +780,7 @@ async def test_too_demanding_video_smooths_at_a_smaller_size(
 ) -> None:
     """A 4K video MVTools can't double live is smoothed at 1080p (§11.9): the
     filter gets ``size`` and frames keep flowing."""
-    if not (PLUGIN_DIR / "mvtools.so").is_file():
+    if not (PLUGIN_DIR / MVTOOLS_SO).is_file():
         pytest.skip("buttereye-vs-mvtools not installed")
     from tests.test_live_decisions import _m, _result
 

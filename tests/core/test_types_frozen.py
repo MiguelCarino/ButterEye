@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from buttereye.core import events, types
+from buttereye.core import events, osapi, types
 from buttereye.core.types import Msg
 
 
@@ -164,10 +164,37 @@ def test_events_match_design_2_3(design_doc: typing.Any) -> None:
     assert set(events.EVENT_TYPES) == set(typing.get_args(events.Event))
 
 
-def test_paths_defaults() -> None:
-    p = types.Paths(*(Path(f"/x/{i}") for i in range(10)))
+def test_paths_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The two packaged locations default to this platform's own, and both tables
+    are checked wherever the tests run: ``types`` asks ``osapi.IS_MACOS`` when a
+    ``Paths`` is built, so setting the flag asks for the other platform's answer
+    (as ``xdg_layout`` in tests/core/test_paths.py does for ``resolve``)."""
+
+    def defaults() -> types.Paths:
+        return types.Paths(*(Path(f"/x/{i}") for i in range(10)))
+
+    monkeypatch.setattr(osapi, "IS_MACOS", False)
+    p = defaults()
     assert p.rpm_plugin_dir == Path("/usr/lib64/buttereye/vapoursynth")
     assert p.rpm_data_dir == Path("/usr/share/buttereye")
+
+    # macOS has no /usr/lib64: both locations sit under Homebrew's prefix, and the
+    # plugin directory is ButterEye's own one -- the private, non-autoloaded
+    # directory phase 4's tap fills, as the RPM fills %{_libdir}/buttereye.
+    monkeypatch.setattr(osapi, "IS_MACOS", True)
+    monkeypatch.setenv("HOMEBREW_PREFIX", str(tmp_path))
+    assert defaults().rpm_data_dir == tmp_path / "share" / "buttereye"
+    assert defaults().rpm_plugin_dir == tmp_path / "lib" / "buttereye" / "vapoursynth"
+
+    # until it exists, Homebrew VapourSynth's autoload directory stands in
+    autoload = tmp_path / "lib/python3.14/site-packages/vapoursynth/plugins"
+    autoload.mkdir(parents=True)
+    assert defaults().rpm_plugin_dir == autoload
+
+    # and ButterEye's own directory wins again as soon as it is there
+    own = tmp_path / "lib/buttereye/vapoursynth"
+    own.mkdir(parents=True)
+    assert defaults().rpm_plugin_dir == own
 
 
 def test_command_hint_text_quotes() -> None:

@@ -13,6 +13,7 @@ import json
 import math
 import os
 import stat
+import subprocess
 import sys
 import time
 import types as pytypes
@@ -24,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.api import ButterEye
 from buttereye.core.bench import faults, measure, runner, store
 from buttereye.core.doctor import gpufault
@@ -165,7 +167,7 @@ def test_model_label_and_candidates(tmp_path: Path) -> None:
     assert cands[-1].concurrent_frames == 16  # min(nproc, 16), spike M0(m)
     assert cands[0].model_path == models / "rife-v4.26_ensembleFalse"
     assert [c.label for c in runner.discover_candidates(plugins, models, rife=False)] == ["mvtools"]
-    (plugins / "librife.so").unlink()
+    (plugins / osapi.plugin_file("librife.so")).unlink()
     assert [c.label for c in runner.discover_candidates(plugins, models)] == ["mvtools"]
     assert runner.discover_candidates(tmp_path / "none", tmp_path / "none") == ()
 
@@ -344,8 +346,8 @@ def _plugin_tree(root: Path, models: list[str]) -> tuple[Path, Path]:
     model_dir = data / runner.MODEL_SUBDIR
     plugins.mkdir(parents=True)
     model_dir.mkdir(parents=True)
-    (plugins / "librife.so").write_bytes(b"")
-    (plugins / "mvtools.so").write_bytes(b"")
+    (plugins / osapi.plugin_file("librife.so")).write_bytes(b"")
+    (plugins / osapi.plugin_file("mvtools.so")).write_bytes(b"")
     for m in models:
         (model_dir / m).mkdir()
         (model_dir / m / "flownet.param").write_text("")
@@ -647,6 +649,13 @@ def _alive(pid: int) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
+    if osapi.IS_MACOS:
+        # No /proc here, so ask ps for the state letter instead; a missing pid prints
+        # nothing. Same meaning as the Linux branch: 'Z' is a zombie, which is gone.
+        out = subprocess.run(
+            ["ps", "-o", "state=", "-p", str(pid)], capture_output=True, text=True, timeout=10
+        )
+        return not out.stdout.strip().startswith("Z")
     try:  # a zombie is gone for our purposes
         return "State:\tZ" not in Path(f"/proc/{pid}/status").read_text()
     except OSError:

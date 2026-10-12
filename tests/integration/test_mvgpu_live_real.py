@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.api import ButterEye
 from buttereye.core.events import Event
 from buttereye.core.mpvctl import session as live
@@ -46,8 +47,10 @@ from tests.integration.test_live_play import Live, _alive, _make_clip, _profile,
 
 pytestmark = [pytest.mark.integration, pytest.mark.gpu]
 
+#: what the rpm installs. An rpm payload is Fedora's, so this name stays ``.so``.
 RPM_PLUGIN = Path("/usr/lib64/buttereye/vapoursynth/libmvgpu.so")
-DEV_PLUGIN = Path.home() / ".cache/buttereye-dev/mvgpu-build/libmvgpu.so"
+#: a plugin built here instead, under the name this platform builds it as
+DEV_PLUGIN = Path.home() / ".cache/buttereye-dev/mvgpu-build" / osapi.plugin_file("libmvgpu.so")
 PLUGIN = next((p for p in (RPM_PLUGIN, DEV_PLUGIN) if p.is_file()), None)
 
 if PLUGIN is None:
@@ -84,7 +87,9 @@ async def mvgpu_env(xdg_env: Any, config_provider: None, tmp_path: Path) -> Asyn
     assert PLUGIN is not None
     plugins = tmp_path / "plugins"
     plugins.mkdir()
-    (plugins / "libmvgpu.so").symlink_to(PLUGIN)
+    # the private plugin directory the generated script loads by name, so the link
+    # must carry the name VapourSynth looks for here
+    (plugins / osapi.plugin_file("libmvgpu.so")).symlink_to(PLUGIN)
     paths = dataclasses.replace(sc.fake_paths(env=os.environ), rpm_plugin_dir=plugins)
     core = await ButterEye.open(paths)
     reg = live.registry(core._ctx)

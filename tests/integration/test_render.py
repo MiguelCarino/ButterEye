@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.api import ButterEye
 from buttereye.core.events import JobChanged
 from buttereye.core.render import jobs as rjobs
@@ -57,7 +58,8 @@ def ffms2(monkeypatch: pytest.MonkeyPatch) -> Path:
     for tool in ("vspipe", "ffmpeg", "ffprobe"):
         if shutil.which(tool) is None:
             pytest.skip(f"{tool} missing")
-    if not (PLUGIN_DIR / "mvtools.so").is_file():
+    # the installed plugin under the name VapourSynth would load (identity on Linux)
+    if not (PLUGIN_DIR / osapi.plugin_file("mvtools.so")).is_file():
         pytest.skip("buttereye-vs-mvtools not installed")
     monkeypatch.setattr(rjobs, "_ffms2_lib", lambda: lib)
     return lib

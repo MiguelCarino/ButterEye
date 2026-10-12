@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.doctor import (
     checks_mpv,
     checks_pkgs,
@@ -241,8 +242,10 @@ def box(xdg_env: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Box:
         lic / "buttereye-rife-ncnn-models",
     ):
         d.mkdir(parents=True, exist_ok=True)
-    (plug / "librife.so").write_bytes(b"\x7fELF")
-    (plug / "mvtools.so").write_bytes(b"\x7fELF")
+    # the names the checks look for: ``plugin_file`` is identity on Linux and gives the
+    # .dylib/.dll stem elsewhere, which is the only name VapourSynth would load there
+    (plug / osapi.plugin_file("librife.so")).write_bytes(b"\x7fELF")
+    (plug / osapi.plugin_file("mvtools.so")).write_bytes(b"\x7fELF")
     rl = [
         lic / "buttereye-vs-rife-ncnn" / n
         for n in ("LICENSE", "LICENSE.ncnn.txt", "LICENSE.glslang.txt")
@@ -261,6 +264,9 @@ def box(xdg_env: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Box:
                 ("bundled(glslang)", "0^gita9ac7d5f"),
             ],
             requires=["libgomp.so.1()(64bit)", "vulkan-loader"],
+            # recorded rpm output: an rpm payload lists the files Fedora installs, so this
+            # stays ``librife.so`` on every platform. It is here as the non-%license entry
+            # the parser must drop, and is never compared with what is on disk.
             files=[("", str(plug / "librife.so"))] + [("l", str(p)) for p in rl],
         ),
         "buttereye-vs-mvtools": rpm_block(

@@ -23,7 +23,7 @@ from typing import Any
 
 from buttereye.core import osapi
 from buttereye.core.mpvctl.ipc import LABEL, VF_ADD_PREFIX, quote
-from buttereye.core.types import BackendId
+from buttereye.core.types import BackendId, homebrew_prefix, macos_plugin_dir
 
 TEMPLATE = Path(__file__).with_name("template.vpy")
 BLOCK_BEGIN = "# --- ButterEye data block (generated) ---"
@@ -56,7 +56,8 @@ class ScriptConstants:
 
     plugin_dir: Path = field(default_factory=lambda: _default_plugin_dir())
     # Fedora's ffms2 is not in VapourSynth's autoload directory (SCOPE §7.1); on
-    # Windows the installer puts ffms2.dll with ButterEye's other plugins
+    # Windows the installer puts ffms2.dll with ButterEye's other plugins, and on
+    # macOS Homebrew's bottle is both the library and the plugin (_macos_ffms2)
     ffms2_lib: Path = field(default_factory=lambda: _default_ffms2())
 
 
@@ -65,12 +66,41 @@ def _default_plugin_dir() -> Path:
         from buttereye.core.paths import install_dir
 
         return install_dir() / "vapoursynth"
+    if osapi.IS_MACOS:
+        return macos_plugin_dir()
     return Path("/usr/lib64/buttereye/vapoursynth")
+
+
+def _macos_ffms2() -> Path:
+    """ffms2 on macOS: Homebrew's ``ffms2`` bottle, whose shared library is also
+    the VapourSynth plugin, as Fedora's ``libffms2.so.5`` is. Measured, because
+    one file doing both jobs is the kind of thing that is only true until it
+    isn't: VapourSynth answered a ``LoadPlugin`` of
+    ``/opt/homebrew/lib/libffms2.5.dylib`` with "already loaded
+    (com.vapoursynth.ffms2)", so it read the plugin out of that very file.
+
+    A copy in the directory ButterEye loads its plugins from first, the way the
+    Windows installer puts ``ffms2.dll`` next to the other plugins -- and that is
+    also the hit on a plain Homebrew Mac, where that directory is VapourSynth's
+    autoload one and holds the very ``libffms2.dylib`` the core autoloads. Then
+    the SOVERSION 5 name under ``<prefix>/lib``, the exact analogue of Fedora's
+    and the one that cannot turn into a newer, incompatible library under
+    ButterEye. Then the unversioned link brew always makes, which is also the
+    name worth reporting as missing when there is no Homebrew ffms2 at all.
+    """
+    own = _default_plugin_dir() / osapi.plugin_file("libffms2.so")
+    if own.is_file():
+        return own
+    lib = homebrew_prefix() / "lib"
+    versioned = lib / "libffms2.5.dylib"
+    return versioned if versioned.is_file() else lib / "libffms2.dylib"
 
 
 def _default_ffms2() -> Path:
     if osapi.IS_WINDOWS:
         return _default_plugin_dir() / "ffms2.dll"
+    if osapi.IS_MACOS:
+        return _macos_ffms2()
     return Path("/usr/lib64/libffms2.so.5")
 
 

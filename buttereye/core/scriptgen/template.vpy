@@ -47,9 +47,14 @@ def _settings():
 def _load(namespace, filename):
     # Absolute path from the private, non-autoload directory; skip if a copy of
     # the plugin is already loaded (distro or autoload), which would fail.
-    # Plugins are named for Linux ('librife.so'); the Windows builds are .dll.
+    # Plugins are named for Linux ('librife.so'); the Windows builds are .dll and
+    # the macOS ones .dylib, because that is the extension VapourSynth's own autoload
+    # scan accepts on each (R81, src/core/vscore.cpp:65-69). LoadPlugin itself takes
+    # any name, so without this the .so simply is not on disk and dlopen says so.
     if os.name == 'nt' and filename.endswith('.so'):
         filename = filename[:-3] + '.dll'
+    elif sys.platform == 'darwin' and filename.endswith('.so'):
+        filename = filename[:-3] + '.dylib'
     if not hasattr(core, namespace):
         core.std.LoadPlugin(os.path.join(PLUGIN_DIR, filename))
 
@@ -296,6 +301,11 @@ def _rife_trt(clip, cfg, props, target):
     # vs-mlrt's vstrt (SCOPE §5.2). Engines are built out of process before
     # playback; inside mpv a missing engine fails fast instead of freezing the
     # player for minutes ('build' is set only for that out-of-process build).
+    if sys.platform == 'darwin':
+        # Ahead of the engine check below, which would otherwise blame a missing
+        # engine for something no build can produce: there is no CUDA and no
+        # TensorRT for macOS, and no Apple Silicon Mac has an NVIDIA GPU.
+        raise vs.Error('ButterEye: TensorRT is not available on macOS')
     trt = cfg.get('trt') or {}
     engine_dir = trt['engine_dir']
     if not trt.get('build') and not os.path.isfile(os.path.join(engine_dir, 'ready.json')):

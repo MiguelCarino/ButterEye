@@ -16,10 +16,16 @@ from pathlib import Path
 
 import pytest
 
+from buttereye.core import osapi
+
 pytestmark = [pytest.mark.integration]
 
+#: a locally built plugin carries this platform's extension, like any other
 PLUGIN = Path(
-    os.environ.get("MVGPU_PLUGIN", Path.home() / ".cache/buttereye-dev/mvgpu-build/libmvgpu.so")
+    os.environ.get(
+        "MVGPU_PLUGIN",
+        Path.home() / ".cache/buttereye-dev/mvgpu-build" / osapi.plugin_file("libmvgpu.so"),
+    )
 )
 
 SCRIPT = r"""

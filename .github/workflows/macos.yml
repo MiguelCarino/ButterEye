@@ -1,22 +1,50 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 The ButterEye contributors
 #
-# ButterEye on macOS (docs/PLATFORMS.md, "macOS: the realistic path"): the phase-0
-# gate. It proves two things and claims nothing else:
+# ButterEye on macOS (docs/PLATFORMS.md, "macOS: the realistic path"): the gate
+# every macOS phase is measured against. It proves two things and claims nothing
+# else:
 #
 #   * `mypy --platform linux|win32|darwin buttereye` is clean for all three. That
 #     is this job's real value: it polices every later macOS phase from any
 #     machine, and fails the moment a macOS fix breaks Linux or Windows.
-#   * the repo's default `pytest` passes on a real Mac, bar a short measured list
-#     of exclusions the test step names one by one.
+#   * the repo's default `pytest` passes on a real Mac, bar the exclusions the
+#     test step names one by one, for the tests that can run with nothing
+#     installed but Python and Qt.
 #
-# It installs no Homebrew packages and never runs mpv, VapourSynth or the plugins:
-# none of that is ported (phases 2 and 3), so a job that ran them would be saying
-# more than the tree can do. macOS is not a supported platform.
+# WHAT THIS JOB DOES NOT PROVE, which is a great deal. It installs no Homebrew
+# package, so the runner has no mpv, no vspipe, no VapourSynth, no plugins and no
+# vulkaninfo, and tests/conftest.py skips every test marked `integration`, `gpu`
+# or `devbox` for the missing piece. Roughly a fifth of the suite therefore never
+# runs here: nothing in tests/integration executes, so this job says nothing about
+# whether a script renders, whether mpv accepts the filter, or whether the real
+# plugins load. None of that is ported yet (phases 2 and 3), so a job that claimed
+# it would be claiming more than the tree can do; what it means in practice is
+# that a green tick here is a green tick on the pure-Python and Qt layers only.
+# macOS is not a supported platform.
+#
+# Two things measured on a developer's Mac, where mpv and vspipe ARE installed,
+# that this job is blind to by construction and that phases 2-4 own:
+#
+#   * mpv cannot load a ButterEye filter at all. Its `vapoursynth` filter dlopens
+#     VSScript by bare leaf name, and Homebrew keeps that file inside the
+#     formula's libexec virtualenv, off dyld's search path, so the filter fails to
+#     create and the session rolls back with BE-3003. That is what makes
+#     tests/integration/test_hdr_live_real.py red on a Mac with the bottles
+#     installed. Offline render through vspipe is unaffected and works.
+#   * the doctor still speaks Fedora on a Mac (dnf advice, /usr/lib64 search
+#     paths, rpm queries) - phase 2's vocabulary work.
 #
 # Unlike the GPU-less Windows runners, GitHub's macos-14 and newer images are real
 # Apple Silicon with a working Metal GPU, so this is where the MoltenVK work will
 # be able to run for real later; that is why the runner's GPU is printed below.
+# The `gpu` tests still skip, because every one of them also carries the `devbox`
+# marker and so wants the RPMs as well.
+#
+# tools/macos-tests.sh runs the same two commands with the same exclusions on a
+# Mac. Keep the two lists in step: neither can call the other, because this job
+# installs its own pinned tools through setup-python and wants the type check as a
+# step of its own so all three platforms report.
 
 name: macOS
 
@@ -87,31 +115,76 @@ jobs:
       # gate would leave them staring at failures while this job was green.
       #
       # tests/integration, tests/windows and the devbox and gpu tests need mpv,
-      # vspipe, Windows or hardware that is not here, and tests/conftest.py skips
-      # them for the missing piece rather than failing, so they stay in. The
-      # exclusions below are the whole measured list, and each says who owns it:
+      # vspipe, Windows or the RPMs, and tests/conftest.py skips them for the
+      # missing piece rather than failing, so they stay in the selection and come
+      # out as skips. The exclusions below are the whole measured list, and each
+      # says who owns it.
       #
-      #   * tests/integration/test_live_trt_real.py resolves the XDG paths while
-      #     being imported, and macOS sets no XDG_RUNTIME_DIR, so it raises
-      #     BE-2010 RUNTIME_DIR_UNSAFE during collection - before any marker can
-      #     skip it. A macOS runtime dir is phase 1.
+      # Two of phase 0's five are gone, both verified by running them here:
+      #
+      #   * tests/integration/test_live_trt_real.py resolved the XDG paths while
+      #     being imported, and with no XDG_RUNTIME_DIR on macOS that raised
+      #     BE-2010 RUNTIME_DIR_UNSAFE during collection, before any marker could
+      #     skip it. Phase 1 gave macOS a runtime directory of its own
+      #     (buttereye/core/paths.py, _resolve_macos), so the file collects; it
+      #     then skips on its `devbox` marker, for want of rpm, not on `gpu`.
+      #   * tests/test_bench_runner.py::test_cancel_kills_the_process_group now
+      #     passes (5 runs, 5 passes). Phase 1 gave that file's own `_alive` a
+      #     macOS branch that asks `ps -o state=` for the state letter instead of
+      #     reading /proc, so the deselect it needed is gone with it.
+      #
+      # What is left:
+      #
       #   * the seven Alt+letter cases of tests/gui/test_mnemonics.py: Qt's Mac
       #     style opens no menu for Alt+letter, because a Mac's menus live in the
       #     system menu bar and answer to Cmd. That is a real platform difference
       #     for the GUI phase to decide on, not a bug. The rest of tests/gui runs.
-      #   * three tests whose own helpers ask /proc whether a child is alive
-      #     (tools/memguard.descendants walks it too), which macOS does not have.
-      #     Reading a process without /proc is phase 1.
+      #   * two tests whose own helpers ask /proc whether a process is alive,
+      #     which macOS does not have. Phase 1 taught osapi.pid_alive to read a
+      #     process through libproc, but neither of these calls it:
+      #     tests/test_live_review_fixes.py `_state` re-implements the /proc read
+      #     inline, and tests/test_memguard.py exercises tools/memguard.py
+      #     `descendants`, which walks /proc to build a process tree. Measured
+      #     here, both still fail for that reason and nothing else. The fix shape
+      #     is the one phase 1 used for `_alive` above; these two were in files
+      #     phase 1 did not own, and they are the last of that family.
       #   * tests/gui/test_bench_page.py::test_cancel_stops_the_run_and_keeps_old_results,
-      #     which is the one exclusion here that is NOT about macOS. It asserts the
-      #     op rows are visible straight after the cancel click instead of waiting
-      #     for the cancelled state, and it loses that race about one run in ten:
-      #     measured 9 passes in 10 under both the cocoa and the offscreen Qt
-      #     platform, so neither this runner nor this port is what makes it fail.
-      #     It is excluded so a red job here means a macOS problem and nothing
-      #     else; the fix belongs in tests/gui, and until it lands no CI covers
-      #     that test, because windows.yml runs only tests/windows and there is
-      #     no Linux workflow yet.
+      #     which is the one exclusion here that is NOT about the macOS port. It
+      #     clicks cancel and then asserts straight away that the op rows are
+      #     still visible, without waiting for the cancelled state, and it loses
+      #     that race often: measured 4 passes in 10 on an M2 under the offscreen
+      #     platform, always failing on the same `isVisibleTo` line. An earlier
+      #     draft of this file claimed 9 in 10; that is corrected, and the rate
+      #     here is high enough that nobody should call it merely flaky. What is
+      #     NOT established is that the rate is the same on Linux, which is where
+      #     the fix has to be judged, so whether a Mac makes it worse is open.
+      #     The fix belongs in tests/gui; until it lands no CI covers that test,
+      #     because windows.yml runs only tests/windows and there is no Linux
+      #     workflow yet.
+      #
+      # Two things are NOT excluded and should be known, because either can turn
+      # this job red without any of the above being at fault. Neither is specific
+      # to the macOS port and neither is hidden here; they are written down so a
+      # red run is diagnosable instead of mysterious.
+      #
+      #   * tests/core/test_ops_shutdown.py::test_kill_owned_groups_is_scoped_to_loop
+      #     can time out under full-suite load: measured once in 3 full runs on an
+      #     M2, and 10 passes in 10 when the file runs alone. Its own `_wait_dead_sync`
+      #     already carries a comment about having timed out before and having had
+      #     its deadline raised to 5 s for it. The macOS half of that helper's
+      #     `_alive` shells out to `ps -ax` and scans the whole process table,
+      #     about 12 ms a poll against an in-process /proc walk on Linux, which is
+      #     why a Mac feels this first. It is left in because it does pass, and
+      #     because the honest fix is to make the helper ask about one process
+      #     group rather than all of them -- not to stop running it.
+      #   * a run of tests/gui can abort with a segmentation fault in shiboken6,
+      #     while the garbage collector traverses a Qt object from the core thread
+      #     as a bridge is being shut down (tests/gui/conftest.py make_bridge
+      #     teardown -> gui/bridge.py shutdown). Seen once in a full-suite run on
+      #     an M2 and not in 4 repeats of tests/gui afterwards, so it is rare, but
+      #     it kills the whole process and no deselect can cover it. If this job
+      #     ever fails with no FAILED lines at all, that is this. It wants an
+      #     owner: PySide6 6.12 on Python 3.14.
       - name: The tests (the repo's default pytest path)
         env:
           # The one test that starts the GUI in a subprocess
@@ -123,9 +196,7 @@ jobs:
           QT_ACCESSIBILITY: "1"
         run: |
           python -B -m pytest -v -rs \
-            --ignore=tests/integration/test_live_trt_real.py \
             --deselect tests/gui/test_mnemonics.py::test_alt_menu_letters_open_the_menu \
-            --deselect tests/test_bench_runner.py::test_cancel_kills_the_process_group \
             --deselect tests/test_live_review_fixes.py::test_spawned_process_survives_gc_and_is_reaped \
             --deselect tests/test_memguard.py::test_descendants_and_kill_reach_grandchildren \
             --deselect tests/gui/test_bench_page.py::test_cancel_stops_the_run_and_keeps_old_results

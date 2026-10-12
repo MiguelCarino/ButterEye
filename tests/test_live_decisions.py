@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.errors import ErrorCode
 from buttereye.core.events import Event, HealthChanged, Notice
 from buttereye.core.mpvctl import decide, health
@@ -143,14 +144,17 @@ class FakeIpc:
 
 
 def _paths(tmp_path: Path, *, rife: bool = True, mvtools: bool = True) -> Any:
+    # The planted files carry the name the detection code looks for: VapourSynth fixes
+    # the extension per platform (.so, .dll, .dylib), so ``osapi.plugin_file`` -- the
+    # identity function on Linux -- is what decides what "installed" looks like here.
     plugins, share = tmp_path / "plugins", tmp_path / "share"
     plugins.mkdir(exist_ok=True)
     if rife:
-        (plugins / "librife.so").write_bytes(b"")
+        (plugins / osapi.plugin_file("librife.so")).write_bytes(b"")
         for name in decide.DEFAULT_MODELS:
             (share / live.MODEL_SUBDIR / name).mkdir(parents=True, exist_ok=True)
     if mvtools:
-        (plugins / "mvtools.so").write_bytes(b"")
+        (plugins / osapi.plugin_file("mvtools.so")).write_bytes(b"")
     return dataclasses.replace(sc.fake_paths(tmp_path), rpm_plugin_dir=plugins, rpm_data_dir=share)
 
 

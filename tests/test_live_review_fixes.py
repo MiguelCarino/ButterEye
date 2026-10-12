@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.events import Event, HealthChanged, Notice
 from buttereye.core.mpvctl import decide, health, launcher
 from buttereye.core.mpvctl import session as live
@@ -388,7 +389,7 @@ def test_setup_choice_applies_to_shipped_profiles(tmp_path: Path) -> None:
 def test_user_dir_models(tmp_path: Path) -> None:
     plugins, packaged, user = tmp_path / "plugins", tmp_path / "pkg", tmp_path / "user"
     plugins.mkdir()
-    (plugins / "librife.so").write_bytes(b"")
+    (plugins / osapi.plugin_file("librife.so")).write_bytes(b"")
     user.mkdir()
     assert decide.installed_backends(plugins, packaged, (user,)) == frozenset()
     mine = user / "rife-v4.6-custom"

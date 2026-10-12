@@ -37,6 +37,7 @@ from buttereye.core.api import (
     Target,
     TargetKind,
 )
+from buttereye.core.paths import resolve
 from buttereye.core.testing import scenarios
 from buttereye.gui.dialogs.rule_edit import RuleEditDialog, describe_match
 from buttereye.gui.pages.profiles import ProfilesPage, concurrent_default
@@ -724,7 +725,9 @@ def test_real_core_save_conflict_and_invalid_file(
         page = win.page("profiles")
         assert isinstance(page, ProfilesPage)
         qtbot.waitUntil(lambda: page.config() is not None, timeout=5000)
-        config_file = xdg_env.config / "buttereye" / "config.toml"
+        # where the core really keeps it under the fixture's HOME and XDG dirs,
+        # which is not the XDG config dir on every platform (~/Library on macOS)
+        config_file = resolve().config_file
         assert not config_file.exists()
 
         select_profile(page, "quality")

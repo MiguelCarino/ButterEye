@@ -143,8 +143,35 @@ def snapshot(xdg: Any) -> set[str]:
 
 
 def only_logs(xdg: Any) -> bool:
-    allowed = {"state/buttereye", "state/buttereye/logs"}
-    return all(p in allowed or p.startswith("state/buttereye/logs/") for p in snapshot(xdg))
+    """Nothing was left behind but the log file and the folders holding it.
+
+    Where the logs go is the platform's business - ``state/buttereye/logs`` under
+    the XDG state dir on Linux, ``~/Library/Logs/ButterEye`` on macOS - so ask
+    ``resolve()`` for it instead of naming it here. The folders above it are
+    allowed because writing the log has to create them; everything else in the
+    snapshot still fails this, which is the property being tested.
+    """
+    logs = resolve().logs_dir.relative_to(xdg.home.parent)  # snapshot()'s own root
+    # the parents, minus the first component: that one is a directory snapshot()
+    # walks and so never lists ("state" on Linux, "home" on macOS)
+    allowed = {logs.as_posix()} | {d.as_posix() for d in logs.parents if len(d.parts) > 1}
+    return all(p in allowed or p.startswith(f"{logs.as_posix()}/") for p in snapshot(xdg))
+
+
+def _included(line: str) -> Path:
+    """The path an ``include=`` line points mpv at, with mpv's ``~/`` expanded.
+
+    ``setup.include_line`` shortens the path to ``~/...`` when it is inside HOME,
+    so that an mpv.conf stays portable. On Linux the XDG config dir of these
+    tests is outside HOME and the line carries the path in full; on macOS the
+    config lives under ``~/Library`` and the line is shortened. Expanding it back
+    keeps the assertion exact on both instead of accepting either shape.
+    """
+    assert line.startswith("include=")
+    shown = line.removeprefix("include=")
+    if shown.startswith("~/"):
+        return Path(os.path.expanduser("~")) / shown[2:]
+    return Path(shown)
 
 
 async def test_plan_is_in_memory(script: Script, xdg_env: Any) -> None:
@@ -213,7 +240,7 @@ async def test_apply_writes_config_last_and_is_idempotent(script: Script, xdg_en
     assert steps == [1, 2, 3, 4]
     assert script.calls == ["smoke", "probe"]
     assert res.smoke_ok and res.smoke_fps == 143.8 and res.smoke_finding is None
-    assert res.include_line == f"include={paths.mpv_include}"  # XDG config is outside HOME
+    assert _included(res.include_line) == paths.mpv_include
     loaded = cfgmod.load(paths)
     assert loaded.exists and loaded.revision == res.config_revision
     assert loaded.config.general.backend_override is None  # = the proposed backend

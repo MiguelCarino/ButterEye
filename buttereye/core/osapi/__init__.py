@@ -12,8 +12,13 @@ Linux path everywhere the rows below do not say otherwise:
   ButterEye sits in a kill-on-close job so its helpers end with it, and "soft"
   means WM_CLOSE when the tree has windows, else terminate at once.
 - mpv lifetime: ``posix_spawnp(setsid)`` and a pidfd watch on Linux; on Windows a
-  ``Popen`` that breaks away from the job, polled. macOS spawns as Linux does but
-  has no pidfd, so it polls too.
+  ``Popen`` that breaks away from the job, polled. macOS spawns as Linux does and
+  has no pidfd, but a kqueue watching ``EVFILT_PROC``/``NOTE_EXIT`` is the same
+  watchable descriptor (``_darwin.exit_watch``), so it does not poll either.
+- is a process still there: on POSIX it takes two questions, because a process that
+  has exited and has not been reaped still answers ``os.kill(pid, 0)``. Linux reads
+  the state out of ``/proc/<pid>/stat``; macOS has no ``/proc`` and asks libproc
+  (``_darwin.pid_alive``). Windows reads the exit code of a process handle.
 - mpv control: Unix socket + ``SO_PEERCRED`` on Linux. macOS keeps the socket but
   has no ``SO_PEERCRED``: the peer's uid comes from ``LOCAL_PEERCRED`` and its pid
   from ``LOCAL_PEERPID`` (``_darwin.peer_cred``), and a peer that has already gone
@@ -23,7 +28,16 @@ Linux path everywhere the rows below do not say otherwise:
   cleanup).
 - private folder: 0700, own uid, not a symlink on Linux; on Windows owned by this
   user's SID and not a reparse point (it lives under %LOCALAPPDATA%, per-user by ACL).
-- locks: ``flock`` on Linux; ``msvcrt.locking`` on byte 0 of a lock file on Windows.
+  macOS checks it as Linux does, but has no ``$XDG_RUNTIME_DIR`` to put it in: the
+  kernel's per-user temporary directory stands in (``_darwin.user_temp_dir``).
+- locks: ``flock`` on Linux and macOS; ``msvcrt.locking`` on byte 0 of a lock file
+  on Windows.
+- durable renames: ``fsync`` on the folder, and on macOS ``F_FULLFSYNC`` as well,
+  where ``fsync`` alone stops at the drive's own cache; Windows cannot open a folder
+  and leaves the ordering to NTFS (``fsync_dir``).
+- plugin files: ``mvtools.so`` on Linux, the same stem with ``.dll`` on Windows and
+  ``.dylib`` on macOS (``plugin_file``). TensorRT's plugin has no macOS build and
+  never will, so ``HAS_VSTRT`` is False there.
 - VapourSynth for child processes: Linux has the distribution's; on Windows the
   installer bundles Python with VapourSynth, and ``use_bundled_runtime`` points
   every child (mpv, vspipe) at it.
@@ -108,12 +122,21 @@ def set_mode(fd: int, mode: int) -> None:
 
 
 def fsync_dir(directory: Path) -> None:
-    """Make a rename in ``directory`` durable (POSIX); Windows can't open folders."""
+    """Make a rename in ``directory`` durable (POSIX); Windows can't open folders.
+
+    On macOS ``fsync`` only hands the data to the drive, which may still be
+    holding it in a volatile cache; ``F_FULLFSYNC`` is the call that waits for
+    the platter or the flash. Without it a profile saved seconds before the power
+    went could come back as the old one -- never as a damaged one, since the
+    rename itself stays atomic."""
     if sys.platform == "win32":
         return
     dfd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         os.fsync(dfd)
+        if sys.platform == "darwin":
+            with contextlib.suppress(OSError):
+                fcntl.fcntl(dfd, fcntl.F_FULLFSYNC, 0)
     finally:
         os.close(dfd)
 
@@ -187,14 +210,29 @@ def locked_dir(directory: Path) -> Iterator[None]:
 # ======================================================================== libraries
 def plugin_file(linux_name: str) -> str:
     """A VapourSynth plugin's file name on this system. Plugins are named for Linux
-    (``librife.so``); the Windows builds use the same stem with ``.dll``."""
+    (``librife.so``); the Windows builds use the same stem with ``.dll``, the macOS
+    ones with ``.dylib``. The extension is VapourSynth's own, not a convention: R81
+    fixes it per platform in ``src/core/vscore.cpp`` and uses it both for a manifest
+    load and to filter the autoload scan, so a plugin under any other name is unseen.
+    Only the extension changes -- Homebrew's are ``mvtools.dylib`` and
+    ``libffms2.dylib``, the same stems Linux has."""
     if IS_WINDOWS and linux_name.endswith(".so"):
         return linux_name[:-3] + ".dll"
+    if IS_MACOS and linux_name.endswith(".so"):
+        return linux_name[:-3] + ".dylib"
     return linux_name
 
 
 #: vs-mlrt's TensorRT plugin: ``vstrt.dll`` is the name its Windows releases use
 VSTRT_LIB = "vstrt.dll" if IS_WINDOWS else "libvstrt.so"
+
+#: Can a TensorRT backend exist on this system at all? Not on macOS: TensorRT needs
+#: CUDA, no Apple Silicon Mac has an NVIDIA GPU, and that is permanent rather than
+#: pending (docs/PLATFORMS.md). Nothing is ever found under ``VSTRT_LIB`` there, so
+#: callers must ask this before they look. It is a flag and not ``VSTRT_LIB = None``
+#: because every caller joins that name onto a path, and making it optional moves
+#: the type error into files this seam has no business editing.
+HAS_VSTRT = not IS_MACOS
 
 
 # ======================================================================== bundled runtime
@@ -387,6 +425,8 @@ def pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    if sys.platform == "darwin":
+        return d.pid_alive(pid)
     try:
         state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
     except OSError, IndexError:
@@ -439,7 +479,11 @@ class DetachedChild:
         self._popen = popen
 
     def open_pidfd(self) -> int | None:
-        """A new pidfd the event loop can watch (Linux), else None: poll instead."""
+        """A new descriptor the event loop can watch, else None: poll instead. A
+        pidfd on Linux, a kqueue on macOS (``_darwin.exit_watch``); both go
+        readable when the process exits and stay that way."""
+        if sys.platform == "darwin":
+            return d.exit_watch(self.pid)
         if sys.platform == "win32" or not hasattr(os, "pidfd_open"):
             return None
         try:
@@ -586,6 +630,7 @@ __all__ = [
     "IS_WINDOWS",
     "NO_CWD_SEARCH",
     "VSTRT_LIB",
+    "HAS_VSTRT",
     "O_BINARY",
     "O_CLOEXEC",
     "O_NOFOLLOW",

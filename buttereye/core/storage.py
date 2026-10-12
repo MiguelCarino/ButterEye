@@ -3,9 +3,10 @@
 """Storage overview, cleanup and model listing (SCOPE §4.6, F10).
 
 Sizes are measured with ``lstat`` and never follow symbolic links. ``clean``
-only empties ButterEye's own user directories; RPM-owned locations (``/usr``)
-and anything outside the user's XDG folders are never touched, and a symlink is
-removed as a link, never followed.
+only empties ButterEye's own user directories; package-owned locations
+(``/usr``, ``/etc`` and the folders ``Paths`` names) and anything outside those
+user directories are never touched, and a symlink is removed as a link, never
+followed.
 
 Providers (GUI.md §1)::
 
@@ -52,6 +53,27 @@ class Location:
     note: Msg
     target: CleanTarget | None
     rpm_owned: bool = False
+
+
+def _runtime_note() -> Msg:
+    """What empties the runtime directory -- the one fact a user reads this note
+    for, and a different one on each platform.
+
+    Linux's ``$XDG_RUNTIME_DIR`` is a session folder the login manager removes.
+    macOS has no such variable: the folder sits in the per-user temporary
+    directory, which ``dirhelper``
+    (``/System/Library/LaunchDaemons/com.apple.bsd.dirhelper.plist``) sweeps
+    daily at 03:35 for anything older than three days
+    (``CLEAN_FILES_OLDER_THAN_DAYS=3``), so a session left attached across a
+    long weekend can lose its socket. Nothing at all cleans the Windows folder:
+    it is part of the user's profile, not a temporary directory, and saying
+    "logout" there was simply wrong.
+    """
+    if osapi.IS_WINDOWS:
+        return M("Live scripts and sockets (nothing clears these for you)")
+    if osapi.IS_MACOS:
+        return M("Live scripts and sockets (cleared once three days old)")
+    return M("Live scripts and sockets (cleared at logout)")
 
 
 def locations(paths: Paths) -> tuple[Location, ...]:
@@ -104,7 +126,7 @@ def locations(paths: Paths) -> tuple[Location, ...]:
         Location(
             StorageKind.RUNTIME,
             paths.runtime_dir,
-            M("Live scripts and sockets (cleared at logout)"),
+            _runtime_note(),
             None,
         ),
         Location(
@@ -217,6 +239,15 @@ def safe_target(paths: Paths, target: Path) -> Msg | None:
     and data folders).
     """
     target = Path(os.path.normpath(os.path.abspath(target)))
+    # Only /usr and /etc are protected by name; a platform's own package
+    # location arrives through Paths, as the Windows install folder does. macOS
+    # needs no arm here and gets none: a target has to sit lexically inside a
+    # user root before any of this is consulted, and the macOS user roots are
+    # under ~/Library. Worth knowing when phase 2 fills those two fields in,
+    # though -- on an Intel Mac Homebrew's prefix is /usr/local and so already
+    # inside /usr, while on arm64 it is /opt/homebrew and is not, so the
+    # protection an Intel Mac appears to have is an accident of the prefix and
+    # does not carry over.
     rpm_roots = (paths.rpm_plugin_dir, paths.rpm_data_dir, Path("/usr"), Path("/etc"))
     dnf = M("Installed by dnf; remove the package instead.")
     if any(_inside(target, r) for r in rpm_roots):
@@ -247,6 +278,15 @@ def safe_target(paths: Paths, target: Path) -> Msg | None:
 
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | osapi.O_NOFOLLOW | osapi.O_CLOEXEC
 
+#: Every errno ``_DIR_FLAGS`` answers with when the path is not the directory we
+#: meant to descend into. Linux reports a symbolic link as ELOOP; macOS reports
+#: it as ENOTDIR, because O_DIRECTORY answers first there even for a link that
+#: does point at a directory (measured). ENOTDIR is also what a plain file gives
+#: on both, and that case wants the same treatment: unlink the entry, never
+#: follow it. Narrowing this to ELOOP would turn a swapped-in symlink on macOS
+#: from "removed as a link" into an unhandled OSError.
+_NOT_A_DIR = (errno.ELOOP, errno.ENOTDIR)
+
 
 def _remove_tree(d: Path, removed: list[Path], skipped: list[tuple[Path, Msg]]) -> int:
     """Delete everything inside ``d`` without following links; returns bytes freed.
@@ -273,7 +313,7 @@ def _remove_tree(d: Path, removed: list[Path], skipped: list[tuple[Path, Msg]]) 
     except FileNotFoundError:
         return 0
     except OSError as exc:
-        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+        if exc.errno in _NOT_A_DIR:
             skipped.append((d, M("This folder is a symbolic link; it is left alone.")))
         else:
             skipped.append((d, M("Can't read this folder: {why}", {"why": exc.strerror or ""})))
@@ -307,7 +347,7 @@ def _remove_in(fd: int, d: Path, removed: list[Path], skipped: list[tuple[Path, 
                 try:
                     cfd = os.open(name, _DIR_FLAGS, dir_fd=fd)
                 except OSError as exc:
-                    if exc.errno not in (errno.ELOOP, errno.ENOTDIR):
+                    if exc.errno not in _NOT_A_DIR:
                         raise
                     # swapped for a link or file since the stat: remove the entry itself
                     os.unlink(name, dir_fd=fd)

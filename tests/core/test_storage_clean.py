@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from buttereye.core import storage
+from buttereye.core import osapi, storage
 from buttereye.core.paths import resolve
 from buttereye.core.types import BackendId, CleanTarget, ModelKind, Paths, StorageKind
 
@@ -25,7 +25,7 @@ def paths(xdg_env: Any, tmp_path: Path) -> Paths:
         rpm_data_dir=usr / "share/buttereye",
     )
     p.rpm_plugin_dir.mkdir(parents=True)
-    (p.rpm_plugin_dir / "librife.so").write_bytes(b"x" * 1000)
+    (p.rpm_plugin_dir / osapi.plugin_file("librife.so")).write_bytes(b"x" * 1000)
     for m in ("rife-v4.26_ensembleFalse", "rife-v4.22_lite_ensembleFalse"):
         d = p.rpm_data_dir / "rife-ncnn-models" / m
         d.mkdir(parents=True)
@@ -94,7 +94,7 @@ async def test_clean_removes_user_data_only(paths: Paths, tmp_path: Path) -> Non
     # symlink targets survive; RPM files survive
     assert outside.read_bytes() == b"z" * 5
     assert (tmp_path / "outside").is_dir()
-    assert (paths.rpm_plugin_dir / "librife.so").exists()
+    assert (paths.rpm_plugin_dir / osapi.plugin_file("librife.so")).exists()
     assert len(list((paths.rpm_data_dir / "rife-ncnn-models").iterdir())) == 2
     assert progress[-1] == 5
 

@@ -3,8 +3,9 @@
 """Shared fixtures and marker gating for the ButterEye test suite.
 
 Markers (pyproject.toml): ``integration`` needs mpv + vspipe on PATH; ``gpu``
-needs /dev/nvidia0 or a non-CPU Vulkan ICD with a render node; ``devbox`` needs
-the installed buttereye-* RPMs; ``manual`` never runs unless ``--run-manual``.
+needs /dev/nvidia0 or a non-CPU Vulkan ICD with a render node, and on macOS a
+non-CPU device in ``vulkaninfo``; ``devbox`` needs the installed buttereye-*
+RPMs; ``manual`` never runs unless ``--run-manual``.
 
 Memory failsafes (``tools/memguard.py``): the run refuses to start when the
 machine is short of memory, re-runs itself inside a systemd user scope capped
@@ -74,8 +75,49 @@ def have_integration() -> tuple[bool, str]:
     return (not missing, f"needs {' and '.join(missing)} on PATH" if missing else "")
 
 
+#: What ``vulkaninfo --summary`` calls a software rasteriser. Every other
+#: ``deviceType`` it lists is real hardware: INTEGRATED_GPU for Apple Silicon's
+#: GPU, DISCRETE_GPU for an AMD card in an Intel Mac.
+VULKAN_CPU_DEVICE = "PHYSICAL_DEVICE_TYPE_CPU"
+
+
+def _have_gpu_darwin() -> tuple[bool, str]:
+    """The macOS half of ``have_gpu``: ask the Vulkan loader instead of guessing
+    a path.
+
+    None of the evidence the Linux body reads exists here. There is no
+    ``/dev/nvidia0`` and no ``/dev/dri``, because Metal is not a DRM driver, and
+    the only ICD on this machine is Homebrew's MoltenVK at
+    ``/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json`` - under a prefix that
+    moves with whoever installed it (``/usr/local`` on an Intel Mac,
+    ``~/VulkanSDK`` for LunarG's own installer), so hardcoding one would answer
+    "no GPU" on the next Mac. The loader already knows its own search list, and
+    ``vulkaninfo`` is the cheapest way to make it say what it found: measured
+    here, one INTEGRATED_GPU, an Apple M2 through MoltenVK at apiVersion 1.4.357,
+    in 50 ms. ``have_gpu``'s cache means it runs once per session.
+    """
+    if shutil.which("vulkaninfo") is None:
+        return False, "needs vulkaninfo (brew install vulkan-tools) to find the Metal GPU"
+    try:
+        res = subprocess.run(
+            ["vulkaninfo", "--summary"], capture_output=True, text=True, timeout=60, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"vulkaninfo failed: {exc}"
+    kinds = [
+        line.split("=", 1)[1].strip()
+        for line in res.stdout.splitlines()
+        if line.strip().startswith("deviceType")
+    ]
+    if any(kind != VULKAN_CPU_DEVICE for kind in kinds):
+        return True, ""
+    return False, f"vulkaninfo found no non-CPU Vulkan device (deviceType {kinds or 'absent'})"
+
+
 @functools.cache
 def have_gpu() -> tuple[bool, str]:
+    if sys.platform == "darwin":  # nothing below exists on macOS; see the note there
+        return _have_gpu_darwin()
     if Path("/dev/nvidia0").exists():
         return True, ""
     render_nodes = list(Path("/dev/dri").glob("renderD*")) if Path("/dev/dri").is_dir() else []
@@ -136,6 +178,13 @@ def xdg_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[XdgEnv]
     ``buttereye-test-*`` when available (Unix socket paths must stay short), on
     macOS - which sets no ``XDG_RUNTIME_DIR`` - under ``/tmp``, else under
     ``tmp_path``; it is removed afterwards.
+
+    On macOS ``paths.resolve`` no longer needs the variable: without it the
+    runtime folder is the system's per-user temporary directory, which is where
+    a real run puts its sockets. The fixture still sets it, because a test's
+    files belong in the test's own directory and not in the one a real run uses,
+    and because that directory is only 49 bytes from the 103 a Unix socket path
+    can be. The fallback itself is covered by tests/macos/test_paths_macos.py.
     """
     root = tmp_path / "xdg"
     dirs = {name: root / name for name in ("home", "config", "data", "state", "cache")}
@@ -146,11 +195,13 @@ def xdg_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[XdgEnv]
         runtime = Path(tempfile.mkdtemp(prefix="buttereye-test-", dir=real_runtime))
         cleanup = True
     elif sys.platform == "darwin":
-        # macOS leaves XDG_RUNTIME_DIR unset, and ``tmp_path`` here is 119 bytes
-        # of /private/var/folders/<hash>/T/pytest-of-<user>/... - past the 103
-        # bytes bind() accepts in a 104-byte sun_path, so a socket under it fails
-        # with "AF_UNIX path too long". /tmp keeps the whole path near 20, the
-        # same trick as the ``short_dir`` fixture of tests/macos.
+        # ``tmp_path`` here is 119 bytes of
+        # /private/var/folders/<hash>/T/pytest-of-<user>/... - past the 103 bytes
+        # bind() accepts in a 104-byte sun_path, so a socket under it fails with
+        # "AF_UNIX path too long". /tmp keeps the whole path near 20, the same
+        # trick as the ``short_dir`` fixture of tests/macos; the per-user
+        # directory resolve() falls back to would fit as well, at 49, but /tmp
+        # leaves the most room for whatever a test names its socket.
         runtime = Path(tempfile.mkdtemp(prefix="be-t-", dir="/tmp"))
         cleanup = True
     else:

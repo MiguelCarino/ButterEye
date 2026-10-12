@@ -7,6 +7,7 @@
 #          -a model=<dir name> -a gpu=<index> -a threads=4 -a size=WxH -a frames=N smoke.vpy --
 # Every setting arrives through `vspipe -a` (strings); nothing is put into code.
 import os
+import sys
 
 import vapoursynth as vs
 
@@ -23,6 +24,8 @@ def _arg(key, default):
 def _load(namespace, filename):
     if os.name == "nt" and filename.endswith(".so"):  # Windows builds are .dll
         filename = filename[:-3] + ".dll"
+    elif sys.platform == "darwin" and filename.endswith(".so"):  # macOS builds are .dylib
+        filename = filename[:-3] + ".dylib"
     if not hasattr(core, namespace):
         core.std.LoadPlugin(os.path.join(_arg("plugin_dir", ""), filename))
 
