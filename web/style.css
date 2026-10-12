@@ -155,7 +155,7 @@ a { color: var(--accent); }
   border: 1px solid var(--accent); background: var(--accent); color: #050505; }
 .copy:hover { background: var(--accent-hover); }
 .copy.done { background: transparent; color: var(--accent); }
-.modal code:not(#cmd) { font-family: var(--mono); background: #1a1a1a; padding: 1px 5px; border-radius: 3px; color: #fde68a; }
+.modal code:not(#cmd):not(#wincmd) { font-family: var(--mono); background: #1a1a1a; padding: 1px 5px; border-radius: 3px; color: #fde68a; }
 details { margin-top: 10px; }
 summary { cursor: pointer; font-weight: 600; }
 .files { margin: 8px 0; padding-left: 18px; font-family: var(--mono); font-size: .78rem; }
