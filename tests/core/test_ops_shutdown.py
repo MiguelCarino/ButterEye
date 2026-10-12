@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -25,20 +26,50 @@ def _alive(pgid: int) -> bool:
     """A live (non-zombie) process is in group ``pgid``. Zombies are ignored: a
     leader killed during loop teardown may stay unreaped until the process exits,
     which leaks nothing."""
+    # ``ps`` rather than /proc because macOS has no /proc, and rather than osapi
+    # because teaching osapi to inspect a process without /proc is phase 1 of the
+    # macOS port: until then the platform split lives in this test. Darwin's state
+    # column leads with the state letter, as Linux's single-letter one does, so a
+    # zombie is "Z" on both (macOS appends flags, e.g. "Ss").
+    try:
+        out = subprocess.run(
+            ["ps", "-ax", "-o", "pgid=,state="], capture_output=True, text=True, check=True
+        ).stdout
+    except FileNotFoundError:  # no procps-ng: a bare container has no ps, but has /proc
+        return _alive_via_proc(pgid)
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[0].isdigit():
+            if int(fields[0]) == pgid and not fields[1].startswith("Z"):
+                return True
+    return False
+
+
+def _alive_via_proc(pgid: int) -> bool:
+    """``_alive`` without ``ps``, so tests/core keeps needing no package on Linux.
+
+    ``/proc/<pid>/stat`` is "pid (comm) state ppid pgrp ..." and comm may hold
+    spaces and brackets, so the fields are read after the last ") ".
+    """
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
             continue
         try:
-            stat = (entry / "stat").read_text()
-        except OSError:
+            fields = (entry / "stat").read_text().rpartition(") ")[2].split()
+        except OSError:  # it exited while we were reading
             continue
-        fields = stat[stat.rindex(")") + 2 :].split()
-        if int(fields[2]) == pgid and fields[0] != "Z":
+        if len(fields) > 2 and int(fields[2]) == pgid and fields[0] != "Z":
             return True
     return False
 
 
-def _wait_dead_sync(pgid: int, timeout: float = 1.5) -> bool:
+def _wait_dead_sync(pgid: int, timeout: float = 5.0) -> bool:
+    # 1.5 s was enough while ``_alive`` was an in-process /proc walk. Reading the
+    # process table with ``ps`` costs about 12 ms a call here, so a poll is ~32 ms
+    # rather than ~20 ms, and a loaded machine spent the old budget waiting rather
+    # than deciding: this timed out once in a full-suite run while passing every
+    # time the file ran alone. A longer deadline only delays a genuine failure's
+    # report; it cannot turn a group that is still alive into a dead one.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _alive(pgid):

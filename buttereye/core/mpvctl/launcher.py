@@ -375,7 +375,10 @@ async def connect(
                 ),  # fmt: skip
                 detail=os.fspath(socket),
             ) from exc
-        except FileNotFoundError, ConnectionRefusedError, TimeoutError:
+        # ConnectionResetError: on macOS the peer check asks the kernel for the
+        # peer's pid, which fails once mpv has exited; keep waiting as for a
+        # socket nobody serves yet
+        except FileNotFoundError, ConnectionRefusedError, TimeoutError, ConnectionResetError:
             if mpvsockets_dir is not None:
                 adopted = await _adopt_mpvsockets(proc, mpvsockets_dir)
                 if adopted is not None:
@@ -389,6 +392,12 @@ async def connect(
                 ) from None
             await asyncio.sleep(0.05)
             continue
+        # a peer_pid of None skips this comparison on purpose: the kernel can
+        # decline to name the pid (Linux's SO_PEERCRED answers 0), and this is the
+        # path ButterEye itself named for mpv. A pid the kernel would not give is
+        # tolerated; a different uid is not, since MpvIpc.connect has already
+        # refused any peer whose same_user is false. _adopt_mpvsockets demands the
+        # pid because it adopts a path ButterEye did not choose.
         if ipc.peer_pid is not None and ipc.peer_pid != proc.pid:
             await ipc.close()
             raise ButterEyeError(

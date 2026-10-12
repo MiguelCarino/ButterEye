@@ -1,20 +1,26 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 The ButterEye contributors
-"""The operating-system seam: every call that differs between Linux and Windows.
+"""The operating-system seam: every call that differs between Linux, Windows and macOS.
 
 The rest of the core asks this module instead of reaching for POSIX directly, so
 the Linux behaviour stays exactly what SCOPE §4.3/§4.6/§2.4 describe and Windows
-gets the nearest equivalent (docs/PLATFORMS.md):
+gets the nearest equivalent (docs/PLATFORMS.md). macOS is POSIX, so it takes the
+Linux path everywhere the rows below do not say otherwise:
 
 - process group: Linux runs the child in a new session (pgid = leader pid) and
   sends SIGTERM, then SIGKILL. Windows uses the leader pid and its process tree;
   ButterEye sits in a kill-on-close job so its helpers end with it, and "soft"
   means WM_CLOSE when the tree has windows, else terminate at once.
 - mpv lifetime: ``posix_spawnp(setsid)`` and a pidfd watch on Linux; on Windows a
-  ``Popen`` that breaks away from the job, polled.
-- mpv control: Unix socket + ``SO_PEERCRED`` on Linux; on Windows a named pipe,
-  checked by its server pid and that process's user SID, with a marker file in
-  the runtime folder standing for the socket (discovery, cleanup).
+  ``Popen`` that breaks away from the job, polled. macOS spawns as Linux does but
+  has no pidfd, so it polls too.
+- mpv control: Unix socket + ``SO_PEERCRED`` on Linux. macOS keeps the socket but
+  has no ``SO_PEERCRED``: the peer's uid comes from ``LOCAL_PEERCRED`` and its pid
+  from ``LOCAL_PEERPID`` (``_darwin.peer_cred``), and a peer that has already gone
+  reads as ``ConnectionResetError`` rather than an answer from the kernel's cache.
+  On Windows a named pipe, checked by its server pid and that process's user SID,
+  with a marker file in the runtime folder standing for the socket (discovery,
+  cleanup).
 - private folder: 0700, own uid, not a symlink on Linux; on Windows owned by this
   user's SID and not a reparse point (it lives under %LOCALAPPDATA%, per-user by ACL).
 - locks: ``flock`` on Linux; ``msvcrt.locking`` on byte 0 of a lock file on Windows.
@@ -22,7 +28,8 @@ gets the nearest equivalent (docs/PLATFORMS.md):
   installer bundles Python with VapourSynth, and ``use_bundled_runtime`` points
   every child (mpv, vspipe) at it.
 
-mypy checks both halves: ``mypy`` and ``mypy --platform win32``.
+mypy checks all three: ``mypy --platform linux``, ``mypy --platform win32``
+and ``mypy --platform darwin``.
 """
 
 from __future__ import annotations
@@ -46,6 +53,7 @@ from pathlib import Path
 from typing import Any
 
 IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
 
 #: open() flags that exist only on POSIX; 0 where they don't (Windows handles are
 #: not inherited unless asked for, and there are no symlinked-path races to stop
@@ -60,6 +68,9 @@ if sys.platform == "win32":
     from buttereye.core.osapi import _win32 as w
 else:
     import fcntl
+
+    if sys.platform == "darwin":
+        from buttereye.core.osapi import _darwin as d
 
 
 # ======================================================================== files
@@ -432,9 +443,10 @@ class DetachedChild:
         if sys.platform == "win32" or not hasattr(os, "pidfd_open"):
             return None
         try:
-            return os.pidfd_open(self.pid)
+            fd: int = os.pidfd_open(self.pid)  # annotated: Any where the call is absent (macOS)
         except OSError:
             return None
+        return fd
 
     def poll(self) -> int | None:
         if self._popen is not None:
@@ -544,8 +556,10 @@ async def open_ipc(
 
 def ipc_peer(writer: asyncio.StreamWriter) -> tuple[int | None, bool] | None:
     """``(pid, same_user)`` of the process serving the connection, or None when it
-    can't be told (then the caller refuses). POSIX: ``SO_PEERCRED``. Windows:
-    the pipe server's pid and the user its process runs as."""
+    can't be told (then the caller refuses). Linux: ``SO_PEERCRED``. macOS:
+    ``LOCAL_PEERCRED`` and ``LOCAL_PEERPID``, which raise ``ConnectionResetError``
+    once the peer has gone. Windows: the pipe server's pid and the user its
+    process runs as."""
     if sys.platform == "win32":
         pipe = writer.get_extra_info("pipe")
         handle = getattr(pipe, "handle", None)
@@ -559,6 +573,8 @@ def ipc_peer(writer: asyncio.StreamWriter) -> tuple[int | None, bool] | None:
     sock = writer.get_extra_info("socket")
     if sock is None:
         return None
+    if sys.platform == "darwin":
+        return d.peer_cred(sock)
     raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
     pid, uid, _gid = struct.unpack("3i", raw)
     return (pid if pid > 0 else None), uid == os.getuid()
@@ -566,6 +582,7 @@ def ipc_peer(writer: asyncio.StreamWriter) -> tuple[int | None, bool] | None:
 
 __all__ = [
     "INSTALL_RECORD",
+    "IS_MACOS",
     "IS_WINDOWS",
     "NO_CWD_SEARCH",
     "VSTRT_LIB",

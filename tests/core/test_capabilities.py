@@ -391,4 +391,7 @@ def test_api_import_pulls_no_subsystem(repo_root: Path) -> None:
         )
     }
     allowed |= {"buttereye", "buttereye.core"}
+    # the seam's platform half, which osapi imports itself and which is stdlib only
+    # like the rest of it: _win32 on Windows, _darwin on macOS, neither on Linux
+    allowed |= {"buttereye.core.osapi._win32", "buttereye.core.osapi._darwin"}
     assert set(out) <= allowed, set(out) - allowed

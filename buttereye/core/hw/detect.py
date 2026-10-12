@@ -23,7 +23,6 @@ import dataclasses
 import functools
 import os
 import re
-import sys
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -447,8 +446,8 @@ def interpolation_pci(probe: HwProbe) -> str | None:
 
 
 def cpu_threads() -> int:
-    """Threads this process may run on (its affinity on Linux)."""
-    if sys.platform != "win32":
+    """Threads this process may run on (its affinity on Linux, the CPU count elsewhere)."""
+    if hasattr(os, "sched_getaffinity"):  # Linux only: neither macOS nor Windows has it
         try:
             return len(os.sched_getaffinity(0))
         except OSError:

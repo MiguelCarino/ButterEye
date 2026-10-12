@@ -6,8 +6,9 @@ code (docs/design/GUI.md §6 ``test_gui_import_ban``, F17, SCOPE §8.1).
 A clean ``python -I`` subprocess builds the main window, shows every page of
 ``PAGE_REGISTRY`` (so new pages are covered automatically), the shell's
 dialogs, the simple window and every tab of its Details dialog (§12), spins
-the event loop for 500 ms, then reports ``sys.modules`` and ``/proc/self/maps``.
-Driver GL/EGL libraries are allowed (Q18).
+the event loop for 500 ms, then reports ``sys.modules`` and the libraries mapped
+into the process (``/proc/self/maps``, dyld's image list on macOS: both through
+``import_guard.mapped_images``). Driver GL/EGL libraries are allowed (Q18).
 """
 
 from __future__ import annotations
@@ -26,7 +27,12 @@ REPO = Path(__file__).resolve().parents[2]
 SCRIPT = r"""
 import json, os, sys
 sys.path.insert(0, os.environ["BE_REPO"])
-from tests.boundary.import_guard import ImportGuard, loaded_violations, mapped_violations
+from tests.boundary.import_guard import (
+    ImportGuard,
+    loaded_violations,
+    mapped_images,
+    mapped_violations,
+)
 guard = ImportGuard(allow_test_qt=False).install()
 
 from PySide6.QtCore import QEventLoop, QSettings, QTimer
@@ -77,7 +83,7 @@ simple.details.hide()
 simple._may_close = True
 spin(500)
 fatal = bridge.startup_error
-maps = open("/proc/self/maps", encoding="utf-8", errors="replace").read()
+maps = mapped_images()
 report = {
     "modules": loaded_violations(),
     "guard": guard.violations,

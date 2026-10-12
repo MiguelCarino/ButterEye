@@ -133,8 +133,9 @@ def xdg_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[XdgEnv]
     """Point HOME and every XDG dir at fresh temporary directories.
 
     The runtime dir is 0700. It is created under the real ``$XDG_RUNTIME_DIR`` as
-    ``buttereye-test-*`` when available (Unix socket paths must stay short), else
-    under ``tmp_path``; it is removed afterwards.
+    ``buttereye-test-*`` when available (Unix socket paths must stay short), on
+    macOS - which sets no ``XDG_RUNTIME_DIR`` - under ``/tmp``, else under
+    ``tmp_path``; it is removed afterwards.
     """
     root = tmp_path / "xdg"
     dirs = {name: root / name for name in ("home", "config", "data", "state", "cache")}
@@ -143,6 +144,14 @@ def xdg_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[XdgEnv]
     real_runtime = os.environ.get("XDG_RUNTIME_DIR")
     if real_runtime and Path(real_runtime).is_dir() and os.access(real_runtime, os.W_OK):
         runtime = Path(tempfile.mkdtemp(prefix="buttereye-test-", dir=real_runtime))
+        cleanup = True
+    elif sys.platform == "darwin":
+        # macOS leaves XDG_RUNTIME_DIR unset, and ``tmp_path`` here is 119 bytes
+        # of /private/var/folders/<hash>/T/pytest-of-<user>/... - past the 103
+        # bytes bind() accepts in a 104-byte sun_path, so a socket under it fails
+        # with "AF_UNIX path too long". /tmp keeps the whole path near 20, the
+        # same trick as the ``short_dir`` fixture of tests/macos.
+        runtime = Path(tempfile.mkdtemp(prefix="be-t-", dir="/tmp"))
         cleanup = True
     else:
         runtime = root / "runtime"

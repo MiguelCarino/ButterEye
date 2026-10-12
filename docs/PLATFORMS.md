@@ -9,21 +9,25 @@ Assessed against the 0.0.1 tree on 2026-10-10. The Windows port's four phases
 landed on 2026-10-11 and are described below: there is now a Windows installer,
 tested under Wine on the Linux dev box and, in CI, installed and tested on GitHub's
 Windows Server 2025 machines (no GPU there). It has **not yet been used on a real
-Windows desktop PC with a GPU**, so it is not released. No macOS build has been made.
+Windows desktop PC with a GPU**, so it is not released. No macOS build has been
+made: macOS phase 0 (2026-10-12) makes ButterEye's own test suite and its
+three-platform type check run and pass on an Apple Silicon Mac, which is a gate
+against later breakage, not support.
 
 ## Summary
 
 | Piece | Linux (Fedora 44/45) | Windows | macOS |
 |---|---|---|---|
-| Python core (`buttereye.core`) | supported | platform layer, detection and doctor done (phases 1-2) | needs a smaller platform layer (peer credentials, paths, `/proc`, detection) |
+| Python core (`buttereye.core`) | supported | platform layer, detection and doctor done (phases 1-2) | needs a smaller platform layer; the peer check and the thread count work (phase 0), paths, process inspection and detection do not |
 | PySide6 GUI | supported | bundled by the installer; opens under Wine, Qt loads on Windows Server 2025 (CI); the window is untried on a real desktop | Qt itself runs; inherits the core's gaps (`fcntl` is available) |
-| mpv control (JSON IPC) | Unix sockets + socketpair | **named pipes**, done; tested under Wine with a real `mpv.exe` | Unix sockets work; `SO_PEERCRED` does not exist |
-| mpv `vapoursynth` filter | distro mpv has it | depends on the mpv build | depends on the mpv build |
+| mpv control (JSON IPC) | Unix sockets + socketpair | **named pipes**, done; tested under Wine with a real `mpv.exe` | Unix sockets work; `SO_PEERCRED` does not exist, so the uid comes from `LOCAL_PEERCRED` and the pid from `LOCAL_PEERPID` (phase 0, measured against a Homebrew `mpv`) |
+| mpv `vapoursynth` filter | distro mpv has it | depends on the mpv build | Homebrew's `mpv` formula (0.41.0 revision 10, exactly SCOPE's minimum) has it: `vapoursynth`, `vulkan-loader` and `molten-vk` are required dependencies and there is an arm64 bottle, so it is a bottle pour, not an open question. The mpv.io / stolendata app bundle, which a Mac user is likelier to have already, is 0.40.0 **without** the filter (0 hits in `strings`; `--vf=help` lists only `format`, `lavfi`, `lavfi-bridge`, `sub`), and that cask has been disabled in Homebrew since 2026-09-01 for failing Gatekeeper |
 | VapourSynth + `vspipe` | Fedora packages | bundled by the installer (the official wheel, inside its own Python) | available (e.g. Homebrew); untested here |
-| `buttereye-vs-mvtools` | COPR RPM | `mvtools.dll`, cross-built (phase 3) | needs a macOS build |
-| `buttereye-vs-rife-ncnn` | COPR RPM (bundled ncnn) | `librife.dll`, cross-built with a Windows path fix (phase 3) | no native Vulkan: only via MoltenVK, unverified |
-| `buttereye-vs-mvgpu` (Vulkan compute) | COPR RPM | `libmvgpu.dll`, cross-built (phase 3) | MoltenVK only; compute-shader limits unverified |
-| TensorRT (experimental) | user-built `vstrt` | not yet (vs-mlrt is Windows-first upstream, so it is possible) | not possible (no CUDA/TensorRT on macOS) |
+| `buttereye-vs-mvtools` | COPR RPM | `mvtools.dll`, cross-built (phase 3) | Homebrew ships `vapoursynth-mvtools` 29 as an arm64 bottle. Upstream's `meson.build` already takes the aarch64 branch and bundles `sse2neon.h`, and on an M2 clang -O3 auto-vectorises the plain-C SAD to NEON at 227.6 M SAD/s for 16×16, 1.3× faster than the same SSE2 kernel through sse2neon |
+| `buttereye-vs-rife-ncnn` | COPR RPM (bundled ncnn) | `librife.dll`, cross-built with a Windows path fix (phase 3) | plausible, **unmeasured**: ncnn upstream already does the portability dance mvgpu lacks and has a full Apple path, and brew's `ncnn` 20260526 is built against `molten-vk`, `glslang` and `spirv-tools` — but nothing has rendered a frame |
+| `buttereye-vs-mvgpu` (Vulkan compute) | COPR RPM | `libmvgpu.dll`, cross-built (phase 3) | works on MoltenVK 1.4.2 (M2) bar three lines: all seven compute shaders compile to SPIR-V, translate to MSL without a warning, create all eight pipelines and dispatch correctly (`search.comp` found the true half-vector in 16/16 blocks at workgroup 512, `unpack.comp` 1024/1024 bit-correct samples), and the limits are not tight (`maxComputeWorkGroupInvocations` 1024 against the 512 needed). The blocker: `vkCreateInstance` (`mvgpu/src/mvgpu.cpp:329-331`, API 1.1, no extensions) returns `VK_ERROR_INCOMPATIBLE_DRIVER`, because MoltenVK's ICD says `"is_portability_driver": true` and the loader hides it until the app enables `VK_KHR_portability_enumeration` and sets `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR` |
+| ffms2 (render's source filter) | Fedora package | `ffms2.dll`, built from source in the same chroot (phase 4) | a Homebrew bottle (`ffms2` 5.0), so the Windows source-offer problem does not arise |
+| TensorRT (experimental) | user-built `vstrt` | not yet (vs-mlrt is Windows-first upstream, so it is possible) | **permanently** not possible: there is no CUDA or TensorRT for macOS, and no Apple Silicon Mac has an NVIDIA GPU |
 | Packaging / installs | RPM + COPR | per-user installer with its own Python, Qt and VapourSynth (phase 4) | an app bundle would be new work |
 | `doctor` checks | `rpm -q`, `dnf` lines, `journalctl -k`, sysfs | done: install record, `winget` lines, Vulkan devices (phase 2) | must be rewritten for the platform |
 
@@ -31,7 +35,8 @@ Short version: **the architecture ports, and on Windows the core's plumbing now 
 a GUI-free asyncio library with the OS-specific parts concentrated in a handful
 of modules, and the GUI only talks to `buttereye.core.api`. Those modules were
 written for Linux on purpose; the Windows branch now lives in `buttereye.core.osapi`,
-and there is still no macOS branch.
+and the macOS branch there is one module and a seam (`IS_MACOS`, `_darwin.py`) so
+far: phase 0, below.
 
 ## What is Linux-specific today
 
@@ -445,22 +450,87 @@ non-administrator account (the runner's user is an administrator).
 
 ## macOS: the realistic path
 
-macOS is closer to Linux for the core and further away for the GPU work.
+macOS is closer to Linux for the core and further away for the GPU work. It is
+**not a supported platform**, and phase 0 does not make it one: what it makes is
+a gate. `mypy --platform darwin buttereye` is clean, as `linux` and `win32`
+already were, and `tests/core`, `tests/boundary` and `tests/macos` pass on a
+Mac, so a later phase cannot quietly break either supported platform.
+`.github/workflows/macos.yml` runs both of those on GitHub's Apple Silicon
+runners, and installs nothing from Homebrew: no mpv, no VapourSynth, no
+plugins, because none of that is ported yet.
+
+The measurements below come from one machine: macOS 27.0.1 on an Apple M2
+(arm64), Homebrew's python3.14. **arm64 is the only target measured**, and Intel
+Macs are out of the first cut: Homebrew's prefix there is `/usr/local`, which
+also sits inside the protected `/usr` root `buttereye/core/storage.py` refuses
+to clean, where `/opt/homebrew` does not.
+
+| Phase | What | State |
+|---|---|---|
+| 0 | The `IS_MACOS` seam, the three live defects, `tests/macos` and CI | **done** (`buttereye/core/osapi/_darwin.py`) |
+| 1 | The platform layer becomes three-valued | not started |
+| 2 | Doctor, detection and setup speak macOS | not started |
+| 3 | macOS builds of the plugins | not started |
+| 4 | Distribution through a Homebrew tap | not started |
+| 5 | The real-hardware gate | not started |
 
 - **Core.** Unix sockets, `posix_spawn`, process groups and `fcntl` are all
-  there. Needed: peer credentials via `getpeereid`/`LOCAL_PEERCRED` instead of
-  `SO_PEERCRED`, process inspection without `/proc`, a private runtime directory
-  without `$XDG_RUNTIME_DIR`, and macOS paths (`~/Library/...`).
-- **GPU.** macOS has **no native Vulkan**. RIFE-ncnn-Vulkan and `mvgpu` could
-  only run through **MoltenVK** (Vulkan on Metal), whose compute-shader feature
-  and limits coverage would have to be verified for both. A native Metal port of
-  `mvgpu` would be a separate engine. **TensorRT is not available on macOS** at
-  all. MVTools (CPU) is the only backend with no GPU question.
-- **mpv/VapourSynth.** Both are available on macOS (for example through
-  Homebrew), but whether a given mpv build includes the `vapoursynth` filter
-  must be checked; ButterEye's F1 checks already refuse an mpv without it.
+  there. Still needed: a private runtime directory without `$XDG_RUNTIME_DIR`,
+  and macOS paths (`~/Library/...`).
+- **Peer credentials** take three constants Python does not export. The uid
+  comes from `LOCAL_PEERCRED` (level 0, an `xucred` of 76 bytes read as
+  `=IIh`, whose `cr_version` must be 0 before `cr_uid` is worth trusting) and
+  the pid from `LOCAL_PEERPID` (level 0, option `0x002`). `os.getpeereid` does
+  not exist in CPython on macOS, and neither call yields a pid on its own, so
+  `getpeereid`/`LOCAL_PEERCRED` was never the whole answer. One macOS-only
+  failure mode: once the peer has gone, `LOCAL_PEERPID` fails with `ENOTCONN`,
+  where Linux's `SO_PEERCRED` keeps answering from its cache. That is the third
+  phase-0 defect: the connect retry in `buttereye/core/mpvctl/launcher.py` now
+  waits out that reset as it already waited out a socket nobody serves yet.
+- **Process inspection without `/proc`** is one call site, `osapi.pid_alive`,
+  whose `OSError` fallback silently reports every zombie as alive: a
+  reaped-but-unwaited mpv answers `os.kill(pid, 0)` while `sysctl` says
+  `p_stat` is `SZOMB`. The answer is libproc's `proc_pidinfo` (1.04 µs a call,
+  against 2.25 ms for `ps`), which is phase 1.
+- **pidfd** is not an open question. `os.pidfd_open` does not exist on macOS,
+  the `not hasattr` arm already returns `None`, and the Windows-style poll
+  fallback already works; kqueue's `EVFILT_PROC`/`NOTE_EXIT` is the exact
+  equivalent if the 10 Hz wakeups ever matter.
+- **The plugin extension is `.dylib`**, from VapourSynth R81's own
+  `src/core/vscore.cpp:65-69`, which governs both a manifest load and the
+  extension filter of the autoload directory. ButterEye has two copies of the
+  `.so` → `.dll` rule, `osapi.plugin_file` and a second inside the `_load`
+  helper of `buttereye/core/scriptgen/template.vpy`; each carries its own
+  comment saying the plugins are named for Linux, and both need the third value.
+- **GPU.** macOS has **no native Vulkan**. RIFE-ncnn-Vulkan and `mvgpu` can
+  only run through **MoltenVK** (Vulkan on Metal). For `mvgpu` that path is now
+  measured and the one blocker is the three lines of instance creation named in
+  the summary table; for RIFE it is plausible and unmeasured. A native Metal
+  port of `mvgpu` would be a separate engine. **TensorRT is not available on
+  macOS** and permanently cannot be: there is no CUDA or TensorRT for macOS, and
+  no Apple Silicon Mac has an NVIDIA GPU. MVTools (CPU) is the only backend with
+  no GPU question, and Homebrew already ships it.
+- **mpv/VapourSynth.** Both are Homebrew bottles, and the formula's `mpv`
+  carries the `vapoursynth` filter while the app bundle from mpv.io does not
+  (the summary table has the detail). ButterEye's F1 checks already refuse an
+  mpv without it.
 - **Detection and doctor** need macOS sources (`system_profiler`, IOKit) in
   place of sysfs, rpm and the journal.
+
+Two numbers nothing else in the repository writes down:
+
+- **An `AF_UNIX` path is at most 103 bytes.** macOS's `sun_path` is 104 bytes
+  (`sun_path[104]` in the SDK header; bisecting real binds agrees), against
+  Linux's 108. `mpv-<12 hex>.sock` is 21 bytes, which leaves 82 for the runtime
+  directory. Past that the failure surfaces as an `OSError` in mpv's own log,
+  not in ButterEye.
+- **The per-user temporary directory is garbage-collected on age**, not
+  "cleared at logout": `dirhelper`
+  (`/System/Library/LaunchDaemons/com.apple.bsd.dirhelper.plist`) runs daily at
+  03:35 and deletes what is older than three days
+  (`CLEAN_FILES_OLDER_THAN_DAYS=3`). `buttereye/core/storage.py` tells the user
+  "cleared at logout" for the runtime directory, which is wrong on Windows too:
+  a known inaccuracy, left alone here.
 
 ## What would not change
 

@@ -22,8 +22,18 @@ BANNED_TOP = frozenset({"vapoursynth", "vsmlrt", "tensorrt", "pynvml"})
 #: PySide6 modules the GUI may use; QtTest is allowed only inside tests.
 ALLOWED_QT = frozenset({"QtCore", "QtGui", "QtWidgets"})
 TEST_ONLY_QT = frozenset({"QtTest"})
-#: Native libraries that must never be mapped into the GUI process.
-BANNED_LIBS = ("libnvinfer", "libcuda.so", "libnvidia-ml", "libvapoursynth")
+#: Native libraries that must never be mapped into the GUI process. Each prefix
+#: stops before the extension, so the same ban bites on ``.so``, ``.so.615.71.09``
+#: and macOS's ``.dylib``, and keeps the dot where dropping it would catch another
+#: library (``libcudart``) or a plain file sitting next to the module. VapourSynth's
+#: Python extension has no ``lib`` prefix on macOS (``vapoursynth.so``), hence both.
+BANNED_LIBS = (
+    "libnvinfer",
+    "libcuda.",
+    "libnvidia-ml",
+    "libvapoursynth",
+    "vapoursynth.",
+)
 
 _SKIP_FRAMES = ("importlib", "<frozen")
 
@@ -92,14 +102,52 @@ def loaded_violations(
     return sorted(n for n in names if banned_reason(n, allow_test_qt=allow_test_qt) is not None)
 
 
+def mapped_images() -> str:
+    """The files mapped into this process, in the shape ``mapped_violations`` reads.
+
+    Linux reads ``/proc/self/maps``. macOS has no ``/proc``, so dyld answers for
+    itself: ``_dyld_image_count``/``_dyld_get_image_name`` are in libSystem, which
+    every Mach-O process already has, and give one absolute path per image.
+    """
+    if sys.platform == "darwin":
+        import ctypes
+
+        libsystem = ctypes.CDLL(None)
+        libsystem._dyld_image_count.restype = ctypes.c_uint32
+        libsystem._dyld_get_image_name.restype = ctypes.c_char_p
+        libsystem._dyld_get_image_name.argtypes = [ctypes.c_uint32]
+        count = libsystem._dyld_image_count()
+        names = (libsystem._dyld_get_image_name(i) for i in range(count))
+        return "\n".join(n.decode("utf-8", "replace") for n in names if n is not None)
+    with open("/proc/self/maps", encoding="utf-8", errors="replace") as fh:
+        return fh.read()
+
+
 def mapped_violations(maps_text: str) -> list[str]:
+    """Banned native libraries among the files ``maps_text`` names.
+
+    Both shapes ``mapped_images`` returns: a ``/proc/self/maps`` line, where the
+    mapped file is the sixth field, an anonymous mapping has only five and an
+    unlinked one has a seventh, and a bare path on a line of its own, which is
+    taken whole because a macOS image path may hold spaces.
+    """
     out: set[str] = set()
     for line in maps_text.splitlines():
-        parts = line.split()
-        if len(parts) >= 6:
-            lib = parts[-1].rsplit("/", 1)[-1]
-            if any(lib.startswith(b) for b in BANNED_LIBS):
-                out.add(parts[-1])
+        text = line.strip()
+        parts = text.split()
+        if text.startswith("/") or len(parts) == 1:
+            path = text
+        elif len(parts) >= 6:
+            # maps appends " (deleted)" to a mapping whose file has been unlinked,
+            # which pushes the path one field left. Without this a TensorRT that was
+            # loaded and then deleted off disk reads as a clean process.
+            if parts[-1] == "(deleted)" and len(parts) >= 7:
+                parts = parts[:-1]
+            path = parts[-1]
+        else:
+            continue
+        if any(path.rsplit("/", 1)[-1].startswith(b) for b in BANNED_LIBS):
+            out.add(path)
     return sorted(out)
 
 
@@ -112,5 +160,6 @@ __all__ = [
     "banned_reason",
     "importer_frame",
     "loaded_violations",
+    "mapped_images",
     "mapped_violations",
 ]
