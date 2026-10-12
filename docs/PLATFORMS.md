@@ -277,7 +277,11 @@ command line and its doctor still run). The only Microsoft DLLs shipped are `pyt
 `vcruntime140_1.dll`, part of Python's official embeddable build, redistributed under
 the conditions in its `LICENSE.txt` (`licenses\python\MICROSOFT-VCRUNTIME.txt`; the
 install record lists them as `microsoft-vcruntime`); `winstage.py check-imports`
-refuses any other. When it is
+refuses any other. Those conditions require end users to agree to terms protecting
+the files at least as much as Microsoft does: the installer's second licence page
+shows `packaging/windows/MICROSOFT-TERMS.txt` with an "I accept" box (owner decision,
+2026-10-11; a silent install accepts them, as the text says), and the text is
+installed as `licenses\python\MICROSOFT-TERMS.txt`. When it is
 missing or too old, the installer offers to download it from Microsoft and Windows
 asks for permission; a silent install (`/S`) leaves it alone. The file goes to the
 installer's own temporary folder and is held open (readable, not writable or

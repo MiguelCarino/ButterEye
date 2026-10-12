@@ -32,6 +32,12 @@
     <binary>buttereye-gui</binary>
   </provides>
   <releases>
+    <release version="0.0.2" date="2026-10-11" type="stable">
+      <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.2</url>
+      <description>
+        <p>4K videos no longer get an engine that can't keep up, and ButterEye switches engines by itself when one keeps dropping frames. First Windows build.</p>
+      </description>
+    </release>
     <release version="0.0.1" date="2026-10-10" type="stable">
       <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.1</url>
       <description>

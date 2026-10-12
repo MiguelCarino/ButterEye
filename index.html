@@ -6,7 +6,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ButterEye</title>
-  <meta name="description" content="ButterEye makes the videos you play in mpv smoother: new in-between frames, live or as a saved copy. Free software for Fedora Linux.">
+  <meta name="description" content="ButterEye makes the videos you play in mpv smoother: new in-between frames, live or as a saved copy. Free software for Fedora Linux and Windows.">
   <meta name="theme-color" content="#050505">
   <link rel="icon" type="image/svg+xml" href="web/buttereye.svg">
   <link rel="stylesheet" href="web/fonts/carino-fonts.css">
@@ -46,32 +46,33 @@
 
       <!-- Above the buttons: it is what they hand you. app.js rewrites it from the
            latest release so the line and the buttons never disagree. -->
-      <p class="version" id="version">Version <strong>0.0.1</strong> · Fedora Linux · AGPL-3.0</p>
+      <p class="version" id="version">Version <strong>0.0.2</strong> · Fedora Linux · Windows · AGPL-3.0</p>
 
       <!-- The hrefs are the no-JS path: the app's RPM for each Fedora. It needs
            its plugins (not in Fedora's repositories), so a click also opens the
-           one-line install that brings them. macOS and Windows are buttons: there
-           is nothing to download yet. -->
+           one-line install that brings them. Windows is one installer (mpv comes
+           from winget); a click also opens its three steps. macOS is a button:
+           there is nothing to download yet. -->
       <div class="downloads" id="downloads">
-        <a class="dl-btn" data-platform="fc44" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.1/buttereye-0.0.1-1.fc44.noarch.rpm">
+        <a class="dl-btn" data-platform="fc44" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.2/buttereye-0.0.2-1.fc44.noarch.rpm">
           <span class="rec">for your system</span><b>🐧 Fedora 44</b><span class="fmt">.rpm · x86-64</span></a>
-        <a class="dl-btn" data-platform="fc45" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.1/buttereye-0.0.1-1.fc45.noarch.rpm">
+        <a class="dl-btn" data-platform="fc45" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.2/buttereye-0.0.2-1.fc45.noarch.rpm">
           <span class="rec">for your system</span><b>🐧 Fedora 45</b><span class="fmt">.rpm · x86-64</span></a>
         <button class="dl-btn soon" data-platform="macos" type="button">
           <b> macOS</b><span class="fmt">not yet</span></button>
-        <button class="dl-btn soon" data-platform="windows" type="button">
-          <b>🪟 Windows</b><span class="fmt">not yet</span></button>
+        <a class="dl-btn" data-platform="windows" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.2/ButterEye-0.0.2-setup.exe">
+          <span class="rec">for your system</span><b>🪟 Windows</b><span class="fmt">.exe · 10 / 11</span></a>
       </div>
 
       <p class="dl-manual"><button class="btn ghost" type="button" id="installBtn"
          aria-haspopup="dialog" aria-controls="installDialog">⌨ Install in one command</button></p>
       <p class="dl-all"><a href="https://github.com/MiguelCarino/ButterEye/releases">All versions and changelogs →</a></p>
-      <p class="dl-note">ButterEye needs mpv, VapourSynth and its plugins; the one-line install brings everything.</p>
+      <p class="dl-note">On Fedora the one-line install brings everything. On Windows, install mpv with winget, then run the installer.</p>
     </div>
   </header>
 
   <footer class="foot">
-    <span id="foot-version">ButterEye 0.0.1</span> · AGPL-3.0-or-later ·
+    <span id="foot-version">ButterEye 0.0.2</span> · AGPL-3.0-or-later ·
     <a href="https://github.com/MiguelCarino/ButterEye">Source</a> ·
     <a href="https://github.com/MiguelCarino/ButterEye/blob/main/CHANGELOG.md">Changelog</a>
   </footer>
@@ -96,6 +97,21 @@
         <ul class="files" id="files"></ul>
         <p class="small">Check them against <a id="sums" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.1/SHA256SUMS">SHA256SUMS</a>. The minimum is <code>buttereye</code> and <code>buttereye-vs-mvtools</code>; the others add GPU smoothing.</p>
       </details>
+    </div>
+  </dialog>
+
+  <!-- Windows: the link downloads the installer; this sheet says what else to do -->
+  <dialog class="modal" id="windowsDialog" aria-labelledby="windowsTitle">
+    <div class="modal-head">
+      <h2 class="modal-title" id="windowsTitle">ButterEye for Windows</h2>
+      <form method="dialog"><button class="modal-x" aria-label="Close">✕</button></form>
+    </div>
+    <div class="modal-body">
+      <p><strong>1. Install mpv</strong> (ButterEye plays your videos in it), in PowerShell or a Command Prompt:</p>
+      <div class="code"><pre><code id="wincmd">winget install --exact --id shinchiro.mpv</code></pre><button type="button" class="copy" id="wincopy">Copy</button></div>
+      <p><strong>2. Run the installer</strong> you just downloaded. It isn't code-signed yet, so Windows SmartScreen may warn: choose <em>More info</em> ▸ <em>Run anyway</em>. It installs for your account only and asks you to accept Microsoft's terms for two runtime files that come with Python.</p>
+      <p><strong>3. Start ButterEye</strong> from the Start menu and drop a video on it. If Microsoft's Visual C++ runtime is missing, the installer offers it and ButterEye tells you.</p>
+      <p class="small">Windows 10 version 1903 or newer, 64-bit. This first Windows build is experimental: it is tested on GitHub's Windows machines and under Wine, not yet on a Windows PC with a graphics card. <a id="winsums" href="https://github.com/MiguelCarino/ButterEye/releases/latest">Checksums and source code</a>.</p>
     </div>
   </dialog>
 

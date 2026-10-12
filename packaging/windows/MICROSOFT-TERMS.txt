@@ -1,0 +1,38 @@
+Terms for the Microsoft runtime files included with ButterEye
+==============================================================
+
+ButterEye's Windows installer includes two files of Microsoft's Visual C++
+runtime, python\vcruntime140.dll and python\vcruntime140_1.dll, as part of the
+official Windows build of Python (python.org). They are copyright Microsoft
+Corporation and are NOT covered by ButterEye's licence (the GNU AGPL, on the
+previous page). Microsoft lets them be redistributed only if the people who
+receive them agree to the following terms. By installing ButterEye (including a
+silent install with /S) you agree to them:
+
+1. These files are licensed, not sold. You may use them only together with the
+   Python included in ButterEye, and only on Microsoft Windows.
+
+2. You may not reverse engineer, decompile or disassemble them, except where
+   applicable law expressly permits it despite this limitation.
+
+3. You may not alter, remove or hide any copyright, trademark or patent notice
+   in them.
+
+4. You may not use Microsoft's name, logos or trademarks in a way that
+   suggests ButterEye comes from or is endorsed by Microsoft.
+
+5. If you pass these files on to anyone, you must do so under terms that
+   protect them at least as much as these.
+
+6. Microsoft provides these files "as is", without any warranty, express or
+   implied, including warranties of merchantability, fitness for a particular
+   purpose and non-infringement. Neither Microsoft nor its suppliers are liable
+   for any damages arising from their use, to the extent the law allows.
+
+7. You must comply with all export laws and regulations that apply to these
+   files.
+
+These terms cover only the two Microsoft files named above. Everything else in
+ButterEye is free software: see the licences in the "licenses" folder of the
+installation. The other Visual C++ runtime files that ButterEye needs are not
+included; they come from Microsoft's own installer, under Microsoft's licence.

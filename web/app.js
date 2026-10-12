@@ -2,30 +2,31 @@
 // Copyright (C) 2026 The ButterEye contributors
 // butter.carino.systems. A Fedora button is a plain link to the app's RPM (the
 // no-JS path) and also opens the install sheet, since the app's plugins are not
-// in Fedora's repositories. macOS and Windows explain why not yet. Linux readers
-// see both Fedora buttons marked (the browser doesn't say which Fedora). The
-// links follow the latest GitHub release when the API answers.
+// in Fedora's repositories. The Windows button links the installer and opens its
+// three steps (mpv from winget, SmartScreen, Microsoft's terms). macOS explains
+// why not yet. Linux readers see both Fedora buttons marked (the browser doesn't
+// say which Fedora), Windows readers the Windows one. The links follow the latest
+// GitHub release when the API answers.
 'use strict';
 
 const REPO = 'MiguelCarino/ButterEye';
 const FALLBACK = {
-  tag: 'v0.0.1',
+  tag: 'v0.0.2',
   assets: [
-    'buttereye-0.0.1-1.fc44.noarch.rpm', 'buttereye-0.0.1-1.fc45.noarch.rpm',
+    'buttereye-0.0.2-1.fc44.noarch.rpm', 'buttereye-0.0.2-1.fc45.noarch.rpm',
     'buttereye-vs-mvtools-29.2-1.fc44.x86_64.rpm', 'buttereye-vs-mvtools-29.2-1.fc45.x86_64.rpm',
     'buttereye-vs-rife-ncnn-9.33-1.fc44.x86_64.rpm', 'buttereye-vs-rife-ncnn-9.33-1.fc45.x86_64.rpm',
     'buttereye-rife-ncnn-models-9.33-1.fc44.noarch.rpm', 'buttereye-rife-ncnn-models-9.33-1.fc45.noarch.rpm',
     'buttereye-vs-mvgpu-0.0.1-1.fc44.x86_64.rpm', 'buttereye-vs-mvgpu-0.0.1-1.fc45.x86_64.rpm',
-    'SHA256SUMS',
-  ].map((name) => ({ name, url: `https://github.com/${REPO}/releases/download/v0.0.1/${name}` })),
+    'ButterEye-0.0.2-setup.exe', 'SHA256SUMS',
+  ].map((name) => ({ name, url: `https://github.com/${REPO}/releases/download/v0.0.2/${name}` })),
 };
+const SETUP = /^ButterEye-.*-setup\.exe$/;
 // install order in the command: the app first, then its plugins
 const ORDER = ['buttereye-', 'buttereye-vs-mvtools', 'buttereye-vs-rife-ncnn', 'buttereye-rife-ncnn-models', 'buttereye-vs-mvgpu'];
 const SOON = {
   macos: ['macOS: not yet', 'ButterEye drives mpv over Unix sockets and loads Linux builds of its VapourSynth plugins; '
     + 'macOS also lacks native Vulkan for the GPU engines. Not in this release.'],
-  windows: ['Windows: not yet', 'ButterEye drives mpv over Unix sockets, checks a Fedora system and loads Linux builds of '
-    + 'its VapourSynth plugins. A Windows port is possible but not in this release.'],
 };
 
 let release = FALLBACK;
@@ -34,6 +35,7 @@ let platform = 'fc44';
 const chips = Array.from(document.querySelectorAll('.dl-btn'));
 const install = document.getElementById('installDialog');
 const soon = document.getElementById('soonDialog');
+const windows = document.getElementById('windowsDialog');
 const seg = Array.from(install.querySelectorAll('.seg button'));
 
 // ---------------------------------------------------------------- which system is this?
@@ -41,10 +43,17 @@ function detectOS() {
   const s = ((navigator.userAgentData && navigator.userAgentData.platform)
     || navigator.platform || navigator.userAgent || '').toLowerCase();
   if (/android/i.test(navigator.userAgent || '') || s.includes('android')) return null;  // a phone: no build
+  if (/^win|windows/.test(s)) return 'windows';  // Win32, "Windows"; never "darwin"
   if (s.includes('linux') || s.includes('x11')) return 'linux';
-  return null;  // macOS and Windows have no build to point at
+  return null;  // macOS has no build to point at
 }
-if (detectOS() === 'linux') chips.filter((c) => c.tagName === 'A').forEach((c) => c.classList.add('recommended'));
+const os = detectOS();
+for (const c of chips) {
+  const p = c.dataset.platform;
+  if ((os === 'linux' && p.startsWith('fc')) || (os === 'windows' && p === 'windows')) {
+    c.classList.add('recommended');
+  }
+}
 
 // ---------------------------------------------------------------- the install sheet
 function rank(name) {  // the app first, then the plugins in ORDER
@@ -92,7 +101,10 @@ document.getElementById('installBtn').addEventListener('click', () => openInstal
 // ---------------------------------------------------------------- the buttons
 chips.forEach((c) => c.addEventListener('click', () => {
   const p = c.dataset.platform;
-  if (SOON[p]) {
+  if (p === 'windows') {
+    // the link downloads the installer; the sheet says what else to do
+    windows.showModal();
+  } else if (SOON[p]) {
     document.getElementById('soonTitle').textContent = SOON[p][0];
     document.getElementById('soonText').textContent = SOON[p][1];
     soon.showModal();
@@ -103,14 +115,13 @@ chips.forEach((c) => c.addEventListener('click', () => {
 }));
 
 // close a sheet by clicking its backdrop
-for (const d of [install, soon]) {
+for (const d of [install, soon, windows]) {
   d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
 }
 
 // ---------------------------------------------------------------- copy
-document.getElementById('copy').addEventListener('click', async (e) => {
-  const button = e.currentTarget;
-  const text = document.getElementById('cmd').textContent;
+async function copyFrom(button, source) {
+  const text = document.getElementById(source).textContent;
   try {
     await navigator.clipboard.writeText(text);
   } catch {
@@ -124,7 +135,9 @@ document.getElementById('copy').addEventListener('click', async (e) => {
   button.textContent = 'Copied';
   button.classList.add('done');
   setTimeout(() => { button.textContent = 'Copy'; button.classList.remove('done'); }, 1600);
-});
+}
+document.getElementById('copy').addEventListener('click', (e) => copyFrom(e.currentTarget, 'cmd'));
+document.getElementById('wincopy').addEventListener('click', (e) => copyFrom(e.currentTarget, 'wincmd'));
 
 // ---------------------------------------------------------------- latest release
 fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } })
@@ -137,11 +150,17 @@ fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accep
     document.getElementById('foot-version').textContent = `ButterEye ${v}`;
     for (const c of chips) {
       if (c.tagName !== 'A') continue;
+      if (c.dataset.platform === 'windows') {
+        const setup = release.assets.find((a) => SETUP.test(a.name));
+        if (setup) c.href = setup.url;
+        continue;
+      }
       const app = rpms(c.dataset.platform)[0];
       if (app && rank(app.name) === 0) c.href = app.url;
     }
+    document.getElementById('winsums').href = `https://github.com/${REPO}/releases/tag/${release.tag}`;
     if (install.open) fill();
   })
-  .catch(() => { /* offline or rate-limited: the built-in 0.0.1 list stays */ });
+  .catch(() => { /* offline or rate-limited: the built-in 0.0.2 list stays */ });
 
 fill();

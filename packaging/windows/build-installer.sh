@@ -132,6 +132,8 @@ cp "$stage/python/LICENSE.txt" "$lic/python/LICENSE.txt"
 # (check-imports below makes sure): part of the embeddable build, redistributed
 # under the conditions in its LICENSE.txt
 vcver=$(stagepy vc-note "$lic/python/MICROSOFT-VCRUNTIME.txt" "$PYTHON_VER" "$stage/python/vcruntime140.dll")
+# the end-user terms the installer has users accept for those files (buttereye.nsi)
+cp "$here/MICROSOFT-TERMS.txt" "$lic/python/MICROSOFT-TERMS.txt"
 # Qt's licences (the wheels carry only Qt's commercial licence; ButterEye conveys Qt,
 # PySide6 and Shiboken6 under the LGPL-3.0, with the GPL-3.0 it builds on) and the
 # notices of the third-party code inside the shipped Qt binaries, from Qt's sources
@@ -153,7 +155,7 @@ stagepy sources-txt "$lic/SOURCES.txt" version="$version" repo=https://github.co
 stagepy record "$win/components.json" "$stage/buttereye-install.json" \
     "buttereye=$version=AGPL-3.0-or-later AND LGPL-3.0-or-later=licenses/buttereye/COPYING,licenses/buttereye/LICENSES/AdditionRef-ButterEye-generated-output.txt,buttereye/data/shaders/LGPL-3.0.txt,buttereye/data/shaders/GPL-3.0.txt" \
     "python3=$PYTHON_VER=PSF-2.0 AND 0BSD AND bzip2-1.0.6 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND Apache-2.0 AND Zlib AND Unlicense AND blessing=licenses/python/LICENSE.txt" \
-    "microsoft-vcruntime=$vcver=LicenseRef-Microsoft-Distributable-Code=licenses/python/LICENSE.txt,licenses/python/MICROSOFT-VCRUNTIME.txt" \
+    "microsoft-vcruntime=$vcver=LicenseRef-Microsoft-Distributable-Code=licenses/python/LICENSE.txt,licenses/python/MICROSOFT-VCRUNTIME.txt,licenses/python/MICROSOFT-TERMS.txt" \
     "python3-pyside6=$PYSIDE_VER=LGPL-3.0-only AND ${qt_out[0]}=$qt_files,$pyside_lic/LicenseRef-Qt-Commercial.txt=bundled(qt6)($PYSIDE_VER),${qt_out[1]}" \
     "python3-shiboken6=$PYSIDE_VER=LGPL-3.0-only=licenses/pyside6/LGPL-3.0-only.txt,licenses/pyside6/GPL-3.0-only.txt,$shiboken_lic/LicenseRef-Qt-Commercial.txt" \
     "vapoursynth-libs=$VAPOURSYNTH_VER=LGPL-2.1-or-later=licenses/vapoursynth/COPYING.LESSER" \
@@ -175,8 +177,10 @@ nsis=$work/nsis
 mkdir -p "$nsis/out"
 cp "$here/buttereye.nsi" "$repo/buttereye/gui/icons/buttereye.svg" "$nsis/"
 sed 's/$/\r/' "$repo/COPYING" >"$nsis/COPYING.txt"
+sed 's/$/\r/' "$here/MICROSOFT-TERMS.txt" >"$nsis/MICROSOFT-TERMS.txt"
 defs=(-DVERSION="$version" -DPAYLOAD=/builddir/nsis/payload -DICON=/builddir/nsis/buttereye.ico
-      -DLICENSE_TXT=/builddir/nsis/COPYING.txt -DOUTFILE="/builddir/nsis/out/$setup")
+      -DLICENSE_TXT=/builddir/nsis/COPYING.txt -DMSTERMS_TXT=/builddir/nsis/MICROSOFT-TERMS.txt
+      -DOUTFILE="/builddir/nsis/out/$setup")
 if [[ -n ${VCREDIST:-} ]]; then
     cp "$VCREDIST" "$nsis/vc_redist.x64.exe"
     defs+=(-DVCREDIST=/builddir/nsis/vc_redist.x64.exe)

@@ -5,7 +5,10 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
-## Unreleased
+## 0.0.2 — 2026-10-11
+
+ButterEye now runs on **Windows** as well as Fedora 44 and 45, and live playback no
+longer stutters on 4K films whose engine was chosen too optimistically.
 
 ### Fixed
 
@@ -18,57 +21,31 @@ release may change behaviour or settings.
   that size, so reopening the film doesn't repeat the problem. An engine you chose
   yourself is left alone, as before.
 
-### Windows port, phase 4 of 4
+### New: ButterEye for Windows (experimental)
 
-- **ButterEye has a Windows installer.** One `setup.exe` installs everything ButterEye
-  needs except mpv: its own Python, Qt and VapourSynth, the smoothing plugins, the
-  RIFE models, the GPU list tool and the video reader for smooth copies. It installs
-  for your account only, without administrator rights, adds "ButterEye" to the Start
-  menu (and the desktop if you want), a `buttereye.cmd` for the command line, and an
-  uninstaller in Settings ▸ Apps. Running it again repairs an installation. The one
-  thing it may ask Windows' permission for is Microsoft's Visual C++ runtime, which
-  VapourSynth needs; the system checks tell you when it is missing.
-- It has only been tested under Wine so far, so it is not released yet; real-Windows
-  testing comes first (`docs/PLATFORMS.md`). It needs 64-bit Windows 10 version 1903
-  or newer. Every licence text is installed with it, and the source code of
-  everything built for it is published next to it.
-- **Fixed for Windows:** the first `buttereye play` on a new Windows account failed
-  because a parent folder didn't exist yet; the command line crashed on "→" when its
-  output went to a file or another program; the GPU list never arrived (vulkaninfo
-  waits for its console forever, so ButterEye now has it write to a file); and the
-  checks and speed test suggested Linux or `winget` fixes for pieces the installer
-  brings.
-
-### Windows port, phase 1 of 4
-
-- **The core now has a Windows half.** Everything that differs between Linux and
-  Windows goes through one module, `buttereye.core.osapi`: mpv is controlled over a
-  named pipe (checked to belong to your own account), helper programs end with
-  ButterEye while mpv keeps playing, settings live in `%APPDATA%\ButterEye`, and
-  file locks and folder checks use the Windows equivalents. Linux behaves exactly as
-  before. There is no Windows build yet: system checks, plugin builds and an
-  installer are the next three phases (`docs/PLATFORMS.md`).
-- `tests/windows/` tests the Windows code against the real Windows API, including a
-  real `mpv.exe`; `tools/wine-tests.sh` runs them under Wine on Linux.
-
-### Windows port, phase 3 of 4
-
-- **The video plugins build for Windows.** `packaging/windows/build-plugins.sh`
-  cross-compiles MVTools, RIFE and mvgpu on Fedora into self-contained DLLs, with every
-  licence text and the source code for the GPL parts. Under Wine they load into
-  VapourSynth for Windows and interpolate correctly, on the GPU too.
-- **Fixed for Windows:** RIFE built with MinGW cut its model folder to one letter and
-  produced black in-between frames without an error
-  (`buttereye-vs-rife-ncnn-windows-paths.patch`).
-
-### Windows port, phase 2 of 4
-
-- **The system checks speak Windows.** On Windows the doctor reads ButterEye's install
-  record instead of rpm, finds GPUs through Vulkan, and every fix is a Windows fix:
-  run the installer again for ButterEye's own pieces, or the `winget` line for mpv,
-  VapourSynth, ffmpeg, mkvtoolnix and 7-Zip. Setup lists those `winget` lines the way
-  it lists `dnf` lines on Fedora. Two things aren't on Windows yet, and the checks say
-  so: the GPU-fault history and the experimental TensorRT path.
+- **One installer.** `ButterEye-0.0.2-setup.exe` installs everything ButterEye needs
+  except mpv (`winget install shinchiro.mpv`): its own Python, Qt and VapourSynth, the
+  smoothing plugins (RIFE, GPU motion vectors, MVTools), the RIFE models, the GPU list
+  tool and the video reader for smooth copies. It installs for your account only,
+  without administrator rights, adds "ButterEye" to the Start menu (and the desktop if
+  you want), `buttereye.cmd` for the command line and an uninstaller in Settings ▸ Apps.
+  Running it again repairs an installation. It needs 64-bit Windows 10 version 1903 or
+  newer and Microsoft's Visual C++ runtime, which it offers to download from Microsoft;
+  ButterEye's system checks say when it is missing, and the window says so too.
+- **Microsoft's terms.** Python's Windows build includes two files of Microsoft's
+  runtime; the installer asks you to accept Microsoft's terms for them (everything
+  else is free software, with every licence text installed alongside).
+- **What is tested.** The installer installs, runs its system checks and smooths
+  with MVTools on GitHub's Windows machines, and runs every engine on a real GPU under
+  Wine. RIFE and GPU motion vectors on a real Windows PC with a graphics card have not
+  been tried yet, the installer is not code-signed (Windows SmartScreen will warn),
+  and the experimental TensorRT path and the GPU-fault history are Linux-only for now.
+- **Under the hood:** everything that differs between the systems goes through one
+  module (`buttereye.core.osapi`: named pipes, job objects, Windows folders and
+  locks); the system checks read the installer's record and suggest Windows fixes;
+  the plugins are cross-built on Fedora (`packaging/windows/`, with a fix for RIFE's
+  model loading on Windows); `tests/windows/` runs under Wine and on GitHub's Windows
+  machines. The source code of everything built for Windows is published with it.
 
 ## 0.0.1 — 2026-10-10
 

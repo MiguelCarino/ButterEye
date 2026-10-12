@@ -5,6 +5,7 @@
 ; build-installer.sh with Fedora's makensis (mingw32-nsis) from a staged folder:
 ;
 ;   makensis -DVERSION=0.0.1 -DPAYLOAD=<stage> -DLICENSE_TXT=<COPYING, CRLF>
+;            -DMSTERMS_TXT=<MICROSOFT-TERMS.txt, CRLF>
 ;            -DICON=<buttereye.ico> -DOUTFILE=<setup.exe> [-DVCREDIST=<vc_redist.x64.exe>]
 ;
 ; Per user, no administrator rights: everything goes to
@@ -80,6 +81,12 @@ VIAddVersionKey "FileDescription" "${APPNAME} ${VERSION} installer"
 !define MUI_LICENSEPAGE_TEXT_BOTTOM "There is nothing to accept: the licence gives you rights. Click Next to continue."
 !define MUI_LICENSEPAGE_BUTTON "$(^NextBtn)"
 !insertmacro MUI_PAGE_LICENSE "${LICENSE_TXT}"
+; Python's Windows build carries Microsoft's vcruntime140*.dll, which may only be
+; redistributed to users who agree to terms protecting them (licenses\python)
+!define MUI_LICENSEPAGE_TEXT_TOP "Two files of Microsoft's Visual C++ runtime come with the included Python."
+!define MUI_LICENSEPAGE_CHECKBOX
+!define MUI_LICENSEPAGE_CHECKBOX_TEXT "I accept these terms for the Microsoft runtime files"
+!insertmacro MUI_PAGE_LICENSE "${MSTERMS_TXT}"
 !insertmacro MUI_PAGE_COMPONENTS
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW DirShow
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirLeave
