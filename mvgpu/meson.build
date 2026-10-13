@@ -1,6 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 The ButterEye contributors
+# 1.1 is the lowest bound that works: it is the version that learned to read a
+# meson.options file (rather than meson_options.txt), and nothing else here needs
+# more. It cannot shut out a build host that worked before, because an older meson
+# would have ignored meson.options and failed for want of -Dplugindir anyway - so
+# the Fedora package (packaging/plugins/buttereye-vs-mvgpu.spec, unversioned
+# BuildRequires: meson) is already building with 1.1 or newer.
 project('mvgpu', 'cpp', version: '0.0.1', license: 'AGPL-3.0-or-later',
+        meson_version: '>=1.1',
         default_options: ['cpp_std=c++17', 'buildtype=release', 'warning_level=2'])
 
 vapoursynth = dependency('vapoursynth', version: '>=55')

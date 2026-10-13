@@ -9,6 +9,15 @@ On Windows there is no package manager to ask: the installer writes an install
 record (``buttereye-install.json``, see ``manifest_db``) next to ButterEye, and
 it takes rpm's place. Fixes there say to run the installer again (Repair), and
 tools ButterEye doesn't ship come with the ``winget`` line that installs them.
+
+On macOS the install database is Homebrew's Cellar, read as files and never by
+running ``brew`` (``brew.py`` says why, and what it measured); ``brew_db`` turns
+it into the same ``RpmDb`` the rest of these checks already take, so a formula
+answers for the package name that asks about it (``BREW_FORMULAE``). Fixes there
+are ``brew install`` lines, and where Homebrew has no formula at all - RIFE-ncnn
+and mvgpu, which ButterEye has to build itself - the finding says so instead of
+offering a line that cannot work. No macOS finding carries a dnf, rpm, sudo,
+copr or journal word (a test checks that, as one does for Windows).
 """
 
 from __future__ import annotations
@@ -22,14 +31,24 @@ import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import TypedDict
 
 from buttereye.core import commands as _commands
 from buttereye.core import osapi
+from buttereye.core import paths as _paths
+from buttereye.core.doctor import brew
 from buttereye.core.doctor.proc import CmdResult, run
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
-from buttereye.core.types import Finding, Msg, Paths, Section, Severity
+from buttereye.core.types import (
+    Finding,
+    Msg,
+    Paths,
+    Section,
+    Severity,
+    macos_plugin_dirs,
+)
 
 #: COPR project (SCOPE §9, owner decision Q5 pending: the FAS owner is not chosen yet).
 COPR_PROJECT = "<owner>/buttereye"
@@ -60,10 +79,67 @@ INSTALL_MANIFEST = "buttereye-install.json"
 #: winget package ids (shared with ``commands.install_command``)
 WINGET = _commands.WINGET
 
+#: macOS: Homebrew's MVTools. It is not ButterEye's build - the version is
+#: Homebrew's choice and the plugin is autoloaded - but it is a real MVTools that
+#: interpolates on arm64 (docs/PLATFORMS.md), and it is the only interpolation
+#: plugin a Mac user can install today, so it answers for ``PKG_MVTOOLS``.
+FORMULA_MVTOOLS = "vapoursynth-mvtools"
+#: macOS: the Homebrew formula that answers for each package name the checks ask
+#: about. Read off the Cellar of an arm64 Mac (2026-10-12), not guessed; the tool
+#: rows come from ``commands.BREW`` so there is one spelling of each. Absent on
+#: purpose: ``PKG_RIFE``, ``PKG_MVGPU``, ``PKG_MODELS``, ``PKG_VSMLRT``,
+#: ``PKG_ONNXCONV`` (Homebrew has no formula for any of them - ButterEye builds
+#: those itself, phase 3) and ``python3-pyside6`` (Qt comes from the wheel, not
+#: from Homebrew).
+BREW_FORMULAE: Mapping[str, str] = MappingProxyType(
+    {
+        PKG_MVTOOLS: FORMULA_MVTOOLS,
+        "mpv": _commands.BREW["mpv"],
+        "vapoursynth-libs": _commands.BREW["vapoursynth"],
+        "vapoursynth-tools": _commands.BREW["vapoursynth"],
+        "ffmpeg": _commands.BREW["ffmpeg"],
+        "mkvtoolnix": _commands.BREW["mkvtoolnix"],
+        "7zip": _commands.BREW["7zip"],
+        "ffms2": "ffms2",
+        "vulkan-loader": "vulkan-loader",
+        "vulkan-tools": "vulkan-tools",
+        "molten-vk": "molten-vk",
+    }
+)
+
 RIFE_SO = osapi.plugin_file("librife.so")
 MVTOOLS_SO = osapi.plugin_file("mvtools.so")
 MVGPU_SO = osapi.plugin_file("libmvgpu.so")
 MODELS_SUBDIR = "rife-ncnn-models"
+
+
+def plugin_dirs(paths: Paths) -> tuple[Path, ...]:
+    """Every directory to look for an interpolation plugin in, in load order.
+
+    The search path moved to ``paths.plugin_dirs`` (which says what it answers
+    and why), because the engine chooser, the benchmark and the generated scripts
+    all need the same answer and none of them may import the doctor. The two
+    names stay here: eight checks below ask them, and the doctor is where the
+    question was first asked.
+    """
+    return _paths.plugin_dirs(paths)
+
+
+def installed_plugin(paths: Paths, name: str) -> Path | None:
+    """``name`` where a load would find it, or None when no ``plugin_dirs`` has it.
+
+    The same function the generated scripts resolve their one ``PLUGIN_DIR``
+    with (``paths.plugin_dir_for``), so the doctor cannot report one copy while a
+    script loads another.
+    """
+    return _paths.installed_plugin(paths, name)
+
+
+def plugin_dir_text(paths: Paths) -> str:
+    """``plugin_dirs`` for a message. Naming only the first would be the
+    half-truth the search path exists to remove."""
+    return ", ".join(str(d) for d in plugin_dirs(paths))
+
 
 _QF = (
     "@@PKG\t%{NAME}\t%{VERSION}-%{RELEASE}\t%{LICENSE}\t%{INSTALLTIME}\n"
@@ -191,12 +267,57 @@ def manifest_db(install: Path) -> RpmDb:
     return RpmDb(True, out)
 
 
+def brew_db(names: Iterable[str] = BUTTEREYE_PKGS + OTHER_PKGS) -> RpmDb:
+    """macOS: Homebrew's Cellar as a package database (``brew.installed``).
+
+    Each name is looked up through ``BREW_FORMULAE``, so ``buttereye-vs-mvtools``
+    answers with the ``vapoursynth-mvtools`` keg and a name Homebrew has no
+    formula for is simply not installed - the same answer rpm gives for a package
+    that isn't there. ``RpmInfo.name`` is the formula, because that is what the
+    user would install and what a finding should name; the key is the package name
+    the check asked about.
+
+    ``evr`` is the keg's version (Homebrew has no release field), ``license`` the
+    SPDX expression from the keg's SBOM, ``licence_files`` the licence texts in
+    the keg's root, ``requires`` its runtime dependencies and ``installtime`` the
+    receipt's install time, which is what ``gpufault`` splits the log at.
+    ``provides`` stays empty: Homebrew has no provides, and the only one these
+    checks read (``bundled(ncnn)``) belongs to a plugin ButterEye builds itself.
+
+    No Cellar at all means no Homebrew, which is "can't be checked" rather than
+    "nothing installed": a Mac without Homebrew has no mpv or VapourSynth either,
+    and saying every package is missing would bury that one fact in nine rows.
+    """
+    if not brew.cellar().is_dir():
+        return RpmDb(False, {}, f"Homebrew is not installed in {brew.prefix()}")
+    wanted = {n: BREW_FORMULAE[n] for n in names if n in BREW_FORMULAE}
+    kegs = brew.installed(dict.fromkeys(wanted.values()))
+    out: dict[str, RpmInfo] = {}
+    for name, formula in wanted.items():
+        keg = kegs.get(formula)
+        if keg is None:
+            continue
+        out[name] = RpmInfo(
+            name=keg.name,
+            evr=keg.version,
+            license=keg.licence(),
+            provides=(),
+            requires=tuple(d for d, _ in keg.deps),
+            licence_files=keg.licence_files(),
+            installtime=keg.installed_at,
+        )
+    return RpmDb(True, out)
+
+
 async def rpm_query(names: Iterable[str] = BUTTEREYE_PKGS + OTHER_PKGS) -> RpmDb:
-    """What is installed: ``rpm -q`` on Linux, the install record on Windows."""
+    """What is installed: ``rpm -q`` on Linux, the install record on Windows,
+    Homebrew's Cellar on macOS (no subprocess there, so nothing to await)."""
     if osapi.IS_WINDOWS:
         from buttereye.core.paths import install_dir
 
         return manifest_db(install_dir())
+    if osapi.IS_MACOS:
+        return brew_db(names)
     if shutil.which("rpm") is None:
         return RpmDb(False, {}, "rpm is not installed")
     res = await run(("rpm", "-q", "--qf", _QF, *names), timeout_s=6.0)
@@ -240,8 +361,26 @@ def _dnf(*pkgs: str) -> tuple[str, ...]:
     return (COPR_ENABLE, "sudo dnf install " + " ".join(pkgs))
 
 
+def _brew(*formulae: str, verb: str = "install") -> tuple[str, ...]:
+    """The one Homebrew line that installs (or reinstalls) these formulae.
+    ButterEye only shows it; the formula names are read off a real Cellar
+    (``BREW_FORMULAE``), never built from a package name."""
+    return (f"brew {verb} " + " ".join(formulae),)
+
+
 #: Windows: ButterEye's own pieces come only from its installer
 REPAIR = M("Run the ButterEye installer again and choose Repair.")
+#: macOS: ButterEye has no macOS package of its own yet (phase 3 builds the
+#: plugins, phase 4 taps them), and Homebrew has no formula for RIFE-ncnn-Vulkan
+#: or mvgpu, so for ButterEye's own pieces there is nothing to type. Saying that
+#: is the honest fix; offering an install line that cannot work is not.
+NO_MACOS_PACKAGE = M(
+    "ButterEye has no macOS package yet, so there is nothing to install or repair here."
+)
+#: macOS: the one interpolation plugin a Mac user can install today. Homebrew has
+#: no RIFE-ncnn-Vulkan formula (``brew search`` finds none), so the advice names
+#: MVTools and says what the other half is, instead of a line that would fail.
+MACOS_MVTOOLS_FIX = M("Install MVTools from Homebrew; RIFE-ncnn has no macOS package yet.")
 
 
 class Fix(TypedDict):
@@ -249,11 +388,24 @@ class Fix(TypedDict):
     commands: tuple[str, ...]
 
 
-def platform_fix(fix: Msg, commands: tuple[str, ...], *, windows: Msg = REPAIR) -> Fix:
-    """``fix=``/``commands=`` for a finding: the Fedora advice with its commands, or
-    on Windows ``windows`` (by default the installer's Repair) with nothing to type."""
+def platform_fix(
+    fix: Msg,
+    commands: tuple[str, ...],
+    *,
+    windows: Msg = REPAIR,
+    macos: Msg = NO_MACOS_PACKAGE,
+    macos_commands: tuple[str, ...] = (),
+) -> Fix:
+    """``fix=``/``commands=`` for a finding: the Fedora advice with its commands,
+    on Windows ``windows`` (by default the installer's Repair) with nothing to
+    type, and on macOS ``macos`` with ``macos_commands`` - ``brew`` lines where
+    Homebrew has the formula, and by default nothing to type, because what
+    ButterEye packages itself has no macOS package yet (``NO_MACOS_PACKAGE``).
+    The Fedora tail is last and untouched, so Linux keeps its exact words."""
     if osapi.IS_WINDOWS:
         return {"fix": windows, "commands": ()}
+    if osapi.IS_MACOS:
+        return {"fix": macos, "commands": macos_commands}
     return {"fix": fix, "commands": commands}
 
 
@@ -263,14 +415,25 @@ def tool_fix(
     winget_key: str,
     *,
     windows: Msg | None = None,
+    macos: Msg | None = None,
     verb: str = "install",
 ) -> Fix:
     """``fix=``/``commands=`` for a tool ButterEye uses but doesn't ship: the
-    ``dnf`` line, or on Windows the ``winget`` one (``verb``: install/upgrade),
-    with ``windows`` as the advice there when the Linux words don't fit."""
+    ``dnf`` line, on Windows the ``winget`` one and on macOS the ``brew`` one
+    (``verb``: install/upgrade), with ``windows``/``macos`` as the advice there
+    when the Linux words don't fit.
+
+    The line itself comes from ``commands.install_command``, the one table that
+    names each of these tools on each platform, so the three agree by
+    construction and ``winget_key`` is the key for all of them."""
     if osapi.IS_WINDOWS:
         line = f"winget {verb} --exact --id {WINGET[winget_key]}"
         return {"fix": windows or fix, "commands": (line,)}
+    if osapi.IS_MACOS:
+        return {
+            "fix": macos or fix,
+            "commands": (_commands.install_command(winget_key, verb=verb),),
+        }
     return {"fix": fix, "commands": (dnf_line,)}
 
 
@@ -305,14 +468,19 @@ def mvgpu_finding(db: RpmDb, paths: Paths) -> Finding:
     """mvgpu, the optional fast GPU engine: OK when its plugin file is in the
     private plugin directory, a note (INFO) when it isn't; RIFE and MVTools
     cover everything without it."""
-    so = paths.rpm_plugin_dir / MVGPU_SO
-    if so.is_file():
+    so = installed_plugin(paths, MVGPU_SO)
+    if so is not None:
         info = db.get(PKG_MVGPU)
         return _f(
             "packages.mvgpu",
             Severity.OK,
             M("GPU motion-vector plugin (mvgpu) installed"),
-            cause=M("{pkg} {ver}", {"pkg": PKG_MVGPU, "ver": info.evr if info else "found"}),
+            cause=M(
+                "{pkg} {ver}",
+                # the installed package's own name: on macOS a plugin may come
+                # from a Homebrew formula, which is not the RPM's name
+                {"pkg": info.name if info else PKG_MVGPU, "ver": info.evr if info else "found"},
+            ),
             evidence=(str(so),),
         )
     return _f(
@@ -327,7 +495,43 @@ def mvgpu_finding(db: RpmDb, paths: Paths) -> Finding:
             M("Install it from the ButterEye COPR if you want it."),
             (f"sudo dnf install {PKG_MVGPU}",),
             windows=M("Run the ButterEye installer again and include it."),
+            # mvgpu is ButterEye's own Vulkan plugin and there is no Homebrew
+            # formula for it; it runs on MoltenVK bar one instance flag
+            # (docs/PLATFORMS.md), so this is "not yet", not "never".
+            macos=M("ButterEye doesn't build mvgpu for macOS yet, so it can't be installed."),
         ),
+    )
+
+
+def _unreadable_db_finding(db: RpmDb) -> Finding:
+    """The note for "the install database can't be read at all": no rpm on
+    Linux, no install record on Windows, no Homebrew on macOS. Each platform
+    says what is missing and what would fix it, and nothing else."""
+    if osapi.IS_WINDOWS:
+        return _f(
+            "packages.rpm",
+            Severity.INFO,
+            M("ButterEye's install record can't be read"),
+            cause=M("{why}", {"why": db.error or "unknown"}),
+            fix=REPAIR,
+        )
+    if osapi.IS_MACOS:
+        return _f(
+            "packages.rpm",
+            Severity.INFO,
+            M("Installed packages can't be checked: Homebrew isn't installed"),
+            cause=M("{why}", {"why": db.error or "unknown"}),
+            fix=M(
+                "mpv, VapourSynth and the MVTools plugin come from Homebrew on macOS. "
+                "Install Homebrew, then run the checks again."
+            ),
+        )
+    return _f(
+        "packages.rpm",
+        Severity.INFO,
+        M("Installed packages can't be checked on this system"),
+        cause=M("rpm is not available: {why}", {"why": db.error or "unknown"}),
+        fix=M("ButterEye supports Fedora 44 and 45 with its COPR packages."),
     )
 
 
@@ -335,25 +539,9 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
     """Pure over the rpm result plus file existence in the private directories."""
     out: list[Finding] = []
     if not db.available:
-        rife_file = (paths.rpm_plugin_dir / RIFE_SO).is_file()
-        mv_file = (paths.rpm_plugin_dir / MVTOOLS_SO).is_file()
-        out.append(
-            _f(
-                "packages.rpm",
-                Severity.INFO,
-                M("Installed packages can't be checked on this system"),
-                cause=M("rpm is not available: {why}", {"why": db.error or "unknown"}),
-                fix=M("ButterEye supports Fedora 44 and 45 with its COPR packages."),
-            )
-            if not osapi.IS_WINDOWS
-            else _f(
-                "packages.rpm",
-                Severity.INFO,
-                M("ButterEye's install record can't be read"),
-                cause=M("{why}", {"why": db.error or "unknown"}),
-                fix=REPAIR,
-            )
-        )
+        rife_file = installed_plugin(paths, RIFE_SO) is not None
+        mv_file = installed_plugin(paths, MVTOOLS_SO) is not None
+        out.append(_unreadable_db_finding(db))
         if not rife_file and not mv_file:
             out.append(
                 _f(
@@ -363,11 +551,13 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                     code=ErrorCode.PKG_MISSING,
                     cause=M(
                         "Neither {a} nor {b} was found in {d}.",
-                        {"a": RIFE_SO, "b": MVTOOLS_SO, "d": str(paths.rpm_plugin_dir)},
+                        {"a": RIFE_SO, "b": MVTOOLS_SO, "d": plugin_dir_text(paths)},
                     ),
                     **platform_fix(
                         M("Install the ButterEye plugin packages."),
                         _dnf(PKG_MVTOOLS, PKG_RIFE, PKG_MODELS),
+                        macos=MACOS_MVTOOLS_FIX,
+                        macos_commands=_brew(FORMULA_MVTOOLS),
                     ),
                 )
             )
@@ -377,10 +567,14 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
     rife = db.get(PKG_RIFE)
     mv = db.get(PKG_MVTOOLS)
     models_pkg = db.get(PKG_MODELS)
-    rife_ok = rife is not None and (paths.rpm_plugin_dir / RIFE_SO).is_file()
-    mv_ok = mv is not None and (paths.rpm_plugin_dir / MVTOOLS_SO).is_file()
+    # the file each one would actually load, so the row's evidence names the copy
+    # in play rather than a directory the plugin only might be in
+    rife_so = installed_plugin(paths, RIFE_SO)
+    mv_so = installed_plugin(paths, MVTOOLS_SO)
+    rife_ok = rife is not None and rife_so is not None
+    mv_ok = mv is not None and mv_so is not None
 
-    if rife_ok and rife is not None:
+    if rife is not None and rife_so is not None:
         variant, system = rife_variant(rife)
         if system:
             out.append(
@@ -404,8 +598,8 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                     "packages.rife",
                     Severity.OK,
                     M("RIFE plugin: {variant}", {"variant": variant or "variant unknown"}),
-                    cause=M("{pkg} {ver}", {"pkg": PKG_RIFE, "ver": rife.evr}),
-                    evidence=(str(paths.rpm_plugin_dir / RIFE_SO),),
+                    cause=M("{pkg} {ver}", {"pkg": rife.name, "ver": rife.evr}),
+                    evidence=(str(rife_so),),
                 )
             )
     else:
@@ -415,25 +609,38 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                 Severity.DEGRADED,
                 M("The RIFE plugin is not installed"),
                 code=ErrorCode.PKG_MISSING,
-                cause=M(
-                    "Without {pkg}, only MVTools (CPU) interpolation is possible.",
-                    {"pkg": PKG_RIFE},
+                # the Fedora row names the RPM, which is what a user would install;
+                # on macOS there is no package of any name to name, so saying one
+                # would send them looking for something that does not exist
+                cause=(
+                    M("Without a RIFE plugin, only MVTools (CPU) interpolation is possible.")
+                    if osapi.IS_MACOS
+                    else M(
+                        "Without {pkg}, only MVTools (CPU) interpolation is possible.",
+                        {"pkg": PKG_RIFE},
+                    )
                 ),
                 **platform_fix(
                     M("Install the RIFE plugin and its models from the ButterEye COPR."),
                     _dnf(PKG_RIFE, PKG_MODELS),
+                    # no Homebrew formula for RIFE-ncnn-Vulkan and none for the
+                    # models; ButterEye has to build both (phase 3)
+                    macos=M(
+                        "RIFE has no macOS package yet, so only MVTools (CPU) smoothing "
+                        "works here."
+                    ),
                 ),
             )
         )
 
-    if mv_ok and mv is not None:
+    if mv is not None and mv_so is not None:
         out.append(
             _f(
                 "packages.mvtools",
                 Severity.OK,
                 M("MVTools plugin installed"),
-                cause=M("{pkg} {ver}", {"pkg": PKG_MVTOOLS, "ver": mv.evr}),
-                evidence=(str(paths.rpm_plugin_dir / MVTOOLS_SO),),
+                cause=M("{pkg} {ver}", {"pkg": mv.name, "ver": mv.evr}),
+                evidence=(str(mv_so),),
             )
         )
     else:
@@ -444,7 +651,12 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                 M("The MVTools plugin is not installed"),
                 code=ErrorCode.PKG_MISSING,
                 cause=M("MVTools is the CPU fallback when RIFE can't run."),
-                **platform_fix(M("Install MVTools from the ButterEye COPR."), _dnf(PKG_MVTOOLS)),
+                **platform_fix(
+                    M("Install MVTools from the ButterEye COPR."),
+                    _dnf(PKG_MVTOOLS),
+                    macos=M("Install MVTools from Homebrew."),
+                    macos_commands=_brew(FORMULA_MVTOOLS),
+                ),
             )
         )
 
@@ -456,7 +668,7 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                     "packages.models",
                     Severity.OK,
                     M("{n} RIFE models installed", {"n": len(models)}),
-                    cause=M("{pkg} {ver}", {"pkg": PKG_MODELS, "ver": models_pkg.evr}),
+                    cause=M("{pkg} {ver}", {"pkg": models_pkg.name, "ver": models_pkg.evr}),
                     evidence=models,
                 )
             )
@@ -471,7 +683,11 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                         "The RIFE plugin needs the packaged models in {d}.",
                         {"d": str(paths.rpm_data_dir / MODELS_SUBDIR)},
                     ),
-                    **platform_fix(M("Install the RIFE model package."), _dnf(PKG_MODELS)),
+                    **platform_fix(
+                        M("Install the RIFE model package."),
+                        _dnf(PKG_MODELS),
+                        macos=M("The RIFE models come with ButterEye's own macOS package."),
+                    ),
                     evidence=models,
                 )
             )
@@ -489,6 +705,8 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                 **platform_fix(
                     M("Enable the ButterEye COPR and install the plugin packages."),
                     _dnf(PKG_MVTOOLS, PKG_RIFE, PKG_MODELS),
+                    macos=MACOS_MVTOOLS_FIX,
+                    macos_commands=_brew(FORMULA_MVTOOLS),
                 ),
             )
         )
@@ -566,6 +784,11 @@ def vcruntime_finding(version: tuple[int, int, int] | None) -> Finding:
 
 
 def licence_files_finding(db: RpmDb) -> Finding:
+    """The licence texts of the installed ButterEye packages are really on disk
+    (SCOPE F10). On macOS the packages are Homebrew formulae and the texts are the
+    ``LICENSE``/``COPYING`` files in the keg's root (``brew.BrewKeg.licence_files``),
+    so the check has the same shape; only rpm's ``%license`` word is dropped,
+    because Homebrew has no such tag."""
     missing: list[str] = []
     checked = 0
     for name in BUTTEREYE_PKGS:
@@ -574,11 +797,17 @@ def licence_files_finding(db: RpmDb) -> Finding:
             continue
         checked += 1
         if not info.licence_files:
-            missing.append(f"{name}: no %license files")
+            missing.append(
+                f"{info.name}: no licence file in the keg"
+                if osapi.IS_MACOS
+                else f"{name}: no %license files"
+            )
         for p in info.licence_files:
             if not p.is_file():
                 missing.append(str(p))
     if missing:
+        installed = [n for n in BUTTEREYE_PKGS if db.get(n) is not None]
+        formulae = tuple(BREW_FORMULAE[n] for n in installed if n in BREW_FORMULAE)
         return _f(
             "packages.licence_files",
             Severity.DEGRADED,
@@ -590,10 +819,11 @@ def licence_files_finding(db: RpmDb) -> Finding:
             ),
             **platform_fix(
                 M("This is a packaging bug or a damaged install; reinstall the packages."),
-                (
-                    "sudo dnf reinstall "
-                    + " ".join(n for n in BUTTEREYE_PKGS if db.get(n) is not None),
-                ),
+                ("sudo dnf reinstall " + " ".join(installed),),
+                macos=M("This is a packaging bug or a damaged install; reinstall it."),
+                # nothing to type when the package with the missing text is one
+                # ButterEye built itself: Homebrew has no formula to reinstall
+                macos_commands=_brew(*formulae, verb="reinstall") if formulae else (),
             ),
             evidence=tuple(missing),
         )
@@ -601,7 +831,9 @@ def licence_files_finding(db: RpmDb) -> Finding:
         "packages.licence_files",
         Severity.OK,
         M("Licence files present"),
-        cause=M("Checked the %license files of {n} ButterEye package(s).", {"n": checked}),
+        cause=M("Checked the licence files of {n} installed package(s).", {"n": checked})
+        if osapi.IS_MACOS
+        else M("Checked the %license files of {n} ButterEye package(s).", {"n": checked}),
     )
 
 
@@ -612,6 +844,26 @@ def licence_files_finding(db: RpmDb) -> Finding:
 FFMS2_GLOBS = ("/usr/lib64/libffms2.so*", "/usr/lib/libffms2.so*", "/usr/lib64/vapoursynth/*ffms2*")
 
 
+def macos_ffms2_globs() -> tuple[str, ...]:
+    """Where ffms2 is on a Mac: Homebrew's ``ffms2`` bottle installs
+    ``libffms2.dylib`` (and the SOVERSION link) in ``<prefix>/lib`` and the same
+    library into VapourSynth's autoload directory, where it is both the library
+    render links and the VapourSynth plugin that reads the file (measured, see
+    ``scriptgen.generator._macos_ffms2``).
+
+    The plugin directories come from ``types.macos_plugin_dirs``, the same list
+    the plugin rows search, rather than being written out again here: a second
+    copy of the autoload layout is a second thing to get wrong, and the whole
+    point of the search path is that one module knows where plugins can be.
+
+    The prefix is derived, so these are built per call rather than frozen at
+    import: a test can point ``HOMEBREW_PREFIX`` somewhere else."""
+    return (
+        *(f"{d}/*ffms2*" for d in macos_plugin_dirs()),
+        f"{brew.prefix()}/lib/libffms2*.dylib",
+    )
+
+
 def ffms2_present(db: RpmDb, globs: Sequence[str] | None = None) -> bool:
     if db.get("ffms2") is not None:
         return True
@@ -619,6 +871,8 @@ def ffms2_present(db: RpmDb, globs: Sequence[str] | None = None) -> bool:
         from buttereye.core.scriptgen.generator import ScriptConstants
 
         return ScriptConstants().ffms2_lib.is_file()
+    if globs is None and osapi.IS_MACOS:
+        globs = macos_ffms2_globs()
     return any(glob.glob(g) for g in (FFMS2_GLOBS if globs is None else globs))
 
 
@@ -693,7 +947,10 @@ def render_findings(
                 code=ErrorCode.FFMS2_MISSING,
                 cause=M("Offline render reads your video through ffms2.{tail}", {"tail": not_yet}),
                 **platform_fix(
-                    M("Install ffms2, then run the checks again."), ("sudo dnf install ffms2",)
+                    M("Install ffms2, then run the checks again."),
+                    ("sudo dnf install ffms2",),
+                    macos=M("Install ffms2 from Homebrew, then run the checks again."),
+                    macos_commands=_brew("ffms2"),
                 ),
             )
         )
@@ -784,10 +1041,20 @@ def render_findings(
                 section=sec,
                 code=ErrorCode.SEVENZIP_MISSING,
                 cause=M("Only needed for experimental TensorRT model archives."),
-                **tool_fix(
-                    M("Install 7zip if you turn on the experimental TensorRT path."),
-                    "sudo dnf install 7zip",
-                    "7zip",
+                # macOS: there is no experimental TensorRT path to turn on (no CUDA,
+                # so osapi.HAS_VSTRT is False), so nothing here would ever read a
+                # .7z and an install line would be advice for a job that can't exist
+                **(
+                    {
+                        "fix": M("Nothing on macOS needs it: the TensorRT path can't run here."),
+                        "commands": (),
+                    }
+                    if osapi.IS_MACOS
+                    else tool_fix(
+                        M("Install 7zip if you turn on the experimental TensorRT path."),
+                        "sudo dnf install 7zip",
+                        "7zip",
+                    )
                 ),
             )
         )
@@ -808,6 +1075,12 @@ __all__ = [
     "INSTALL_MANIFEST",
     "REPAIR",
     "WINGET",
+    "BREW_FORMULAE",
+    "FORMULA_MVTOOLS",
+    "MACOS_MVTOOLS_FIX",
+    "NO_MACOS_PACKAGE",
+    "brew_db",
+    "macos_ffms2_globs",
     "Fix",
     "manifest_db",
     "platform_fix",
@@ -826,6 +1099,9 @@ __all__ = [
     "rpm_owner",
     "rife_variant",
     "installed_models",
+    "plugin_dirs",
+    "plugin_dir_text",
+    "installed_plugin",
     "package_findings",
     "licence_files_finding",
     "parse_encoders",

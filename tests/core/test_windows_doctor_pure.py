@@ -88,6 +88,9 @@ def test_gpu_list_from_vulkan_skips_cpu_devices_and_duplicates() -> None:
 
 
 def test_install_commands_per_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Say which platform each answer belongs to. There are three arms now, so the
+    # host's own platform is never the right thing to leave unpinned.
+    monkeypatch.setattr(commands.sys, "platform", "linux")
     assert commands.install_command("mkvtoolnix") == "sudo dnf install mkvtoolnix"
     monkeypatch.setattr(commands.sys, "platform", "win32")
     assert (
@@ -95,7 +98,7 @@ def test_install_commands_per_platform(monkeypatch: pytest.MonkeyPatch) -> None:
         == "winget install --exact --id MoritzBunkus.MKVToolNix"
     )
     assert commands.install_command("mpv", verb="upgrade").startswith("winget upgrade ")
-    assert set(commands.WINGET) == set(commands.DNF)
+    assert set(commands.WINGET) == set(commands.DNF) == set(commands.BREW)
 
 
 def _finding(*cmds: str) -> Finding:

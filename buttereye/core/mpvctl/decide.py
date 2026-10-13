@@ -4,7 +4,8 @@
 target rate and multiplier (§5.6), backend/model resolution (§5.3, M1 subset).
 
 No I/O except the ``Path.is_dir``/``is_file`` checks in ``installed_backends``
-and ``resolve_model``, which take the directories as arguments.
+and ``resolve_model``, which take the directories as arguments (one plugin
+directory, or the search path ``paths.plugin_dirs`` answers).
 
 RIFE-ncnn models are looked up by directory name in the packaged directory
 first, then in the user's ``data_dir/models`` (the Models page lists both); a
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from buttereye.core import osapi
+from buttereye.core.paths import plugin_in
 from buttereye.core.types import (
     BackendId,
     BypassReason,
@@ -69,6 +71,17 @@ BACKEND_NAMES: Mapping[BackendId, str] = {
 
 #: mvgpu's plugin file in the private plugin directory (``buttereye-vs-mvgpu``)
 MVGPU_PLUGIN = osapi.plugin_file("libmvgpu.so")
+
+#: The plugin file a generated script loads for each engine (``_load`` in
+#: scriptgen/template.vpy). Only one of them is loaded per generation, which is
+#: what lets a script name one directory: ``paths.plugin_dir_for`` resolves it to
+#: the directory that holds this file. RIFE-TensorRT is absent on purpose - it
+#: loads vstrt from the install's own directory and never reads ``PLUGIN_DIR``.
+BACKEND_PLUGIN: Mapping[BackendId, str] = {
+    BackendId.RIFE_NCNN: osapi.plugin_file("librife.so"),
+    BackendId.MVTOOLS: osapi.plugin_file("mvtools.so"),
+    BackendId.MVGPU: MVGPU_PLUGIN,
+}
 
 
 def fps_fraction(value: float | int | None) -> Fraction | None:
@@ -654,18 +667,33 @@ def user_models(user_dirs: Sequence[Path]) -> tuple[Path, ...]:
 
 
 def installed_backends(
-    plugin_dir: Path, model_dir: Path, user_model_dirs: Sequence[Path] = (), *, trt: bool = False
+    plugin_dirs: Path | Sequence[Path],
+    model_dir: Path,
+    user_model_dirs: Sequence[Path] = (),
+    *,
+    trt: bool = False,
 ) -> frozenset[BackendId]:
     """Backends whose plugin file (and, for RIFE, a model directory) is installed.
-    ``trt``: the TensorRT path is opted in and set up (``backends.trt``)."""
+
+    ``plugin_dirs``: one directory, or every directory a plugin can be in, in
+    load order (``paths.plugin_dirs``). Fedora and Windows have exactly one, and
+    pass it as the single ``Path`` they always did. macOS has two at once - a Mac
+    with the ButterEye tap installed has mvgpu and RIFE in ButterEye's own
+    directory and Homebrew's MVTools in VapourSynth's autoload one - and asking
+    only the first was measured to answer ``[mvgpu, rife-ncnn]`` on such a Mac,
+    hiding the engine that reaches real time at every size anything does there
+    (720p, 1080p and 1440p; nothing reaches it at 4K).
+
+    ``trt``: the TensorRT path is opted in and set up (``backends.trt``).
+    """
     found: set[BackendId] = {BackendId.RIFE_TRT} if trt else set()
-    if (plugin_dir / osapi.plugin_file("librife.so")).is_file() and (
+    if plugin_in(plugin_dirs, osapi.plugin_file("librife.so")) is not None and (
         model_dir.is_dir() or user_models(user_model_dirs)
     ):
         found.add(BackendId.RIFE_NCNN)
-    if (plugin_dir / osapi.plugin_file("mvtools.so")).is_file():
+    if plugin_in(plugin_dirs, osapi.plugin_file("mvtools.so")) is not None:
         found.add(BackendId.MVTOOLS)
-    if (plugin_dir / MVGPU_PLUGIN).is_file():
+    if plugin_in(plugin_dirs, MVGPU_PLUGIN) is not None:
         found.add(BackendId.MVGPU)
     return frozenset(found)
 
@@ -879,6 +907,7 @@ __all__ = [
     "MPV_MATRIX",
     "BACKEND_NAMES",
     "MVGPU_PLUGIN",
+    "BACKEND_PLUGIN",
     "GPU_BACKENDS",
     "RIFE_BACKENDS",
     "TargetChoice",

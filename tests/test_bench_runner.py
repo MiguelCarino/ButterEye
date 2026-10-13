@@ -402,6 +402,13 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Env]:
     _exe(bindir / "nvidia-smi", FAKE_NVIDIA_SMI)
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}/usr/bin{os.pathsep}/bin")
     monkeypatch.setenv("FAKE_DIR", str(fake))
+    # The planted tree is the whole truth about what is installed. On macOS the
+    # plugin search path asks Homebrew's autoload directory as well as
+    # ``rpm_plugin_dir`` (``paths.plugin_dirs``), so on a developer's Mac the real
+    # ``mvtools.dylib`` would answer a question about this tmp_path: point the
+    # prefix at a directory with nothing in it. A no-op on Linux and Windows,
+    # where the search path is ``rpm_plugin_dir`` alone.
+    monkeypatch.setenv("HOMEBREW_PREFIX", str(tmp_path / "no-homebrew"))
     for k in ("FAKE_VSPIPE_MODE", "FAKE_MPV_MODE", "FAKE_VSPIPE_SLEEP"):
         monkeypatch.delenv(k, raising=False)
     plugins, models = _plugin_tree(tmp_path / "rpm", ["rife-v4.26_ensembleFalse"])
@@ -837,6 +844,9 @@ async def test_count_new_counts_xid_109_through_the_real_scanner(
         faults, "_scanner", lambda: functools.partial(gpufault.scan_xid, journalctl=str(fake))
     )
     monkeypatch.setattr(faults, "JOURNAL_SETTLE_S", 0.0)
+    # The fault history read here IS the Linux kernel log, down to the stub
+    # journalctl above; macOS and Windows have no journal and short-circuit.
+    monkeypatch.setattr(gpufault.osapi, "IS_MACOS", False)
     assert await faults.count_new(since, {ours}) == 1
     assert await faults.count_new(since, {12345}) == 0
     assert await faults.count_new(since - 4000.0, {ours}) == 2  # Xid 13 and Xid 109

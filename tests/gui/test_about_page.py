@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from PySide6.QtCore import Qt
 
+from buttereye.core import osapi
 from buttereye.core.api import (
     ComponentLicence,
     ErrorCode,
@@ -164,8 +165,15 @@ def test_real_notices_never_hidden(make_window: Any, qtbot: Any) -> None:
 
 
 def test_licences_tab_lists_ncnn_and_glslang(
-    make_window: Any, qtbot: Any, notices: LegalNotices
+    make_window: Any, qtbot: Any, notices: LegalNotices, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The notices fixture plants the Fedora table, so the platform is faked to
+    # match it: the "conveyed" cell names the distributor of THIS installation,
+    # which is the COPR on Fedora, the installer on Windows and the tap on macOS,
+    # and it is read from osapi rather than from the row. Without this the test
+    # asserts Fedora data against whatever platform it happens to run on.
+    monkeypatch.setattr(osapi, "IS_WINDOWS", False)
+    monkeypatch.setattr(osapi, "IS_MACOS", False)
     win, page = _page(make_window, qtbot)
     assert page.handle_action(PageAction.SHOW_LICENCES)
     assert page.tabs.currentWidget() is page.licences_tab
@@ -281,3 +289,27 @@ def test_text_viewer_missing_file(qtbot: Any, tmp_path: Path) -> None:
     assert "BE-1021" in dlg.current_text()
     assert dlg.found[gone] is False
     assert not dlg.chooser.isVisibleTo(dlg)
+
+
+def test_the_conveyed_cell_names_this_platforms_distributor(
+    make_window: Any, qtbot: Any, notices: LegalNotices, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Who conveyed a component differs per platform, and the cell has to say so.
+
+    Saying "Yes (COPR)" on a Mac named the Fedora COPR as the source of every
+    conveyed row - including the shader row, which is ``always`` and ``conveyed``
+    and so shows on a Mac with nothing installed at all.
+    """
+    monkeypatch.setattr(osapi, "IS_WINDOWS", False)
+    monkeypatch.setattr(osapi, "IS_MACOS", True)
+    win, page = _page(make_window, qtbot)
+    assert page.handle_action(PageAction.SHOW_LICENCES)
+    qtbot.waitUntil(lambda: page.lic_panel.state == "content", timeout=3000)
+    m = page.model
+    conveyed = {
+        m.item(r, 0).text(): m.item(r, 4).text()
+        for r in range(m.rowCount())
+    }
+    assert conveyed, conveyed
+    assert "Yes (COPR)" not in conveyed.values(), conveyed
+    assert "Yes (tap)" in conveyed.values(), conveyed

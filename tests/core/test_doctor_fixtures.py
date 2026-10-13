@@ -324,6 +324,16 @@ def box(xdg_env: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Box:
     (icd / "lvp_icd.x86_64.json").write_text("{}")
     monkeypatch.setattr(checks_vulkan, "LOADER_PATHS", (loader,))
     monkeypatch.setattr(checks_vulkan, "ICD_DIRS", (icd,))
+    # This box IS a Fedora machine: it scripts ``rpm``, plants a /sys tree and a
+    # Fedora ICD directory, and the tests below assert Fedora wording. Pin the
+    # platform so it stays that machine when the suite runs on a Mac, where the
+    # package database would otherwise be read off Homebrew's Cellar and the GPU
+    # off ``system_profiler``. Placement matters: it must come AFTER the plugin
+    # files are planted above, because those use the running platform's own leaf
+    # name to match the import-time ``RIFE_SO``/``MVTOOLS_SO`` the checks look
+    # for - pinning earlier would plant ``.so`` names a ``.dylib``-expecting
+    # check could not find. macOS gets its own peer in test_macos_doctor_pure.py.
+    monkeypatch.setattr(osapi, "IS_MACOS", False)
     return b
 
 

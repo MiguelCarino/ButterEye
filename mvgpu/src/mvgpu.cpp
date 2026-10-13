@@ -38,6 +38,39 @@ constexpr int BLOCK = 8;
 constexpr int LEVELS = 4;
 constexpr int COARSE_RADIUS = 8;
 
+// VK_KHR_portability_enumeration reached the Vulkan headers in 1.3.212; a build
+// host with older vulkan-headers must still compile, and the name and the bit are
+// a frozen part of the extension's ABI, so spelling them out where the header is
+// too old is safe. The header constants are preferred wherever they exist.
+#ifdef VK_KHR_portability_enumeration
+constexpr const char* PORTABILITY_EXT = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+constexpr VkInstanceCreateFlags PORTABILITY_BIT = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#else
+constexpr const char* PORTABILITY_EXT = "VK_KHR_portability_enumeration";
+constexpr VkInstanceCreateFlags PORTABILITY_BIT = 0x00000001;
+#endif
+
+// True when the loader advertises the portability-enumeration extension. Measured on
+// loader 1.4.363: it advertises it unconditionally, with no portability driver
+// installed and even with a single deliberately broken ICD, because the loader rather
+// than a driver implements it. So this answers only "may I ask for it", never "is
+// there a portability driver" - which is why the caller asks for it on evidence of a
+// hidden driver instead of on this alone. An enabled extension the loader does not
+// advertise would make vkCreateInstance fail with VK_ERROR_EXTENSION_NOT_PRESENT, so
+// the check is still needed for loaders older than 1.3.212, where it did not exist.
+bool portability_offered() {
+    uint32_t n = 0;
+    if (vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr) != VK_SUCCESS || !n)
+        return false;
+    std::vector<VkExtensionProperties> have(n);
+    VkResult r = vkEnumerateInstanceExtensionProperties(nullptr, &n, have.data());
+    if (r != VK_SUCCESS && r != VK_INCOMPLETE) return false;
+    have.resize(n);  // a successful call reports how many it actually wrote
+    for (const auto& e : have)
+        if (std::strcmp(e.extensionName, PORTABILITY_EXT) == 0) return true;
+    return false;
+}
+
 // a failed Vulkan call; ``result`` tells a lost device from a transient failure
 struct VkError : std::runtime_error {
     VkResult result;
@@ -328,7 +361,32 @@ void Gpu::init(int device) {
     app.apiVersion = VK_API_VERSION_1_1;
     VkInstanceCreateInfo ic{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ic.pApplicationInfo = &app;
-    check(vkCreateInstance(&ic, nullptr, &inst), "vkCreateInstance");
+    // Ask first exactly as every build always has: no extensions, flags 0. Where a
+    // native driver answers - every stock Linux and Windows machine - this succeeds
+    // and nothing below runs, so their behaviour is unchanged to the byte.
+    VkResult r = vkCreateInstance(&ic, nullptr, &inst);
+    if (r == VK_ERROR_INCOMPATIBLE_DRIVER && portability_offered()) {
+        // The loader hides every driver whose ICD declares "is_portability_driver"
+        // from an application that has not said it wants to see them, and answers
+        // VK_ERROR_INCOMPATIBLE_DRIVER (-9) instead. On a Mac that is the whole
+        // story: MoltenVK (Vulkan on Metal) is the only driver there is.
+        //
+        // The trigger is the refusal, not the platform and not the extension's mere
+        // presence. Not #ifdef __APPLE__, because being a portability driver is a
+        // property of the ICDs installed on the machine rather than of the operating
+        // system - translation layers exist on Linux and Windows too - and a platform
+        // macro would be a lie about what was detected. Not the extension list alone,
+        // because the loader advertises that extension everywhere (see
+        // portability_offered above), so asking on that basis would quietly set the
+        // flag on Linux as well, where a portability driver installed beside the real
+        // one would then shift the device indices that ``device`` selects.
+        const char* exts[1] = {PORTABILITY_EXT};
+        ic.enabledExtensionCount = 1;
+        ic.ppEnabledExtensionNames = exts;
+        ic.flags |= PORTABILITY_BIT;
+        r = vkCreateInstance(&ic, nullptr, &inst);
+    }
+    check(r, "vkCreateInstance");
     uint32_t n = 0;
     vkEnumeratePhysicalDevices(inst, &n, nullptr);
     std::vector<VkPhysicalDevice> devs(n);
@@ -338,6 +396,9 @@ void Gpu::init(int device) {
         if (device >= int(n)) throw std::runtime_error("no Vulkan device " + std::to_string(device));
         phys = devs[device];
     } else {  // the first discrete GPU, else the first non-CPU device
+        // On Apple Silicon there is no discrete GPU at all: MoltenVK reports the M-series
+        // GPU as INTEGRATED, so it is the second test that picks it. The last line keeps a
+        // CPU-only install (lavapipe, SwiftShader) working rather than crashing on a null.
         for (auto d : devs) {
             VkPhysicalDeviceProperties pp;
             vkGetPhysicalDeviceProperties(d, &pp);

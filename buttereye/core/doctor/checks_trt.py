@@ -67,7 +67,29 @@ def trt_windows_finding() -> Finding:
     )
 
 
+def trt_macos_finding() -> Finding:
+    """macOS: permanent, not pending. Windows may one day get vs-mlrt's own Windows
+    build, so its row says "yet"; a Mac never can, because TensorRT needs CUDA and no
+    Apple Silicon Mac has an NVIDIA GPU. ``osapi.HAS_VSTRT`` tells the code that looks
+    for the plugin the same thing, so nothing globs for an engine that cannot exist."""
+    return Finding(
+        "trt.off",
+        Section.TRT,
+        Severity.INFO,
+        None,
+        M("Experimental NVIDIA TensorRT can't run on macOS"),
+        M(
+            "TensorRT needs CUDA and an NVIDIA GPU, and macOS has neither. This is not "
+            "a port that is owed: RIFE runs through Vulkan (MoltenVK) on the Mac's own "
+            "GPU, and MVTools on the CPU."
+        ),
+        M(""),
+    )
+
+
 def trt_off_finding() -> Finding:
+    if osapi.IS_MACOS:
+        return trt_macos_finding()
     if osapi.IS_WINDOWS:
         return trt_windows_finding()
     return Finding(
@@ -108,6 +130,10 @@ def trt_findings(
     trtexec: str | None,
     models_dir: Path | None = None,
 ) -> list[Finding]:
+    if osapi.IS_MACOS:
+        # Nothing below can ever pass here, and every row would name an NVIDIA
+        # package that has no macOS build at all: one honest row instead.
+        return [trt_macos_finding()]
     if osapi.IS_WINDOWS:
         return [trt_windows_finding()]
     out: list[Finding] = []
@@ -369,6 +395,7 @@ def find_trtexec() -> str | None:
 __all__ = [
     "trt_off_finding",
     "trt_windows_finding",
+    "trt_macos_finding",
     "trt_findings",
     "libnvinfer_version",
     "ldconfig_p",

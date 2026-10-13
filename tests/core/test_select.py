@@ -10,6 +10,7 @@ from fractions import Fraction
 
 import pytest
 
+from buttereye.core.backends import select as select_mod
 from buttereye.core.backends.select import backends, select
 from buttereye.core.errors import ErrorCode
 from buttereye.core.profiles.defaults import default_config
@@ -172,13 +173,40 @@ def test_trt_opted_in_but_not_set_up(cfg: Config) -> None:
     assert select(r, c, ()).backend is BackendId.RIFE_NCNN
 
 
-def test_trt_opted_in_all_ok_is_available(cfg: Config) -> None:
+def test_trt_opted_in_all_ok_is_available(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # backends.trt.build_engine exists (spike M0(l)): an opted-in, clean report offers TRT
+    # on a platform a TensorRT plugin can exist on. macOS is not one of those and has
+    # its own case below, so say which kind of machine this is.
+    monkeypatch.setattr(select_mod.osapi, "HAS_VSTRT", True)
     c = with_general(cfg, trt_experimental=True)
     st = {b.id: b for b in backends(report(trt=True, extra=_trt_ok()), c)}
     assert st[BackendId.RIFE_TRT].available
     assert st[BackendId.RIFE_TRT].experimental
     assert st[BackendId.RIFE_TRT].code is None
+
+
+def test_trt_is_never_offered_without_vstrt(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """macOS (``osapi.HAS_VSTRT`` False): TensorRT needs CUDA and an NVIDIA GPU, so
+    it is refused however clean the report is and whatever the opt-in says.
+
+    This is the case the doctor's single INFO ``trt.off`` row does NOT cover: an
+    INFO row is not a ``_problem``, so without this arm the ladder falls through
+    to the implementation check - which passes, because ``backends.trt`` imports -
+    and offers TensorRT on the one platform where it can never run.
+    """
+    monkeypatch.setattr(select_mod.osapi, "HAS_VSTRT", False)
+    r = report(trt=True, extra=_trt_ok())
+    for c in (with_general(cfg, trt_experimental=True), cfg):
+        st = {b.id: b for b in backends(r, c)}
+        assert not st[BackendId.RIFE_TRT].available
+        assert st[BackendId.RIFE_TRT].code is ErrorCode.TRT_UNSUPPORTED
+        s = select(r, c, ())
+        assert s.backend is not BackendId.RIFE_TRT
+        assert BackendId.RIFE_TRT not in s.ranked
 
 
 def test_blocking_selects_nothing(cfg: Config) -> None:

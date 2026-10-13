@@ -239,6 +239,19 @@ def _devbox() -> BenchResult:
     )
 
 
+@pytest.fixture(autouse=True)
+def only_the_planted_plugins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_paths`` plants the plugins each test wants, and nothing else may answer.
+
+    On macOS the plugin search path asks Homebrew's autoload directory as well as
+    ``rpm_plugin_dir`` (``paths.plugin_dirs``), so on a developer's Mac the real
+    ``mvtools.dylib`` would answer a question about this ``tmp_path`` - and
+    ``mvtools=False`` would stop meaning anything. A no-op on Linux and Windows,
+    where the search path is ``rpm_plugin_dir`` alone.
+    """
+    monkeypatch.setenv("HOMEBREW_PREFIX", str(tmp_path / "no-homebrew"))
+
+
 @pytest.fixture
 def bench_history(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[BenchResult]]:
     results: list[BenchResult] = []

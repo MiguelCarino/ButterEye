@@ -508,7 +508,12 @@ def test_doctor_reports_the_plugin(tmp_path: Path) -> None:
     (paths.rpm_plugin_dir / MVGPU_SO).unlink()
     f = pk.mvgpu_finding(db, paths)
     assert f.severity is Severity.INFO and f.code is None
-    assert f.commands == ("sudo dnf install buttereye-vs-mvgpu",)
+    if osapi.IS_MACOS:
+        # Homebrew has no mvgpu formula and ButterEye builds none for macOS yet,
+        # so the row offers nothing to type rather than a line that cannot work.
+        assert f.commands == ()
+    else:
+        assert f.commands == ("sudo dnf install buttereye-vs-mvgpu",)
     assert f in pk.package_findings(pk.RpmDb(False, {}, "no rpm"), paths)
     assert pk.PKG_MVGPU in pk.BUTTEREYE_PKGS
 

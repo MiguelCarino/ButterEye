@@ -12,9 +12,17 @@ a Play page with a real live MVTools session (mpv runs with ``--vo=null
 RIFE model).
 
 HOME and every XDG directory point at fresh temporary directories before
-anything from ButterEye or Qt is imported; the script refuses to run if the
-config or state directory would resolve under the real ``~/.config`` or
-``~/.local/state``. Every mpv it starts is killed before it exits.
+anything from ButterEye or Qt is imported; the script refuses to run if a
+ButterEye folder would resolve under the developer's own (``~/.config`` and
+``~/.local/state`` on Linux, the three ``~/Library`` folders on macOS, which is
+where ButterEye keeps its settings there -- ``_refuse_real_dirs``). Every mpv it
+starts is killed before it exits.
+
+Platform differences, both of them deliberate: a Mac is asked for the real
+``cocoa`` Qt platform and falls back to ``offscreen``, and prints which it got,
+because an offscreen render is not proof of what a user sees; and the macOS shots
+are written to ``docs/design/screenshots/macos/``, so the Fedora set next to it
+stays the reference one. Linux is unchanged in both.
 
 Usage: ``.venv/bin/python tools/screenshots.py [--out DIR] [--rife-model NAME]``
 """
@@ -35,13 +43,91 @@ from typing import Any
 
 REPO = Path(__file__).resolve().parent.parent
 REAL_HOME = Path.home()
-RPM_MODELS = Path("/usr/share/buttereye/rife-ncnn-models")
+IS_MACOS = sys.platform == "darwin"
+#: the folder of models under ``Paths.rpm_data_dir``, which is where every
+#: platform keeps them: ``/usr/share/buttereye`` on Fedora, Homebrew's
+#: ``<prefix>/share/buttereye`` on macOS (``buttereye.core.types``)
+MODELS_SUBDIR = "rife-ncnn-models"
+#: ``buttereye.core.paths.MACOS_APP``, copied rather than imported: the refusal in
+#: ``_refuse_real_dirs`` has to run before anything from ButterEye is imported
+MACOS_APP = "ButterEye"
+#: the Fedora shots are the reference set and are never overwritten by another
+#: platform's run, so macOS writes into a folder of its own next to them
+SHOTS = REPO / "docs" / "design" / "screenshots"
+DEFAULT_OUT = SHOTS / "macos" if IS_MACOS else SHOTS
+#: where this script's own temporary directories go: ``tempfile``'s choice
+#: everywhere but macOS, where two things make ``$TMPDIR`` the wrong one. It is
+#: ``/var/folders/<2>/<28-character per-user id>/T/``, and the Storage page prints
+#: the paths it is handed, so a shot taken from a home under it carries that
+#: identifier into an image that gets committed. It is also 49 bytes before
+#: ``mkdtemp`` has added a name, and a live session's control channel is
+#: ``<root>/runtime/buttereye/mpv-<12 chars>.sock`` where macOS binds at most 103
+#: bytes of ``sun_path`` -- from ``$TMPDIR`` that overruns and mpv never gets a
+#: socket. ``/tmp`` is on every Mac, identifies nothing, and leaves the socket at
+#: 69 bytes. It is what ``tempfile`` picks on Linux anyway, so Linux is unchanged.
+TEMP_BASE = "/tmp" if IS_MACOS else None
 SIZE = (1180, 760)
+
+
+def _qt_platform() -> str:
+    """``cocoa`` on a Mac when it really starts here, ``offscreen`` otherwise.
+
+    An offscreen render is not proof of what a user sees, so a Mac is asked for
+    the real platform first. It cannot simply be tried in-process: a Qt platform
+    plugin that fails to start calls ``qFatal`` and aborts, which no ``except``
+    catches, so a child process finds out instead. On Linux the answer stays
+    ``offscreen`` whatever the session is, because the display socket lives under
+    the real ``XDG_RUNTIME_DIR`` that ``isolate`` is about to replace.
+    """
+    if not IS_MACOS:
+        return "offscreen"  # the display socket is under the real runtime dir
+    probe = "from PySide6.QtWidgets import QApplication; QApplication([])"
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", probe],
+            env={**os.environ, "QT_QPA_PLATFORM": "cocoa"},
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "offscreen"
+    return "cocoa" if done.returncode == 0 else "offscreen"
+
+
+def _refuse_real_dirs() -> None:
+    """Refuse to run if a ButterEye folder would resolve under the developer's own.
+
+    The isolation above is the whole reason this script is safe to run on a dev
+    box over the real core, which writes config, saves profiles and cleans
+    storage; this is the check that the isolation took. The folders are the
+    platform's own ones. Linux: the XDG variables, which is what ``paths.resolve``
+    reads. macOS: the three ``~/Library`` folders ``paths._resolve_macos`` builds
+    out of HOME -- it does not read ``XDG_CONFIG_HOME`` or ``XDG_STATE_HOME`` at
+    all, so checking those on a Mac would check nothing at all.
+    """
+    if IS_MACOS:
+        home = Path(os.environ["HOME"])
+        for what, rel in (
+            ("the settings, data and state folder", Path("Application Support") / MACOS_APP),
+            ("the cache folder", Path("Caches") / MACOS_APP),
+            ("the log folder", Path("Logs") / MACOS_APP),
+        ):
+            real = (REAL_HOME / "Library" / rel).resolve()
+            p = (home / "Library" / rel).resolve()
+            if p == real or real in p.parents:
+                sys.exit(f"refusing to run: {what} resolves under {real}")
+        return
+    for real_xdg in (REAL_HOME / ".config", REAL_HOME / ".local" / "state"):
+        for var in ("XDG_CONFIG_HOME", "XDG_STATE_HOME"):
+            p = Path(os.environ[var]).resolve()
+            if p == real_xdg.resolve() or real_xdg.resolve() in p.parents:
+                sys.exit(f"refusing to run: {var} resolves under {real_xdg}")
 
 
 def isolate() -> tuple[Path, Path]:
     """Point HOME/XDG at temporary dirs; return (root, runtime)."""
-    root = Path(tempfile.mkdtemp(prefix="buttereye-shots-"))
+    root = Path(tempfile.mkdtemp(prefix="buttereye-shots-", dir=TEMP_BASE))
     for name in ("home", "config", "data", "state", "cache"):
         (root / name).mkdir()
     real_runtime = os.environ.get("XDG_RUNTIME_DIR")
@@ -51,6 +137,8 @@ def isolate() -> tuple[Path, Path]:
         runtime = root / "runtime"
         runtime.mkdir()
     runtime.chmod(0o700)
+    # chosen before HOME moves, so the probe sees the session the user is in
+    platform = _qt_platform()
     os.environ.update(
         HOME=str(root / "home"),
         XDG_CONFIG_HOME=str(root / "config"),
@@ -58,14 +146,11 @@ def isolate() -> tuple[Path, Path]:
         XDG_STATE_HOME=str(root / "state"),
         XDG_CACHE_HOME=str(root / "cache"),
         XDG_RUNTIME_DIR=str(runtime),
-        QT_QPA_PLATFORM="offscreen",  # the display socket is under the real runtime dir
+        QT_QPA_PLATFORM=platform,
         QT_ACCESSIBILITY="1",
     )
-    for real in (REAL_HOME / ".config", REAL_HOME / ".local" / "state"):
-        for var in ("XDG_CONFIG_HOME", "XDG_STATE_HOME"):
-            p = Path(os.environ[var]).resolve()
-            if p == real.resolve() or real.resolve() in p.parents:
-                sys.exit(f"refusing to run: {var} resolves under {real}")
+    print("Qt platform:", platform)
+    _refuse_real_dirs()
     return root, runtime
 
 
@@ -86,7 +171,7 @@ def make_clip(out: Path) -> Path:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--out", type=Path, default=REPO / "docs" / "design" / "screenshots")
+    ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--rife-model", default="rife-v4.26_ensembleFalse")
     ap.add_argument("--no-bench", action="store_true", help="keep the existing bench.png")
     ap.add_argument("--simple-only", action="store_true", help="only the simple-*.png shots")
@@ -315,8 +400,12 @@ def _phases(
         sc.default_config(), general=GeneralSettings(backend_override=BackendId.MVTOOLS)
     )
 
+    # the revision the core has loaded, not "": _simple ran first and its silent
+    # first run really does write a config.toml, so "" (meaning "there is none
+    # yet") is a BE-2003 conflict on any platform once that shot exists
     async def save(core: Any) -> str:
-        return str(await core.save_config(cfg, expected_revision=""))
+        load = await core.load_config()
+        return str(await core.save_config(cfg, expected_revision=load.revision))
 
     call(bridge, win, save)
     close(win, bridge)
@@ -384,9 +473,14 @@ def _phases(
         return
     # A real short benchmark: 1280x720 23.976 -> 2x, MVTools and one RIFE model.
     share = root / "rpm-share"
-    (share / "rife-ncnn-models").mkdir(parents=True)
-    if (RPM_MODELS / rife_model).is_dir():
-        (share / "rife-ncnn-models" / rife_model).symlink_to(RPM_MODELS / rife_model)
+    (share / MODELS_SUBDIR).mkdir(parents=True)
+    # the platform's own model folder: /usr/share/buttereye on Fedora, Homebrew's
+    # <prefix>/share/buttereye on a Mac, where only a tap would have put models
+    models = paths.rpm_data_dir / MODELS_SUBDIR
+    if (models / rife_model).is_dir():
+        (share / MODELS_SUBDIR / rife_model).symlink_to(models / rife_model)
+    else:
+        print("no RIFE model at", models / rife_model, "- the bench shot is MVTools only")
     win, bridge = window(dataclasses.replace(paths, rpm_data_dir=share))
     win.go("bench")
     pump(1.0)

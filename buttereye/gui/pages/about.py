@@ -368,11 +368,20 @@ class AboutPage(Page):
                 note = render(c.finding.title)
                 if c.finding.code is not None:
                     note += f" ({c.finding.code.code})"
-            shipped = (
-                (_t("Yes (installer)") if osapi.IS_WINDOWS else _t("Yes (COPR)"))
-                if c.conveyed
-                else no
-            )
+            # where a conveyed component came from, which is not the same question
+            # on every platform: the Windows installer carries it, Fedora's COPR
+            # ships it as an RPM, and on macOS the tap builds it (packaging/macos,
+            # SOURCES.md). Saying "COPR" on a Mac named the wrong distributor for
+            # every conveyed row, including the shader row that shows with nothing
+            # installed at all.
+            if not c.conveyed:
+                shipped = no
+            elif osapi.IS_WINDOWS:
+                shipped = _t("Yes (installer)")
+            elif osapi.IS_MACOS:
+                shipped = _t("Yes (tap)")
+            else:
+                shipped = _t("Yes (COPR)")
             cells = [
                 c.name,
                 c.version or _t("unknown"),

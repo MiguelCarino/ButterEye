@@ -13,6 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pytest
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication
 
@@ -21,6 +22,7 @@ from buttereye.core.api import (
     ErrorCode,
     ModelKind,
     StorageKind,
+    osapi,
 )
 from buttereye.core.testing import scenarios as sc
 from buttereye.gui.dialogs.consent import ConsentDialog
@@ -57,23 +59,121 @@ def _on_modal(fn: Callable[[Any], None]) -> list[str]:
     return seen
 
 
-def test_rpm_rows_are_not_cleanable(make_window: Any, qtbot: Any) -> None:
+#: One case per platform the page has words for: the two ``osapi`` flags, then
+#: the exact strings the packaged rows must show. The platform is forced rather
+#: than read off the host, so a Linux CI run checks the macOS words and a Mac run
+#: checks the Fedora ones; the Fedora case is the wording that was here before.
+_PACKAGED_WORDING = [
+    pytest.param(
+        False,
+        False,
+        "Installed by dnf",
+        "No — installed by dnf",
+        "Space ticks a folder to clean. Folders installed by dnf can't be ticked.",
+        "sudo dnf remove buttereye-vs-rife-ncnn buttereye-vs-mvtools",
+        "{name} was installed by dnf and can't be removed here.",
+        "Files installed by dnf are never touched.",
+        id="fedora",
+    ),
+    pytest.param(
+        True,
+        False,
+        "Installed with ButterEye",
+        "No — installed with ButterEye",
+        "Space ticks a folder to clean. Folders installed with ButterEye can't be ticked.",
+        "Uninstall ButterEye in Settings › Apps",
+        "{name} came with ButterEye's installer and can't be removed here.",
+        "Files installed with ButterEye are never touched.",
+        id="windows",
+    ),
+    pytest.param(
+        False,
+        True,
+        "Installed by Homebrew",
+        "No — installed by Homebrew",
+        "Space ticks a folder to clean. Folders installed by Homebrew can't be ticked.",
+        "Remove it with Homebrew: brew uninstall <formula>",
+        "{name} was installed by Homebrew and can't be removed here.",
+        "Files installed by Homebrew are never touched.",
+        id="macos",
+    ),
+]
+_WORDING_ARGS = (
+    "is_windows",
+    "is_macos",
+    "kind_label",
+    "deletable",
+    "tick_hint",
+    "orientation",
+    "model_note",
+    "clean_promise",
+)
+
+
+@pytest.mark.parametrize(_WORDING_ARGS, _PACKAGED_WORDING)
+def test_rpm_rows_are_not_cleanable(
+    make_window: Any,
+    qtbot: Any,
+    monkeypatch: Any,
+    is_windows: bool,
+    is_macos: bool,
+    kind_label: str,
+    deletable: str,
+    tick_hint: str,
+    orientation: str,
+    model_note: str,
+    clean_promise: str,
+) -> None:
+    monkeypatch.setattr(osapi, "IS_WINDOWS", is_windows)
+    monkeypatch.setattr(osapi, "IS_MACOS", is_macos)
     _win, page = _page(make_window, qtbot)
     m = page.loc_model
-    rpm_rows = [r for r in range(m.rowCount()) if "dnf" in m.item(r, 4).text()]
+    rpm_rows = [r for r in range(m.rowCount()) if page.entries[r].rpm_owned]
     assert len(rpm_rows) == 2
     for r in rpm_rows:
         assert not page.is_checkable(r)
-        assert m.item(r, 4).text() == "No — installed by dnf"
+        assert m.item(r, 0).text() == kind_label
+        assert m.item(r, 4).text() == deletable
+    assert page.loc_table.accessibleDescription() == tick_hint
     assert not page.set_checked(StorageKind.RPM, True)
     for e in page.entries:
         assert cleanable(e) == (e.clean_target is not None and not e.rpm_owned)
     # orientation command, never run
     page.loc_table.setCurrentIndex(m.index(rpm_rows[0], 0))
     assert page.rpm_field.isVisibleTo(page)
-    assert page.rpm_field.text() == "sudo dnf remove buttereye-vs-rife-ncnn buttereye-vs-mvtools"
+    assert page.rpm_field.text() == orientation
     page.loc_table.setCurrentIndex(m.index(0, 0))
     assert not page.rpm_field.isVisibleTo(page)
+
+
+@pytest.mark.parametrize(_WORDING_ARGS, _PACKAGED_WORDING)
+def test_packaged_wording_outside_the_locations_table(
+    make_window: Any,
+    qtbot: Any,
+    monkeypatch: Any,
+    is_windows: bool,
+    is_macos: bool,
+    kind_label: str,
+    deletable: str,
+    tick_hint: str,
+    orientation: str,
+    model_note: str,
+    clean_promise: str,
+) -> None:
+    """The other two places the page promises something about packaged files: the
+    clean confirmation and the note under a packaged model."""
+    monkeypatch.setattr(osapi, "IS_WINDOWS", is_windows)
+    monkeypatch.setattr(osapi, "IS_MACOS", is_macos)
+    entries = [e for e in sc.storage_devbox(sc.fake_paths(Path("/x"))) if not e.rpm_owned]
+    logs = [e for e in entries if e.clean_target][:1]
+    dlg = CleanConfirmDialog(logs)
+    qtbot.addWidget(dlg)
+    assert clean_promise in dlg.intro.text()
+    _win, page = _page(make_window, qtbot)
+    assert page.select_model("rife-v4.26_ensembleFalse")
+    m = page.selected_model()
+    assert m is not None and m.kind is ModelKind.PACKAGED
+    assert page.remove_note.text() == model_note.format(name=m.name)
 
 
 def test_sizes_are_true(make_window: Any, qtbot: Any) -> None:

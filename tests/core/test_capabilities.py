@@ -252,7 +252,10 @@ def test_blocked_by_doctor() -> None:
     assert caps2.states[Feature.LIVE].reason is Reason.NOT_IMPLEMENTED
 
 
-def test_trt_states() -> None:
+def test_trt_states(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The opt-in/findings/implementation ladder below is about a platform where a
+    # TensorRT plugin can exist; macOS gets its own case next.
+    monkeypatch.setattr(capabilities.osapi, "HAS_VSTRT", True)
     off = sc.default_config()
     on = dataclasses.replace(off, general=dataclasses.replace(off.general, trt_experimental=True))
     static = _all_static()
@@ -282,6 +285,28 @@ def test_trt_states() -> None:
     assert compute(unset, checked, static=static).states[Feature.TRT].available
     no = dataclasses.replace(off, general=dataclasses.replace(off.general, trt_experimental=False))
     assert compute(no, checked, static=static).states[Feature.TRT].reason is Reason.OPT_IN_REQUIRED
+
+
+def test_trt_is_impossible_without_vstrt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """macOS (``osapi.HAS_VSTRT`` False): TensorRT is permanently unavailable, and
+    the message says so instead of naming two programs to install.
+
+    The answer must not depend on the doctor's TensorRT section: that section is a
+    single INFO row on macOS, and an INFO row is not a ``_problem``, so a Mac would
+    otherwise fall through to the static state - available, because
+    ``backends.trt.build_engine`` imports - and offer a feature that cannot exist.
+    """
+    monkeypatch.setattr(capabilities.osapi, "HAS_VSTRT", False)
+    on = dataclasses.replace(
+        sc.default_config(),
+        general=dataclasses.replace(sc.default_config().general, trt_experimental=True),
+    )
+    static = _all_static()
+    for rep in (sc.report(()), dataclasses.replace(sc.report(()), trt_included=True)):
+        st = compute(on, rep, static=static).states[Feature.TRT]
+        assert not st.available
+        assert (st.reason, st.code) == (Reason.MISSING_DEPENDENCY, ErrorCode.TRT_UNSUPPORTED)
+        assert "macOS" in render(st.message) and "install" not in render(st.message)
 
 
 def test_hdr_passthrough_available_after_m0d() -> None:

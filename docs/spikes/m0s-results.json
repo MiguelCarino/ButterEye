@@ -1,0 +1,1363 @@
+{
+ "machine": "Apple M2, macOS 27.0.1, 8 threads",
+ "tool": "buttereye bench (SCOPE F14): 1 warm-up + 3 timed vspipe runs, then 3 in mpv",
+ "realtime_rule": "in-mpv fps >= REALTIME_HEADROOM 1.15 x the 2x target of 24000/1001",
+ "shared_machine": "other work ran on this machine throughout; no run had an idle machine. The passes from 2026-10-13 carry their own 1-minute load average (sysctl -n vm.loadavg, sampled every 15 s for the length of the run, 8 threads); the earlier passes a, b and x have no per-run figure - 3-12 across that day. The CPU engine moves most with load and its figures are a floor, not a best case",
+ "plugins": {
+  "mvtools": "Homebrew vapoursynth-mvtools 29",
+  "mvgpu": "built by packaging/macos/build-plugins.sh",
+  "rife-ncnn": "built by packaging/macos/build-rife.sh against Homebrew ncnn",
+  "found_via": "HOMEBREW_PREFIX pointed at a shadow prefix under $HOME/.cache (see m0s.md); nothing was installed into the Homebrew prefix"
+ },
+ "runs": [
+  {
+   "size": "1280x720",
+   "pass": "a",
+   "note": null,
+   "load_average_1min": null,
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvgpu",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 20.47,
+     "mpv_fps": 20.07,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0035,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 16.96,
+     "mpv_fps": 13.82,
+     "realtime": false,
+     "repeatable": false,
+     "cov": 0.0917,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 16.35,
+     "mpv_fps": 17.63,
+     "realtime": false,
+     "repeatable": false,
+     "cov": 0.0859,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 193.94,
+     "mpv_fps": 201.27,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0406,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 228.57,
+     "mpv_fps": 199.21,
+     "realtime": true,
+     "repeatable": false,
+     "cov": 0.1565,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "1280x720",
+   "pass": "b",
+   "note": "re-measurement of 2026-10-13: 1280x720",
+   "load_average_1min": {
+    "min": 2.34,
+    "max": 4.03,
+    "mean": 3.1,
+    "samples": 18
+   },
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvgpu",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 19.14,
+     "mpv_fps": 17.87,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0153,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 14.01,
+     "mpv_fps": 14.37,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0159,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 20.32,
+     "mpv_fps": 19.97,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0044,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 197.94,
+     "mpv_fps": 205.03,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0279,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 234.15,
+     "mpv_fps": 218.34,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.031,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "1920x1080",
+   "pass": "a",
+   "note": null,
+   "load_average_1min": null,
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvgpu",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 8.13,
+     "mpv_fps": 8.33,
+     "realtime": false,
+     "repeatable": false,
+     "cov": 0.1734,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 6.39,
+     "mpv_fps": 5.96,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0134,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 8.92,
+     "mpv_fps": 8.79,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0087,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 83.84,
+     "mpv_fps": 89.21,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0218,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 98.46,
+     "mpv_fps": 91.07,
+     "realtime": true,
+     "repeatable": false,
+     "cov": 0.081,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "1920x1080",
+   "pass": "b",
+   "note": "re-measurement of 2026-10-13: 1920x1080, to check whether this size is marginal too",
+   "load_average_1min": {
+    "min": 2.61,
+    "max": 8.1,
+    "mean": 3.69,
+    "samples": 37
+   },
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvgpu",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 8.55,
+     "mpv_fps": 8.71,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0226,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 6.59,
+     "mpv_fps": 6.51,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0168,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 9.38,
+     "mpv_fps": 9.3,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0069,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 91.0,
+     "mpv_fps": 96.1,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0307,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 111.63,
+     "mpv_fps": 101.76,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0331,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "1920x1080",
+   "pass": "c",
+   "note": null,
+   "load_average_1min": {
+    "min": 2.33,
+    "max": 6.2,
+    "mean": 3.19,
+    "samples": 37
+   },
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvgpu",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 8.61,
+     "mpv_fps": 8.71,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0357,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 6.53,
+     "mpv_fps": 6.47,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0076,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 9.36,
+     "mpv_fps": 9.3,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0024,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 92.31,
+     "mpv_fps": 97.01,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0336,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 110.98,
+     "mpv_fps": 102.56,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0202,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "2560x1440",
+   "pass": "a",
+   "note": null,
+   "load_average_1min": null,
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvtools",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 4.43,
+     "mpv_fps": 4.64,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0099,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 3.63,
+     "mpv_fps": 3.63,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0043,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 5.15,
+     "mpv_fps": 5.03,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0211,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 49.66,
+     "mpv_fps": 52.92,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0224,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 58.78,
+     "mpv_fps": 57.16,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0427,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "2560x1440",
+   "pass": "x",
+   "note": "DISCARDED: a second benchmark of this spike's was running at the same time, so the machine was measuring itself twice; kept here only to show how far a loaded machine moves the verdict",
+   "load_average_1min": null,
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": null,
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 0.0,
+     "mpv_fps": 0.0,
+     "realtime": false,
+     "repeatable": false,
+     "cov": null,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": "vspipe did not finish within the benchmark's timeout of 30 s + frames/2, a floor of about 1.23 fps for 96 frames; stored as 0.0"
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 0.0,
+     "mpv_fps": 0.0,
+     "realtime": false,
+     "repeatable": false,
+     "cov": null,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": "vspipe did not finish within the benchmark's timeout of 30 s + frames/2, a floor of about 1.23 fps for 96 frames; stored as 0.0"
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 0.0,
+     "mpv_fps": 0.0,
+     "realtime": false,
+     "repeatable": false,
+     "cov": null,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": "vspipe did not finish within the benchmark's timeout of 30 s + frames/2, a floor of about 1.23 fps for 96 frames; stored as 0.0"
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 41.74,
+     "mpv_fps": 42.71,
+     "realtime": false,
+     "repeatable": false,
+     "cov": 0.1997,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 23.92,
+     "mpv_fps": 32.39,
+     "realtime": false,
+     "repeatable": false,
+     "cov": 0.1755,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "2560x1440",
+   "pass": "b",
+   "note": "repeat of the 2560x1440 run, nothing else of this spike's running",
+   "load_average_1min": null,
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvtools",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 4.38,
+     "mpv_fps": 4.77,
+     "realtime": false,
+     "repeatable": false,
+     "cov": 0.0582,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 3.66,
+     "mpv_fps": 3.63,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0018,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 5.19,
+     "mpv_fps": 5.18,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0067,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 49.15,
+     "mpv_fps": 53.39,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0242,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 59.5,
+     "mpv_fps": 58.84,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.033,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "2560x1440",
+   "pass": "c",
+   "note": "re-measurement of 2026-10-13: 2560x1440 run until its verdict stopped moving",
+   "load_average_1min": {
+    "min": 2.33,
+    "max": 11.14,
+    "mean": 4.45,
+    "samples": 48
+   },
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvtools",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 5.98,
+     "mpv_fps": 5.18,
+     "realtime": false,
+     "repeatable": false,
+     "cov": 0.0808,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 3.82,
+     "mpv_fps": 3.75,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0094,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 5.2,
+     "mpv_fps": 5.18,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0099,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 49.32,
+     "mpv_fps": 53.57,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0109,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 54.34,
+     "mpv_fps": 57.76,
+     "realtime": true,
+     "repeatable": false,
+     "cov": 0.0595,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "2560x1440",
+   "pass": "d",
+   "note": null,
+   "load_average_1min": {
+    "min": 3.67,
+    "max": 11.13,
+    "mean": 6.08,
+    "samples": 51
+   },
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvtools",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 4.77,
+     "mpv_fps": 4.81,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0174,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 3.56,
+     "mpv_fps": 3.63,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0103,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 5.24,
+     "mpv_fps": 5.17,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0052,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 50.17,
+     "mpv_fps": 52.77,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0296,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 59.5,
+     "mpv_fps": 56.33,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0472,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "2560x1440",
+   "pass": "e",
+   "note": null,
+   "load_average_1min": {
+    "min": 1.94,
+    "max": 13.33,
+    "mean": 5.1,
+    "samples": 50
+   },
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvtools",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 4.8,
+     "mpv_fps": 4.69,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0154,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 3.7,
+     "mpv_fps": 3.74,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.003,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 5.35,
+     "mpv_fps": 5.18,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0132,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 50.53,
+     "mpv_fps": 54.57,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0213,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 59.26,
+     "mpv_fps": 57.56,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0232,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "2560x1440",
+   "pass": "f",
+   "note": "mvgpu clears the bar in this run and bench recommends it",
+   "load_average_1min": {
+    "min": 2.12,
+    "max": 10.12,
+    "mean": 3.71,
+    "samples": 50
+   },
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvgpu",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 4.8,
+     "mpv_fps": 4.86,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0106,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 3.72,
+     "mpv_fps": 3.72,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0064,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 5.27,
+     "mpv_fps": 5.29,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0096,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 50.88,
+     "mpv_fps": 55.39,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0234,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 60.0,
+     "mpv_fps": 58.66,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0353,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "2560x1440",
+   "pass": "g",
+   "note": null,
+   "load_average_1min": {
+    "min": 2.22,
+    "max": 10.67,
+    "mean": 3.69,
+    "samples": 50
+   },
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvtools",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 4.88,
+     "mpv_fps": 4.83,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0073,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 3.75,
+     "mpv_fps": 3.71,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0083,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 5.28,
+     "mpv_fps": 5.21,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0072,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 49.48,
+     "mpv_fps": 54.99,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0163,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 59.5,
+     "mpv_fps": 58.75,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0311,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "2560x1440",
+   "pass": "h",
+   "note": "mvgpu clears the bar in this run too, by 3.2 fps",
+   "load_average_1min": {
+    "min": 1.79,
+    "max": 9.1,
+    "mean": 3.42,
+    "samples": 47
+   },
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvgpu",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 6.02,
+     "mpv_fps": 4.79,
+     "realtime": false,
+     "repeatable": false,
+     "cov": 0.0737,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 3.87,
+     "mpv_fps": 3.86,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0052,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 5.44,
+     "mpv_fps": 5.41,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0111,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 55.6,
+     "mpv_fps": 58.31,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0348,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 61.02,
+     "mpv_fps": 59.69,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0317,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "2560x1440",
+   "pass": "i",
+   "note": "the quietest 1440p run of all by mean load, and mvgpu misses the bar in it: the swing between passes h and i is 1.07x with the load average unchanged",
+   "load_average_1min": {
+    "min": 1.89,
+    "max": 10.05,
+    "mean": 3.19,
+    "samples": 48
+   },
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvtools",
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 5.79,
+     "mpv_fps": 4.84,
+     "realtime": false,
+     "repeatable": false,
+     "cov": 0.1094,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 3.82,
+     "mpv_fps": 3.81,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0063,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 5.42,
+     "mpv_fps": 5.35,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0072,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 49.83,
+     "mpv_fps": 54.25,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0206,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 60.0,
+     "mpv_fps": 58.62,
+     "realtime": true,
+     "repeatable": true,
+     "cov": 0.0272,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "2560x1440",
+   "pass": "review-1",
+   "note": "NOT MEASURED BY THIS SPIKE: a reproduction reported by the phase-5 review on a quieter machine; in-mpv figures only, vspipe and RIFE not reported",
+   "load_average_1min": {
+    "reported": "2.6-3.7"
+   },
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvtools",
+   "engines": [
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": null,
+     "mpv_fps": 53.9,
+     "realtime": false,
+     "repeatable": null,
+     "cov": null,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": null,
+     "mpv_fps": 58.1,
+     "realtime": true,
+     "repeatable": null,
+     "cov": null,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "2560x1440",
+   "pass": "review-2",
+   "note": "NOT MEASURED BY THIS SPIKE: the phase-5 review's re-run of this spike's own command on a quieter machine, the first run in which mvgpu cleared the bar; MVTools and RIFE not reported",
+   "load_average_1min": {
+    "reported": null
+   },
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": "mvgpu",
+   "engines": [
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 51.99,
+     "mpv_fps": 56.92,
+     "realtime": true,
+     "repeatable": null,
+     "cov": null,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "3840x2160",
+   "pass": "a",
+   "note": null,
+   "load_average_1min": null,
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": null,
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 0.0,
+     "mpv_fps": 0.0,
+     "realtime": false,
+     "repeatable": false,
+     "cov": null,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": "vspipe did not finish within the benchmark's timeout of 30 s + frames/2, a floor of about 1.23 fps for 96 frames; stored as 0.0"
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 0.0,
+     "mpv_fps": 0.0,
+     "realtime": false,
+     "repeatable": false,
+     "cov": null,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": "vspipe did not finish within the benchmark's timeout of 30 s + frames/2, a floor of about 1.23 fps for 96 frames; stored as 0.0"
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 0.0,
+     "mpv_fps": 0.0,
+     "realtime": false,
+     "repeatable": false,
+     "cov": null,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": "vspipe did not finish within the benchmark's timeout of 30 s + frames/2, a floor of about 1.23 fps for 96 frames; stored as 0.0"
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 32.11,
+     "mpv_fps": 32.2,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.014,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 28.57,
+     "mpv_fps": 28.58,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0223,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  },
+  {
+   "size": "3840x2160",
+   "pass": "b",
+   "note": "re-measurement of 2026-10-13: 3840x2160 deliberately under heavy load, to see whether load can move the 4K verdict",
+   "load_average_1min": {
+    "min": 2.73,
+    "max": 40.72,
+    "mean": 13.86,
+    "samples": 25
+   },
+   "target": "2x",
+   "source_fps": "24000/1001",
+   "realtime_bar_fps": 55.14,
+   "recommended": null,
+   "engines": [
+    {
+     "label": "rife-v4.26",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.26_ensembleFalse",
+     "vspipe_fps": 0.0,
+     "mpv_fps": 0.0,
+     "realtime": false,
+     "repeatable": false,
+     "cov": Infinity,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": "vspipe did not finish within the benchmark's timeout of 30 s + frames/2, a floor of about 1.23 fps for 96 frames; stored as 0.0"
+    },
+    {
+     "label": "rife-v4.18",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.18_ensembleFalse",
+     "vspipe_fps": 0.0,
+     "mpv_fps": 0.0,
+     "realtime": false,
+     "repeatable": false,
+     "cov": Infinity,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": "vspipe did not finish within the benchmark's timeout of 30 s + frames/2, a floor of about 1.23 fps for 96 frames; stored as 0.0"
+    },
+    {
+     "label": "rife-v4.22-lite",
+     "backend": "rife-ncnn",
+     "model": "rife-v4.22_lite_ensembleFalse",
+     "vspipe_fps": 0.0,
+     "mpv_fps": 0.0,
+     "realtime": false,
+     "repeatable": false,
+     "cov": Infinity,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": "vspipe did not finish within the benchmark's timeout of 30 s + frames/2, a floor of about 1.23 fps for 96 frames; stored as 0.0"
+    },
+    {
+     "label": "mvgpu",
+     "backend": "mvgpu",
+     "model": null,
+     "vspipe_fps": 32.0,
+     "mpv_fps": 32.14,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0135,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    },
+    {
+     "label": "mvtools",
+     "backend": "mvtools",
+     "model": null,
+     "vspipe_fps": 29.18,
+     "mpv_fps": 28.88,
+     "realtime": false,
+     "repeatable": true,
+     "cov": 0.0077,
+     "faults": "not checked on macOS (IOReport unread)",
+     "failed": null
+    }
+   ]
+  }
+ ],
+ "verdict_stability": {
+  "1280x720": "robust: the motion-vector engines measured 2.9-4.7x the bar across every run on this machine and the best RIFE model 0.32-0.36x",
+  "1920x1080": "robust in ordinary use: 1.62-1.86x the bar, but a 0.57x overload of the kind pass x measured at 1440p would bring the CPU engine to the bar",
+  "2560x1440": "NOT SETTLED: mvgpu measured at 96-106 % of the bar and real time in 3 runs of 11, MVTools real time in every run that was not overloaded but by 2-8 %; bench recommended mvtools in 8 runs and mvgpu in 3",
+  "3840x2160": "robust: 0.52-0.58x the bar, and pass b shows the figures do not move under a load four times heavier, so no load can flip a verdict that needs 1.71x more throughput; RIFE at this size is not measured at all, not zero"
+ }
+}

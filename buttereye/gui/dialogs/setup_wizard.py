@@ -448,7 +448,8 @@ class EnginePage(QWizardPage):
 
 
 class PackagesPage(QWizardPage):
-    """Page 4: the exact dnf lines (winget on Windows; never run) + [Check again]."""
+    """Page 4: the exact dnf lines (winget on Windows, brew on macOS; never run)
+    + [Check again]."""
 
     def __init__(self, wizard: SetupWizard) -> None:
         super().__init__()
@@ -456,15 +457,24 @@ class PackagesPage(QWizardPage):
         self.setTitle(_t("Packages to install"))
         self.busy = False
         lay = QVBoxLayout(self)
-        self.body = _label(
-            _t(
+        # The lines on this page come from the core (``plan.dnf_lines``), which on a
+        # Mac hands out brew lines. The sentence around them has to name the same
+        # tool, or the one screen a user acts on contradicts the commands printed on
+        # it. Three-way as in pages/system.py; the Fedora arm is last and unchanged.
+        if osapi.IS_WINDOWS:
+            intro = _t(
                 "Run these in PowerShell or a Command Prompt, then press Check again. "
                 "ButterEye never runs winget."
             )
-            if osapi.IS_WINDOWS
-            else _t("Run these in a terminal, then press Check again. ButterEye never runs dnf."),
-            self,
-        )
+        elif osapi.IS_MACOS:
+            intro = _t(
+                "Run these in a terminal, then press Check again. ButterEye never runs brew."
+            )
+        else:
+            intro = _t(
+                "Run these in a terminal, then press Check again. ButterEye never runs dnf."
+            )
+        self.body = _label(intro, self)
         self.missing = _label("", self)
         self.cmd_box = QVBoxLayout()
         self.fields: list[CopyField] = []
@@ -517,6 +527,15 @@ class PackagesPage(QWizardPage):
                     _t("Copy winget command")
                     if n == 1
                     else _t("Copy winget command {i} of {n}").format(i=i + 1, n=n)
+                )
+            elif osapi.IS_MACOS:
+                # the accessible name is what a screen reader announces for the
+                # button, so it has to name the tool the line really uses: a Mac
+                # user hears "Copy brew command" over a ``brew install`` line
+                name = (
+                    _t("Copy brew command")
+                    if n == 1
+                    else _t("Copy brew command {i} of {n}").format(i=i + 1, n=n)
                 )
             else:
                 name = (

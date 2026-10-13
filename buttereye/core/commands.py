@@ -230,17 +230,41 @@ DNF: Mapping[str, str] = MappingProxyType(
         "7zip": "7zip",
     }
 )
+#: the Homebrew formula for each of those tools (names read off the Cellar of an
+#: arm64 Mac, 2026-10-12). Homebrew publishes no formula for mvgpu or for
+#: RIFE-ncnn-Vulkan, so neither can be listed here; those stay a build, not an
+#: install line. ``vapoursynth`` is the formula that ships ``vspipe``, and
+#: ``ffmpeg`` is Homebrew's full build (Fedora's ``ffmpeg-free`` has no peer here).
+BREW: Mapping[str, str] = MappingProxyType(
+    {
+        "mpv": "mpv",
+        "vapoursynth": "vapoursynth",
+        "ffmpeg": "ffmpeg",
+        "mkvtoolnix": "mkvtoolnix",
+        # Homebrew's 7-Zip is "sevenzip" ("p7zip" is the abandoned POSIX port).
+        # macOS unpacks zip and tar by itself (bsdtar, ditto) but not .7z, and the
+        # only .7z ButterEye ever reads is an experimental TensorRT model archive,
+        # which cannot exist on a Mac (no CUDA, so osapi.HAS_VSTRT is False). The
+        # key is kept so the three maps have the same shape and no caller of
+        # install_command can hit a KeyError on one platform only.
+        "7zip": "sevenzip",
+    }
+)
 
 
 def install_command(tool: str, *, verb: str = "install") -> str:
     """The one line that installs (or upgrades) ``tool`` here: ``sudo dnf …`` on
-    Fedora, ``winget … --exact --id …`` on Windows. ButterEye only shows it."""
+    Fedora, ``winget … --exact --id …`` on Windows, ``brew …`` on macOS.
+    ButterEye only shows it."""
     if sys.platform == "win32":
         return f"winget {verb} --exact --id {WINGET[tool]}"
+    if sys.platform == "darwin":
+        return f"brew {verb} {BREW[tool]}"
     return f"sudo dnf {verb} {DNF[tool]}"
 
 
 __all__ = [
+    "BREW",
     "DNF",
     "WINGET",
     "install_command",

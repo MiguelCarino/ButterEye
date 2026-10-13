@@ -40,7 +40,11 @@ Linux path everywhere the rows below do not say otherwise:
   never will, so ``HAS_VSTRT`` is False there.
 - VapourSynth for child processes: Linux has the distribution's; on Windows the
   installer bundles Python with VapourSynth, and ``use_bundled_runtime`` points
-  every child (mpv, vspipe) at it.
+  every child (mpv, vspipe) at it. macOS has Homebrew's, which ``vspipe`` and the
+  plugins find on their own -- but mpv's in-process ``vapoursynth`` filter does
+  not, because it ``dlopen``s VSScript by a bare leaf name and dyld never looks
+  inside Homebrew. ``use_bundled_runtime`` hands mpv the file instead
+  (``vsscript_library``, ``point_at_vsscript``).
 
 mypy checks all three: ``mypy --platform linux``, ``mypy --platform win32``
 and ``mypy --platform darwin``.
@@ -281,13 +285,136 @@ def point_at_runtime(
 NO_CWD_SEARCH = "NoDefaultCurrentDirectoryInExePath"
 
 
+#: macOS: dyld's list of directories to try for a library it did not find at its
+#: install path, which is also where a bare-name ``dlopen`` ends up last
+DYLD_FALLBACK = "DYLD_FALLBACK_LIBRARY_PATH"
+
+
+def vsscript_library() -> Path | None:
+    """The VSScript library to hand mpv, or None when there is nothing to hand it.
+
+    An answer on macOS only (``_darwin.vsscript_library``), because macOS is the
+    one platform where the file exists and nothing can find it. Linux's mpv
+    ``dlopen``s ``libvapoursynth-script.so`` and the distribution has put it where
+    the loader looks; on Windows the file comes from the Python that is running
+    and ``point_at_runtime`` already names it. The doctor and the Homebrew tap ask
+    this the same question the runtime asks, so a Mac user is told about the file
+    ButterEye would actually use."""
+    if sys.platform == "darwin":
+        return d.vsscript_library()
+    return None
+
+
+def point_at_vsscript(
+    env: MutableMapping[str, str], library: Path | None, *, sep: str = os.pathsep
+) -> None:
+    """macOS: make ``env`` lead a child mpv to VSScript at ``library``.
+
+    Homebrew's mpv has the ``vapoursynth`` filter compiled in, but it does not
+    link VSScript: it ``dlopen``s ``libvsscript.dylib`` and then
+    ``libvapoursynth-script.dylib`` by those bare leaf names, which sends dyld to
+    ``/usr/lib``, the Swift toolchain directories and the dyld cache and never
+    inside Homebrew, where the only copy is. Out of the box the filter therefore
+    fails to load and ButterEye's smoothing is dropped from the chain (BE-3003).
+    Two variables are set, because they fail in different ways and the second
+    costs one entry in a list:
+
+    - ``VSSCRIPT_PATH``, the exact file. mpv reads it on every platform and not
+      only on Windows, where ``point_at_runtime`` uses the same variable
+      (measured: the string is in the macOS binary, and setting it alone loads
+      the filter). It is also the half that survives most, because it is not a
+      ``DYLD_*`` variable: dyld strips those for a child that is SIP-protected or
+      built with the hardened runtime, and leaves this one.
+    - ``DYLD_FALLBACK_LIBRARY_PATH``, carrying the library's own directory, which
+      answers the bare-name ``dlopen`` for an mpv that does not read
+      ``VSSCRIPT_PATH``. The directory is the one the file is already in, so
+      ButterEye writes nothing and owns no file that a ``brew upgrade`` could
+      leave pointing at a keg that has gone.
+
+    ``VSSCRIPT_PATH`` is always ButterEye's answer, never an inherited value, and
+    that is a measured decision rather than a preference: mpv does not look past
+    a ``VSSCRIPT_PATH`` it cannot load. Measured here with the fallback path
+    correctly set alongside it, a value naming a file that is not there gives
+    "Failed to load VapourSynth VSScript library: dlopen(<that path>) ... no such
+    file" and the filter is removed, and a value naming some other real dylib
+    gets as far as "dlsym(getVSScriptAPILastError): symbol not found" and is
+    removed just the same. Since the Cellar path carries VapourSynth's version, a
+    value exported from a shell before an upgrade is exactly that first case: a
+    single stale string that kills live smoothing on a machine where everything
+    else is in order. Deferring to it would mean deferring to something with no
+    fallback behind it, where ButterEye's own answer is derived from the
+    VapourSynth that is installed now.
+
+    Why ``DYLD_FALLBACK_LIBRARY_PATH`` and not ``DYLD_LIBRARY_PATH``: the fallback
+    list is consulted only after dyld's normal search has failed, so it cannot
+    shadow a library a child would otherwise have found, where
+    ``DYLD_LIBRARY_PATH`` is searched by leaf name *before* a library's own path
+    is honoured. That is not a worry in the abstract -- it is what the stale
+    measurement above shows from the other side: with ``DYLD_LIBRARY_PATH`` set
+    to the keg directory, mpv's ``dlopen`` of a dangling absolute
+    ``VSSCRIPT_PATH`` silently loaded the keg's library instead, because dyld had
+    replaced the path with its own leaf-name match. A variable that rewrites
+    absolute loads for every library in every child is too blunt to set for one
+    file; both were measured, each loads the filter on its own, and the surgical
+    one is kept.
+
+    Nothing has to be written back when a variable was unset. ``dyld(1)``: a
+    binary from Fall 2023 or later has no default fallback list to preserve, and
+    measured here the bare-name ``dlopen`` still tried ``/usr/lib`` and the Swift
+    directories with the variable set, so setting it takes nothing away. Adding
+    ``/usr/local/lib`` would be inventing a library search path for every child,
+    not restoring one.
+
+    Why an environment variable reaches mpv at all: ``<prefix>/bin/mpv`` is
+    user-installed and ad-hoc signed with no hardened runtime, so dyld keeps the
+    ``DYLD_*`` entry for it. A user who points ButterEye at a protected mpv -- one
+    inside a signed app bundle, or anything under ``/usr/bin`` -- has that entry
+    stripped and keeps only ``VSSCRIPT_PATH``, which is enough for an mpv that
+    reads it, and otherwise fails as it does today, with mpv's own "Failed to
+    load VapourSynth VSScript library" in the session log. The doctor is the
+    place to say that out loud: it already resolves the mpv that would run, and
+    ``vsscript_library`` is this same answer.
+
+    ``library`` None (no VapourSynth installed): nothing is touched, so a Mac
+    without it is left exactly as it was -- a directory with no VSScript in it on
+    a child's search path would read as a fix to anything that only asks whether
+    the variable is set. Idempotent: the directory moves to the front of the list
+    instead of repeating.
+    """
+    if library is None:
+        return
+    env["VSSCRIPT_PATH"] = os.fspath(library)
+    folder = os.path.dirname(os.fspath(library))
+    rest = [p for p in env.get(DYLD_FALLBACK, "").split(sep) if p and p != folder]
+    env[DYLD_FALLBACK] = sep.join([folder] + rest)
+
+
 def use_bundled_runtime() -> None:
-    """Windows: point every child process at the VapourSynth of the Python that
-    runs ButterEye (the installer's bundled runtime), through ``os.environ``
-    (``point_at_runtime``), and take the current folder out of the program search
-    (``NO_CWD_SEARCH``, inherited by the children). Nothing anywhere else: Linux
-    uses the system's."""
+    """Point the children ButterEye starts (mpv, vspipe) at the VapourSynth they
+    are meant to use, through ``os.environ``, which they inherit.
+
+    Windows: the VapourSynth of the Python that runs ButterEye -- the installer's
+    bundled runtime (``point_at_runtime``) -- and take the current folder out of
+    the program search (``NO_CWD_SEARCH``, inherited by the children).
+
+    macOS: there is no bundle to point at, because Homebrew's ``python@3.14``
+    already *is* an interpreter whose VapourSynth is the one ``vspipe`` uses. What
+    mpv needs is the VSScript file, which it cannot find for itself
+    (``point_at_vsscript``). A no-op when VapourSynth is not installed.
+
+    Nothing on Linux: it uses the distribution's, and mpv finds VSScript by name.
+    """
     if not IS_WINDOWS:
+        # Windows is decided first and macOS inside the non-Windows branch, so
+        # that the Windows half is reached unchanged by a test that monkeypatches
+        # IS_WINDOWS on a Mac (tests/core/test_windows_runtime_pure.py does).
+        if IS_MACOS:
+            # ButterEye.open() calls this, and a Mac with no VapourSynth, or one
+            # whose cache directory cannot be written, must still open -- the
+            # doctor is what tells the user. The filesystem is the only thing
+            # here that can fail; the rest is string work on a mapping.
+            with contextlib.suppress(OSError):
+                point_at_vsscript(os.environ, vsscript_library())
         return
     os.environ[NO_CWD_SEARCH] = "1"
     python_dir, vs_dir = runtime_dirs()
@@ -631,6 +758,7 @@ __all__ = [
     "NO_CWD_SEARCH",
     "VSTRT_LIB",
     "HAS_VSTRT",
+    "DYLD_FALLBACK",
     "O_BINARY",
     "O_CLOEXEC",
     "O_NOFOLLOW",
@@ -655,6 +783,7 @@ __all__ = [
     "pid_alive",
     "plugin_file",
     "point_at_runtime",
+    "point_at_vsscript",
     "prepare_endpoint",
     "replace",
     "runtime_dirs",
@@ -668,4 +797,5 @@ __all__ = [
     "use_bundled_runtime",
     "vspipe",
     "vspipe_command",
+    "vsscript_library",
 ]

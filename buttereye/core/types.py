@@ -6,9 +6,10 @@ Every type is a frozen, slotted dataclass or an enum. Editors derive new values
 with ``dataclasses.replace``. No Qt type may appear here.
 
 The one thing here that is not a type is where ``Paths``'s two packaged locations
-default to (``homebrew_prefix``, ``macos_plugin_dir``). ``scriptgen`` has to give
-the generated scripts the same answer, and this is the only module both it and
-the field default can see: ``paths`` imports this one, not the other way round.
+default to (``homebrew_prefix``, ``macos_plugin_dir``, and on macOS the search
+path ``macos_plugin_dirs`` the doctor asks). ``scriptgen`` has to give the
+generated scripts the same answer, and this is the only module both it and the
+field default can see: ``paths`` imports this one, not the other way round.
 """
 
 from __future__ import annotations
@@ -111,8 +112,47 @@ def _brew_autoload_dir(prefix: Path) -> Path | None:
     return max(found, key=_python_minor, default=None)
 
 
+def macos_plugin_dirs() -> tuple[Path, ...]:
+    """Every directory a VapourSynth plugin ButterEye drives can be in on this
+    Mac, in the order a load resolves them.
+
+    macOS is the one platform where "where is this plugin" has more than one
+    answer, and the two are not a fallback chain - a Mac with the tap installed
+    has plugins in both at once. Homebrew VapourSynth's autoload directory holds
+    ``vapoursynth-mvtools``'s ``mvtools.dylib`` and ``ffms2``'s
+    ``libffms2.dylib``, because that is where those formulae install and a
+    formula cannot install into another formula's keg. ButterEye's own
+    ``<prefix>/lib/buttereye/vapoursynth`` holds what the ButterEye tap and
+    packaging/macos/build-plugins.sh build: ``librife.dylib``,
+    ``libmvgpu.dylib``. Fedora and Windows get away with one directory because
+    the RPM patches VapourSynth's plugindir and the installer owns the folder.
+
+    The autoload directory comes first because that copy is the one that wins. A
+    plugin there is in the core before a generated script runs, so ``_load`` in
+    template.vpy skips its ``LoadPlugin`` (a second copy of a namespace fails)
+    and the clip goes through the autoloaded file whichever directory ButterEye
+    would otherwise have named. Asking in load order is what stops the doctor
+    reporting one copy while the script uses another.
+
+    Answering one directory was measured to ship a false BLOCKING doctor row:
+    installing any tap plugin formula creates ButterEye's own directory,
+    ``macos_plugin_dir`` stopped falling back to the autoload one, and
+    ``packages.mvtools`` went degraded with ``packages.plugins`` blocking on a
+    Mac where Homebrew's autoloaded MVTools was interpolating
+    (packaging/macos/homebrew/buttereye-vs-mvgpu.rb records both runs).
+    """
+    prefix = homebrew_prefix()
+    own = prefix / "lib" / "buttereye" / "vapoursynth"
+    autoload = _brew_autoload_dir(prefix)
+    return (autoload, own) if autoload is not None else (own,)
+
+
 def macos_plugin_dir() -> Path:
-    """The directory ButterEye loads its VapourSynth plugins from on macOS.
+    """The one directory a generated script names on macOS (its ``PLUGIN_DIR``).
+
+    Not the answer to "where is this plugin" - that is ``macos_plugin_dirs``,
+    and on a Mac it is two directories. This is the narrower question a ``.vpy``
+    asks, which has room for exactly one absolute path per plugin.
 
     ButterEye's own ``<brew prefix>/lib/buttereye/vapoursynth`` when it is there,
     the analogue of Fedora's ``%{_libdir}/buttereye/vapoursynth`` and of the
@@ -122,14 +162,18 @@ def macos_plugin_dir() -> Path:
     reason the RPM patches plugindir). The Homebrew tap of phase 4 fills it.
 
     Until something does, Homebrew VapourSynth's autoload directory, which on a
-    Mac with the bottles really holds a ``mvtools.dylib`` that interpolates. It is
-    a fallback and not the answer: a plugin there is already autoloaded, so
-    ``_load`` in the generated scripts skips the ``LoadPlugin`` (a second copy of
-    a namespace fails), and the version is Homebrew's choice rather than one
-    ButterEye packaged and measured.
+    Mac with the bottles really holds a ``mvtools.dylib`` that interpolates. It
+    is a fallback and not the answer: a plugin there is already autoloaded, so
+    ``_load`` in the generated scripts skips the ``LoadPlugin``, and the version
+    is Homebrew's choice rather than one ButterEye packaged and measured.
 
     With neither, ButterEye's own directory, so that every caller names the place
     a tap would install into rather than a directory nobody owns.
+
+    Naming ButterEye's own directory while Homebrew's MVTools sits in the
+    autoload one costs a script nothing - ``_load`` skips a namespace
+    VapourSynth has already autoloaded - which is why this stayed one directory
+    and only the doctor needed the search path beside it.
     """
     prefix = homebrew_prefix()
     own = prefix / "lib" / "buttereye" / "vapoursynth"
@@ -877,6 +921,7 @@ __all__ = [
     "Paths",
     "homebrew_prefix",
     "macos_plugin_dir",
+    "macos_plugin_dirs",
     "Severity",
     "Section",
     "BackendId",

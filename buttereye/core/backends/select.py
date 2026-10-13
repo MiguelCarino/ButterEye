@@ -15,6 +15,9 @@
 4. A benchmark recommendation (no GPU faults, real time) wins; otherwise the
    §5.3 conservative defaults: RIFE v4.26 on a discrete GPU with >= 16 GiB,
    else v4.22-lite (the packaged models in the report decide what exists).
+   Quality above that default comes from the benchmark, not from the device
+   list: see :func:`_high_end_gpu` for why an integrated GPU's heap size is no
+   evidence, on an Apple Silicon Mac as on a Linux iGPU.
 5. ``general.backend_override`` wins when that backend is available.
 """
 
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from buttereye.core import osapi
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
 from buttereye.core.types import (
@@ -184,7 +188,23 @@ def backends(report: DoctorReport, cfg: Config) -> tuple[BackendStatus, ...]:
 
     # TensorRT (experimental, opt-in)
     trt_problems = [f for f in report.findings if f.section is Section.TRT and _problem(f)]
-    if not cfg.general.trt_experimental:
+    if not osapi.HAS_VSTRT:
+        # macOS, and the answer is the same whatever the opt-in says and whatever
+        # the doctor's TensorRT section holds: there is no CUDA and no Apple
+        # Silicon Mac has an NVIDIA GPU. This arm has to come first, ahead of
+        # ``trt_problems``, because that section is a single INFO row there and an
+        # INFO row is not a problem - keying on the findings alone would fall
+        # through to the implementation check and offer TensorRT on the one
+        # platform where it is permanently impossible. The doctor's own row says
+        # the same (``checks_trt.trt_macos_finding``).
+        trt = BackendStatus(
+            BackendId.RIFE_TRT,
+            False,
+            True,
+            M("TensorRT can't run on macOS: it needs CUDA and an NVIDIA GPU."),
+            ErrorCode.TRT_UNSUPPORTED,
+        )
+    elif not cfg.general.trt_experimental:
         trt = BackendStatus(BackendId.RIFE_TRT, False, True, M("Experimental NVIDIA TensorRT: off"))
     elif not report.trt_included:
         trt = BackendStatus(
@@ -283,12 +303,32 @@ def _profile_for(cfg: Config, backend: BackendId | None, model: str | None) -> s
     return profiles[0].id if profiles else ""
 
 
+def _high_end_gpu(dev: VulkanDevice | None) -> bool:
+    """SCOPE §5.3's "high-end GPU", decided from the device list alone.
+
+    Both halves are needed, and ``device_type`` is not the loose half: it is what
+    makes ``heap_bytes`` mean anything. A discrete card's device-local heap is its
+    own fast memory, so 24 GiB of it says something. An integrated GPU's heap is
+    system RAM shared with everything else, so the number says nothing about the
+    GPU: a Linux iGPU and MoltenVK both report close to the whole machine's RAM,
+    which would make a 16 GB MacBook Air or a desktop with an Intel UHD pass a
+    16 GiB threshold. Widening this to "integrated" would therefore not be kinder
+    to Apple Silicon, it would be wrong on three platforms at once.
+
+    So a machine with unified memory keeps the conservative default until it has
+    been measured. That is not a dead end: the in-mpv benchmark walks candidates
+    best quality first (``bench.runner.recommend``), so the full model is reached
+    by a measurement on this machine rather than by a guess from a device name --
+    which is what SCOPE F14 asks for ("we do not quote published fps figures").
+    """
+    if dev is None or dev.device_type != "discrete":
+        return False
+    return (dev.heap_bytes or 0) >= HIGH_END_HEAP
+
+
 def _default_model(report: DoctorReport) -> str | None:
     models = packaged_models(report)
-    dev = chosen_device(report)
-    high = (
-        dev is not None and dev.device_type == "discrete" and (dev.heap_bytes or 0) >= HIGH_END_HEAP
-    )
+    high = _high_end_gpu(chosen_device(report))
     order = (MODEL_HIGH, MODEL_MID, MODEL_LOW) if high else (MODEL_MID, MODEL_LOW, MODEL_HIGH)
     for m in order:
         if m in models:

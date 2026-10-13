@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from buttereye.core import capabilities, filelog, osapi
+from buttereye.core import paths as _paths
 from buttereye.core.backends import trt
 from buttereye.core.capabilities import ProviderRef
 from buttereye.core.errors import ButterEyeError, ErrorCode, FilterFailed, NotAvailable
@@ -100,6 +101,7 @@ from buttereye.core.types import (
     InstanceCandidate,
     Msg,
     Origin,
+    Paths,
     Profile,
     RefusalReason,
     SessionId,
@@ -249,6 +251,24 @@ LIVE_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVGPU, Backen
 #: fault (§11.9), and whose runs are followed by the Xid scan (F1). TensorRT has
 #: its own fallback while its engine builds and is not switched.
 _SWITCHABLE = frozenset({BackendId.RIFE_NCNN, BackendId.MVGPU})
+
+
+def _installed_backends(paths: Paths, *, trt: bool = False) -> frozenset[BackendId]:
+    """What is installed, asked over every plugin directory this platform has.
+
+    One function for both of this module's questions - the engines a generation
+    may choose from, and whether a stalled GPU engine can still fall back to
+    MVTools - so the two can never be answered from different directories. The
+    directories come from ``paths.plugin_dirs``: on macOS there are two at once,
+    and asking only ButterEye's own was measured to hide Homebrew's MVTools on a
+    Mac with the tap installed.
+    """
+    return decide.installed_backends(
+        _paths.plugin_dirs(paths),
+        paths.rpm_data_dir / MODEL_SUBDIR,
+        (paths.data_dir / USER_MODEL_SUBDIR,),
+        trt=trt,
+    )
 
 
 class Registry:
@@ -1064,7 +1084,9 @@ class _Session:
 
         async def run() -> None:
             try:
-                write_script(script, ScriptConstants(ctx.paths.rpm_plugin_dir))
+                # no plugin name to resolve: the TensorRT branch of the template
+                # loads vstrt from the install's own directory, never PLUGIN_DIR
+                write_script(script, ScriptConstants(_paths.plugin_dir_for(ctx.paths)))
                 await trt.build_engine(ctx.paths, inst, key, script=script)
                 builds[key] = "ready"
             except asyncio.CancelledError:
@@ -1164,9 +1186,7 @@ class _Session:
         model_dir = paths.rpm_data_dir / MODEL_SUBDIR
         user_dirs = (paths.data_dir / USER_MODEL_SUBDIR,)
         trt_inst, trt_model = self.trt_setup(cfg, profile)
-        installed = decide.installed_backends(
-            paths.rpm_plugin_dir, model_dir, user_dirs, trt=trt_model is not None
-        )
+        installed = _installed_backends(paths, trt=trt_model is not None)
         wanted: BackendId | None
         pinned_note: Msg | None
         if self.backend_override is not None:
@@ -1440,7 +1460,13 @@ class _Session:
         )
         if facts.hdr_class is HdrClass.HDR10:
             self.log.info("%s: HDR10 smoothed with the experimental HDR pass-through", self.title)
-        write_script(self.script_path, ScriptConstants(paths.rpm_plugin_dir))
+        # one absolute path per plugin, not the search path: the directory that
+        # really holds this engine's plugin, which is the directory the doctor
+        # reports it in (paths.plugin_dir_for)
+        write_script(
+            self.script_path,
+            ScriptConstants(_paths.plugin_dir_for(paths, decide.BACKEND_PLUGIN.get(backend))),
+        )
         self.failure.clear()
         self.device_lost = False
         self.busy = True
@@ -1570,13 +1596,7 @@ class _Session:
         replaced by MVTools (once)."""
         if self.backend not in _SWITCHABLE or self.backend_override is not None:
             return False
-        paths = self.ctx.paths
-        installed = decide.installed_backends(
-            paths.rpm_plugin_dir,
-            paths.rpm_data_dir / MODEL_SUBDIR,
-            (paths.data_dir / USER_MODEL_SUBDIR,),
-        )
-        return BackendId.MVTOOLS in installed
+        return BackendId.MVTOOLS in _installed_backends(self.ctx.paths)
 
     async def switch_to_cpu(
         self,

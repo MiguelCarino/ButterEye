@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.errors import ErrorCode
 from buttereye.core.render import jobs, pipeline
 from buttereye.core.render import probe as rp
@@ -146,7 +147,16 @@ def test_refusals() -> None:
     assert jobs.refusal_for(sdr, frozenset(), True) is None  # decoder list unknown: let ffms2 try
     missing = jobs.refusal_for(sdr, dec, False)
     assert missing is not None and missing.code is ErrorCode.FFMS2_MISSING
-    assert missing.commands == ("sudo dnf install ffms2",)
+    # the platform's own line, spelled out so each one really is asserted:
+    # ButterEye's installer brings ffms2 on Windows, so there is nothing to type
+    want = (
+        ()
+        if osapi.IS_WINDOWS
+        else ("brew install ffms2",)
+        if osapi.IS_MACOS
+        else ("sudo dnf install ffms2",)
+    )
+    assert missing.commands == want
     nodec = jobs.refusal_for(sdr, frozenset({"h264"}), True)
     assert nodec is not None and nodec.code is ErrorCode.CODEC_NOT_DECODABLE
     assert nodec.title.params == {"codec": "hevc"}

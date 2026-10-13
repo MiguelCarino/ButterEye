@@ -32,7 +32,7 @@ import math
 import os
 import re
 import statistics
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from fractions import Fraction
@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from buttereye.core import capabilities, osapi
+from buttereye.core import paths as _paths
 from buttereye.core.backends import trt
 from buttereye.core.bench import faults, measure, store
 from buttereye.core.capabilities import ProviderRef
@@ -136,7 +137,10 @@ class Tools:
     vspipe: str
     mpv: str | None
     vpy: Path
-    plugin_dir: Path
+    #: one plugin directory, or the search path (``paths.plugin_dirs``): macOS is
+    #: the platform with two at once, and ``candidate_plugin_dir`` resolves them
+    #: back to the single directory bench.vpy can name
+    plugin_dirs: Path | tuple[Path, ...]
     model_dir: Path
     env: Mapping[str, str] | None = None
     vram: bool = True
@@ -181,13 +185,22 @@ def _quality_key(c: Candidate) -> tuple[int, int, int, int]:
 
 
 def discover_candidates(
-    plugin_dir: Path, model_dir: Path, *, rife: bool = True, concurrency: int | None = None
+    plugin_dirs: Path | Sequence[Path],
+    model_dir: Path,
+    *,
+    rife: bool = True,
+    concurrency: int | None = None,
 ) -> tuple[Candidate, ...]:
     """Installed configurations, best quality first. RIFE models are the packaged
     model directories (each holds ``*.param``/``*.bin``); mvgpu needs a GPU like
-    RIFE (``rife`` False: no usable GPU)."""
+    RIFE (``rife`` False: no usable GPU).
+
+    ``plugin_dirs`` is one directory or the whole search path, as
+    ``decide.installed_backends`` takes it: the benchmark must offer exactly the
+    engines live play would choose from, and on a Mac with the tap installed
+    MVTools is in a different directory from mvgpu and RIFE."""
     out: list[Candidate] = []
-    if rife and (plugin_dir / RIFE_PLUGIN).is_file() and model_dir.is_dir():
+    if rife and _paths.plugin_in(plugin_dirs, RIFE_PLUGIN) is not None and model_dir.is_dir():
         for d in sorted(model_dir.iterdir()):
             if d.is_dir() and any(d.glob("*.param")):
                 out.append(
@@ -195,9 +208,9 @@ def discover_candidates(
                         model_label(d.name), BackendId.RIFE_NCNN, d.name, d, RIFE_CONCURRENT_FRAMES
                     )
                 )
-    if rife and (plugin_dir / MVGPU_PLUGIN).is_file():
+    if rife and _paths.plugin_in(plugin_dirs, MVGPU_PLUGIN) is not None:
         out.append(Candidate("mvgpu", BackendId.MVGPU, None, None, MVGPU_CONCURRENT_FRAMES_DEFAULT))
-    if (plugin_dir / MVTOOLS_PLUGIN).is_file():
+    if _paths.plugin_in(plugin_dirs, MVTOOLS_PLUGIN) is not None:
         cpus = concurrency if concurrency is not None else (os.cpu_count() or 1)
         conc = max(1, min(cpus, MVTOOLS_MAX_CONCURRENT))  # as live play uses it
         out.append(Candidate("mvtools", BackendId.MVTOOLS, None, None, conc))
@@ -255,7 +268,9 @@ async def _trt_prepare(
     )
     script = ctx.paths.cache_dir / "bench-template.vpy"
     script.parent.mkdir(parents=True, exist_ok=True)
-    write_script(script, ScriptConstants(ctx.paths.rpm_plugin_dir))
+    # no plugin name to resolve: the TensorRT branch of the template loads vstrt
+    # from the install's own directory and never reads PLUGIN_DIR
+    write_script(script, ScriptConstants(_paths.plugin_dir_for(ctx.paths)))
     try:
         folder = await trt.build_engine(ctx.paths, inst, key, script=script)
     except ButterEyeError as exc:
@@ -314,6 +329,33 @@ _SCRIPT_BACKEND = {
     BackendId.MVTOOLS: "mvtools",
     BackendId.MVGPU: "mvgpu",
 }
+#: the plugin file bench.vpy loads for each of those, as decide.BACKEND_PLUGIN
+#: does for the playback template
+_SCRIPT_PLUGIN = {
+    BackendId.RIFE_NCNN: RIFE_PLUGIN,
+    BackendId.MVTOOLS: MVTOOLS_PLUGIN,
+    BackendId.MVGPU: MVGPU_PLUGIN,
+}
+
+
+def candidate_plugin_dir(tools: Tools, backend: BackendId) -> Path:
+    """The one directory bench.vpy may name for ``backend``'s plugin.
+
+    ``bench.vpy``'s ``load`` joins one ``plugin_dir`` and a file name, exactly as
+    the playback template does, so the search path has to be resolved to the
+    directory that really holds this engine's plugin - otherwise the benchmark
+    offers a candidate it then cannot load, which on a Mac with the tap installed
+    is MVTools (Homebrew's autoload directory) measured against mvgpu and RIFE
+    (ButterEye's own).
+    """
+    where = tools.plugin_dirs
+    dirs = (where,) if isinstance(where, Path) else tuple(where)
+    found = _paths.plugin_in(dirs, _SCRIPT_PLUGIN[backend])
+    # nothing found: the first directory, so the script names the place the
+    # plugin belongs and the load fails there (``paths.plugin_dir_for`` does the
+    # same for the playback template). A candidate exists only because its file
+    # was found, so this is reached only when the plugin went away since.
+    return found.parent if found is not None else dirs[0]
 
 
 def user_data(
@@ -329,7 +371,7 @@ def user_data(
 ) -> dict[str, Any]:
     return {
         "backend": _SCRIPT_BACKEND[c.backend],
-        "plugin_dir": os.fspath(tools.plugin_dir),
+        "plugin_dir": os.fspath(candidate_plugin_dir(tools, c.backend)),
         "model_path": os.fspath(c.model_path) if c.model_path is not None else None,
         "gpu_thread": RIFE_GPU_THREAD,
         "gpu_id": gpu_id,
@@ -407,7 +449,7 @@ def find_tools(paths: Paths) -> Tools:
         vspipe=vspipe,
         mpv=osapi.executable("mpv"),
         vpy=VPY,
-        plugin_dir=paths.rpm_plugin_dir,
+        plugin_dirs=_paths.plugin_dirs(paths),
         model_dir=paths.rpm_data_dir / MODEL_SUBDIR,
     )
 
@@ -659,7 +701,7 @@ async def bench(ctx: ProviderContext, req: BenchRequest, *, op: OpContext) -> Be
 async def _bench_locked(ctx: ProviderContext, req: BenchRequest, op: OpContext) -> BenchResult:
     tools = find_tools(ctx.paths)
     rife_ok, gpu_id, gpu_uuid = _gpu(ctx)
-    cands = discover_candidates(tools.plugin_dir, tools.model_dir, rife=rife_ok)
+    cands = discover_candidates(tools.plugin_dirs, tools.model_dir, rife=rife_ok)
     if rife_ok:
         cands = trt_candidates(ctx) + cands
     if not cands:

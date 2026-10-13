@@ -1,0 +1,46 @@
+ButterEye: model paths without the 256-byte stack buffers (POSIX builds).
+
+load_param_model's #else branch - the branch Fedora builds, and every other
+POSIX build with it - sprintfs its two paths into two fixed char[256] stack
+buffers out of modeldir, which is the user's own model_path passed straight
+through ButterEye. Measured (packaging/macos/RIFE-SPIKE.md, "The model-path
+abort"): the threshold is exactly 242 characters, the first length at which
+"<modeldir>/flownet.param" and its terminator no longer fit (241 + 14 + 1 =
+256), and past it the plugin does not return an error - the process ABORTS.
+Exit 134, SIGABRT, taking the whole vspipe or mpv with it, after parampath has
+run over into modelpath (the path on stderr has lost both its head and its
+tail). 242 characters is reachable in ordinary use: a deep user-chosen model
+folder, a non-default package prefix, or one of the long per-user temporary
+directories macOS hands out.
+
+Build the two paths as std::string, which has no limit, and keep everything
+else about the function as it was. This is the same family of bug as the
+swprintf("%s") that made every Windows frame black with no error; that one is
+fixed by buttereye-vs-rife-ncnn-windows-paths.patch, in the #if _WIN32 half of
+the same split, which this patch does not touch.
+
+--- a/RIFE/rife.cpp
++++ b/RIFE/rife.cpp
+@@ -110,13 +110,16 @@
+ #else
+ static void load_param_model(ncnn::Net& net, const std::string& modeldir, const char* name)
+ {
+-    char parampath[256];
+-    char modelpath[256];
+-    sprintf(parampath, "%s/%s.param", modeldir.c_str(), name);
+-    sprintf(modelpath, "%s/%s.bin", modeldir.c_str(), name);
++    // ButterEye: build the paths as strings. sprintf into two fixed char[256]
++    // stack buffers overflowed at a modeldir of 242 characters, with parampath
++    // running over into modelpath and the process aborting (SIGABRT) rather
++    // than reporting a path it could not use. modeldir is user input: it is
++    // ButterEye's model_path.
++    const std::string parampath = modeldir + "/" + name + ".param";
++    const std::string modelpath = modeldir + "/" + name + ".bin";
+ 
+-    net.load_param(parampath);
+-    net.load_model(modelpath);
++    net.load_param(parampath.c_str());
++    net.load_model(modelpath.c_str());
+ }
+ #endif
+ 

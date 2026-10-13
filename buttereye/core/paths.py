@@ -17,6 +17,11 @@ state in a folder each (``config``, ``data``, ``state``) under
 ``~/Library/Caches/ButterEye``, logs under ``~/Library/Logs/ButterEye`` (where
 Console.app looks), and the runtime folder under the per-user temporary
 directory the system makes at login, because macOS sets no ``XDG_RUNTIME_DIR``.
+
+``plugin_dirs`` and the three functions under it answer "where is this
+VapourSynth plugin". They live here because every layer above needs the same
+answer - the doctor, the engine chooser, the benchmark and the generated scripts
+- and this is the lowest module all of them already import.
 """
 
 from __future__ import annotations
@@ -24,13 +29,13 @@ from __future__ import annotations
 import os
 import stat
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from buttereye.core import osapi
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ButterEyeError, ErrorCode
-from buttereye.core.types import Paths
+from buttereye.core.types import Paths, macos_plugin_dirs
 
 if sys.platform == "darwin":
     from buttereye.core.osapi import _darwin
@@ -282,6 +287,81 @@ def install_dir() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+# ---------- where this platform's VapourSynth plugins are (SCOPE §7.1) ----------
+def plugin_dirs(paths: Paths) -> tuple[Path, ...]:
+    """Every directory to look for an interpolation plugin in, in load order.
+
+    One directory on Fedora and Windows, where the packaging owns it outright:
+    the RPM patches VapourSynth's plugindir and the installer owns the install
+    folder, so nothing else can be holding a plugin ButterEye drives.
+
+    macOS has two (``types.macos_plugin_dirs`` says which, and why the autoload
+    one comes first), and asking only one of them was measured to ship a false
+    BLOCKING doctor row: installing a tap plugin formula created ButterEye's own
+    directory, which took ``paths.rpm_plugin_dir`` off Homebrew's autoload
+    directory and so off the ``mvtools.dylib`` that was interpolating on that
+    very machine. ``paths.rpm_plugin_dir`` stays in the list, last, because it is
+    the injectable one - a test and ``_resolve_windows`` both redirect it, and it
+    must still be answered when it is somewhere else entirely.
+
+    This lives here, and not in the doctor where it was first written, because
+    the engine chooser needs the same answer and cannot reach the doctor: the
+    doctor imports this module, so an import the other way would invert the
+    layering. While only the doctor had the search path,
+    ``decide.installed_backends`` still asked one directory and reported MVTools
+    missing on a Mac with the tap installed - the engine measured real time at
+    every size where anything is (720p, 1080p and 1440p; nothing reaches it at
+    4K - docs/macos-release-bar.md), and the one the chooser picks.
+    """
+    if not osapi.IS_MACOS:
+        return (paths.rpm_plugin_dir,)
+    return tuple(dict.fromkeys((*macos_plugin_dirs(), paths.rpm_plugin_dir)))
+
+
+def plugin_in(where: Path | Sequence[Path], name: str) -> Path | None:
+    """``name`` in the first directory of ``where`` that holds it, else None.
+
+    ``where`` is one directory or a search path, because Linux and Windows have
+    exactly one and most callers there hand over that one ``Path``; accepting
+    both is what keeps those two platforms byte-identical to the
+    single-directory code this replaced.
+
+    The file, not a package: a plugin built by packaging/macos/build-plugins.sh
+    is in no install database at all, and a formula whose keg stopped being
+    linked is in one while its file is gone.
+    """
+    dirs: Sequence[Path] = (where,) if isinstance(where, Path) else where
+    return next((d / name for d in dirs if (d / name).is_file()), None)
+
+
+def installed_plugin(paths: Paths, name: str) -> Path | None:
+    """``name`` where a load would find it, or None when no ``plugin_dirs`` has it."""
+    return plugin_in(plugin_dirs(paths), name)
+
+
+def plugin_dir_for(paths: Paths, name: str | None = None) -> Path:
+    """The one directory a generated script may name as its ``PLUGIN_DIR``.
+
+    A ``.vpy`` has room for a single absolute path per plugin (``_load`` in
+    scriptgen/template.vpy joins ``PLUGIN_DIR`` and the file name), so the search
+    path cannot be handed to it. This resolves that list the way
+    ``scriptgen.generator._macos_ffms2`` resolves ffms2: to the directory that
+    really holds ``name``, which is the directory ``installed_plugin`` reports -
+    so the doctor and the generated script cannot name different copies, and that
+    disagreement is exactly how a user gets "installed but not loading".
+
+    ``name`` None: there is no plugin to resolve. The TensorRT scripts load vstrt
+    from the install's own directory and never read ``PLUGIN_DIR``, so they get
+    the packaged directory, as they did before there was a search path.
+
+    Nothing found: ``paths.rpm_plugin_dir`` as well. The script then names the
+    place the plugin belongs and the load fails there, rather than failing
+    somewhere that was never ButterEye's.
+    """
+    found = plugin_in(plugin_dirs(paths), name) if name is not None else None
+    return found.parent if found is not None else paths.rpm_plugin_dir
+
+
 def ensure_runtime_dir(paths: Paths) -> Path:
     """Create ``paths.runtime_dir`` (0700) if missing, then verify it (BE-2010)."""
     try:
@@ -305,6 +385,10 @@ __all__ = [
     "MACOS_APP",
     "WINDOWS_APP",
     "install_dir",
+    "plugin_dirs",
+    "plugin_in",
+    "installed_plugin",
+    "plugin_dir_for",
     "resolve",
     "ensure_runtime_dir",
     "ensure_logs_dir",

@@ -3,7 +3,7 @@
 """The macOS calls ``osapi`` needs, where being POSIX is not enough.
 
 Imported only on macOS. The rest of ``osapi``'s POSIX half works there as it
-does on Linux; these are the four places where it does not:
+does on Linux; these are the five places where it does not:
 
 - ``SO_PEERCRED`` does not exist. macOS splits it in two: ``LOCAL_PEERCRED``
   gives an ``xucred`` (uid and groups, no pid) and ``LOCAL_PEERPID`` gives the
@@ -14,9 +14,13 @@ does on Linux; these are the four places where it does not:
   per-user temporary directory the kernel names (``user_temp_dir``).
 - there is no ``pidfd_open``; a kqueue holding one ``EVFILT_PROC`` filter is
   the same descriptor-you-can-watch (``exit_watch``).
+- dyld searches nothing a Mac keeps VapourSynth in, so mpv's ``vapoursynth``
+  filter cannot load VSScript by itself and has to be handed the file
+  (``vsscript_library``, used by ``osapi.use_bundled_runtime``).
 
 The three ``ctypes`` calls all go to ``libSystem``, which is already loaded in
 every process: nothing here needs Homebrew, a compiler or a wheel.
+``vsscript_library`` needs no library at all: it reads directories.
 """
 
 from __future__ import annotations
@@ -26,8 +30,10 @@ import errno
 import os
 import select
 import socket
+import stat
 import struct
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 assert sys.platform == "darwin"  # mypy: the rest is checked only for --platform darwin
@@ -227,3 +233,167 @@ def exit_watch(pid: int) -> int | None:
         return None
     finally:
         kq.close()
+
+
+# ======================================================================== VSScript
+#: the leaf names mpv's ``vapoursynth`` filter ``dlopen``s. Both are strings in
+#: ``<prefix>/bin/mpv``, next to "Failed to load VapourSynth VSScript library" and
+#: ``getVSScriptAPI``, and ``libvsscript.dylib`` is what VapourSynth's meson build
+#: installs beside the Python module -- Homebrew's bottle and a pip wheel both
+#: carry that one. ``libvapoursynth-script.dylib`` is the name its older autotools
+#: build left in ``<prefix>/lib``, which is also what the error message names.
+VSSCRIPT_NAMES = ("libvsscript.dylib", "libvapoursynth-script.dylib")
+
+#: where Homebrew's ``vapoursynth`` formula keeps it: inside the virtualenv the
+#: formula builds under ``libexec``, so the path carries the formula's version
+#: *and* the Python minor version. Both are globbed; neither is written down.
+_KEG_GLOB = "Cellar/vapoursynth/*/libexec/lib/python3.*/site-packages/vapoursynth"
+
+
+def vsscript_library() -> Path | None:
+    """VSScript's library file on this Mac, or None when nothing holds one.
+
+    mpv's ``vapoursynth`` filter does not link VSScript: it ``dlopen``s a bare
+    leaf name, which sends dyld to ``/usr/lib``, the Swift toolchain directories
+    and the dyld cache, and never inside Homebrew, where the only copy is.
+    Measured on this Mac (docs/PLATFORMS.md, the phase-4 blocker), that copy is::
+
+        <prefix>/Cellar/vapoursynth/<version>/libexec/lib/python3.<minor>/
+            site-packages/vapoursynth/libvsscript.dylib
+
+    inside the formula's own virtualenv -- a path with the formula's version and
+    the Python minor version in it, under the other of the two names, on no dyld
+    search path. So the file has to be found and handed over, which is what
+    ``osapi.use_bundled_runtime`` does with this answer, and what the doctor and
+    the Homebrew tap ask for with the same call.
+
+    Found by reading directories. The shortest route would be the import system
+    -- the ``vapoursynth`` package directory *is* where the library sits, and
+    Homebrew's ``python@3.14`` reaches the formula's virtualenv through its
+    ``homebrew-vapoursynth.pth`` -- but even ``importlib.util.find_spec`` goes
+    through ``sys.meta_path``, where ``tests/boundary/import_guard.py`` refuses
+    the name outright for the GUI process (F17, SCOPE §8.1) and records the
+    violation. ``sys.path`` holds the same directories without the import
+    machinery being involved at all, and ``doctor/brew.py`` reads Homebrew as
+    files for a related reason. Three places, in order:
+
+    - ``sys.path``, for a ``vapoursynth`` package directory with the library in
+      it. This answers for a ``pip install vapoursynth`` into the environment
+      ButterEye runs under, for a source build, and for Homebrew's own Python,
+      whose ``.pth`` puts the keg's ``site-packages`` on the path -- and it never
+      imports the package, only stats inside it;
+    - the ``libexec`` virtualenv of every ``vapoursynth`` keg under Homebrew's
+      prefix, newest version first (``_keg_key``), which is what answers inside a
+      ``python -m venv`` made without ``--system-site-packages``: measured, that
+      is the shape of this repository's own test environment, where the package
+      is not on ``sys.path`` at all;
+    - ``<prefix>/lib``, where a from-source ``make install`` leaves it and where
+      a Homebrew tap can put a copy of its own -- the one layout that needs no
+      environment variable, because it is on a path an ``-rpath``'d mpv searches.
+
+    Nothing is cached and no version is remembered, so there is no stale answer
+    to invalidate: a ``brew upgrade vapoursynth`` moves the keg and the next
+    ``ButterEye.open()`` derives the new path. Returns None rather than raising
+    when VapourSynth is not installed, or when a directory cannot be read, which
+    is what makes the macOS branch of ``use_bundled_runtime`` a no-op there.
+    """
+    for folder in _vsscript_dirs():
+        if not _trustworthy_dir(folder):
+            continue
+        for name in VSSCRIPT_NAMES:
+            lib = folder / name
+            try:
+                if lib.is_file():
+                    return lib
+            except OSError:  # a path too long to stat, a keg being deleted
+                continue
+    return None
+
+
+def _trustworthy_dir(folder: Path) -> bool:
+    """Is ``folder`` one this user alone controls?
+
+    What comes back from here is handed to mpv as ``VSSCRIPT_PATH`` and mpv
+    ``dlopen``s it, so a directory anyone else can write to is a way to run code
+    inside the player (SCOPE 4.3's threat model is a same-machine process, not a
+    remote one). ``sys.path`` makes that reachable: under ``python -m`` its first
+    entry is the current directory, so running ButterEye from a world-writable
+    directory holding ``./vapoursynth/libvsscript.dylib`` would otherwise load
+    that file -- measured, before this check, ``vsscript_library()`` answered
+    with a planted copy under ``/private/tmp``.
+
+    Both halves are needed. The owner test alone would accept a directory of our
+    own that is group-writable, and the mode test alone would accept one owned by
+    somebody else with tight permissions -- which they can loosen whenever they
+    like. A directory that cannot be stat-ed is not trusted either.
+    """
+    try:
+        st = folder.stat()  # resolves the link: what dlopen would actually open
+    except OSError:
+        return False
+    return st.st_uid == os.getuid() and not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+
+
+def _vsscript_dirs() -> Iterator[Path]:
+    """The directories ``vsscript_library`` looks in, in order."""
+    # The current directory is never asked, however it reaches sys.path. Under
+    # ``python -m buttereye.cli`` -- which is how ButterEye runs from a checkout,
+    # and on this machine there is no installed console script -- sys.path[0] IS
+    # the working directory, so a ``./vapoursynth/libvsscript.dylib`` beside
+    # whatever the user happened to cd into would be handed to mpv as
+    # VSSCRIPT_PATH and dlopen-ed. Measured before this skip: run from a
+    # directory holding that file, vsscript_library() answered with it.
+    # An installed VapourSynth is never in the working directory, so nothing
+    # legitimate is lost; _trustworthy_dir is the second line, for the rest.
+    here = {Path.cwd(), Path.cwd().resolve()}
+    for entry in sys.path:
+        # "" is the current directory, and a .zip or an egg is not a directory a
+        # dylib can be stat-ed inside; both are skipped by asking for the package
+        # directory and letting the is_file() in the caller answer
+        if not entry:
+            continue
+        folder = Path(entry)
+        try:
+            if folder in here or folder.resolve() in here:
+                continue
+        except OSError:  # unresolvable: not somewhere to load a library from
+            continue
+        yield folder / "vapoursynth"
+
+    # Homebrew's prefix. Imported here and not at the top of the module because
+    # ``buttereye.core.types`` imports ``osapi``, which imports this module: a
+    # module-level import would close that circle. It is the one answer for where
+    # Homebrew is (``HOMEBREW_PREFIX``, else the prefix with a ``brew`` in it).
+    from buttereye.core.types import homebrew_prefix
+
+    prefix = homebrew_prefix()
+    try:
+        yield from sorted(prefix.glob(_KEG_GLOB), key=_keg_key, reverse=True)
+    except OSError:  # no Homebrew here, or no permission to look
+        pass
+    yield prefix / "lib"
+
+
+def _keg_key(folder: Path) -> tuple[tuple[int, str], tuple[int, str]]:
+    """``folder`` ordered by the formula's version, then Python's minor version.
+
+    ``…/Cellar/vapoursynth/<version>/libexec/lib/python3.<minor>/site-packages/
+    vapoursynth``: both numbers are in the path, an upgrade can leave the old keg
+    in the Cellar beside the new one, and ``sorted`` on the strings would put
+    ``9`` after ``81``, so each is read as a number.
+    """
+    parts = folder.parts
+    version = parts[-6] if len(parts) >= 6 else ""
+    minor = parts[-3].removeprefix("python3.") if len(parts) >= 3 else ""
+    return _number_first(version), _number_first(minor)
+
+
+def _number_first(name: str) -> tuple[int, str]:
+    """``name`` as (its leading number, itself); -1 for a name with no number.
+
+    VapourSynth's versions are plain integers (``81``) and Homebrew appends a
+    revision to the keg directory when it rebuilds one (``81_1``), which the
+    second half keeps as the tie-break.
+    """
+    digits = name[: len(name) - len(name.lstrip("0123456789"))]
+    return int(digits) if digits else -1, name

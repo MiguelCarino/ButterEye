@@ -40,6 +40,19 @@ R615 = (
 BOOT = "9ad7ff4c02ee4d868393958985948ca7"
 
 
+@pytest.fixture(autouse=True)
+def _as_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test here is about the Linux kernel log: it feeds ``journalctl -k``
+    output, stubs the program itself, or builds an ``XidScan`` by hand to check
+    that an unreadable journal is never reported as "no faults" (BE-1031). macOS
+    and Windows have no journal at all, so ``scan_xid`` short-circuits and
+    ``xid_finding`` answers with that platform's own row - which would make this
+    file measure the wrong thing when the suite runs on a Mac. The macOS rows have
+    their own tests in test_macos_doctor_pure.py.
+    """
+    monkeypatch.setattr(gpufault.osapi, "IS_MACOS", False)
+
+
 def rec(msg: str | list[int], mono_us: int, wall_us: int, boot: str = BOOT) -> str:
     return json.dumps(
         {

@@ -12,39 +12,82 @@
 #     test step names one by one, for the tests that can run with nothing
 #     installed but Python and Qt.
 #
-# WHAT THIS JOB DOES NOT PROVE, which is a great deal. It installs no Homebrew
-# package, so the runner has no mpv, no vspipe, no VapourSynth, no plugins and no
-# vulkaninfo, and tests/conftest.py skips every test marked `integration`, `gpu`
-# or `devbox` for the missing piece. Roughly a fifth of the suite therefore never
-# runs here: nothing in tests/integration executes, so this job says nothing about
-# whether a script renders, whether mpv accepts the filter, or whether the real
-# plugins load. None of that is ported yet (phases 2 and 3), so a job that claimed
-# it would be claiming more than the tree can do; what it means in practice is
-# that a green tick here is a green tick on the pure-Python and Qt layers only.
-# macOS is not a supported platform.
+# WHAT THIS JOB DOES NOT PROVE, which is a great deal, and the gap got wider with
+# every phase rather than narrower. It installs no Homebrew package, so the runner
+# has no mpv, no vspipe, no VapourSynth, no plugins, no Vulkan loader, no MoltenVK
+# and no vulkaninfo, and tests/conftest.py skips every test marked `integration`,
+# `gpu` or `devbox` for the missing piece. Roughly a fifth of the suite therefore
+# never runs here: nothing in tests/integration executes, so this job says nothing
+# about whether a script renders, whether mpv accepts the filter, or whether the
+# real plugins load. What a green tick here means is a green tick on the
+# pure-Python and Qt layers only. macOS is not a supported platform.
 #
-# Two things measured on a developer's Mac, where mpv and vspipe ARE installed,
-# that this job is blind to by construction and that phases 2-4 own:
+# EVERYTHING THE macOS PORT ACTUALLY PROVES WAS MEASURED ON A DEVELOPER'S MAC, NOT
+# HERE: one Apple M2 running macOS 27.0.1, with the Homebrew bottles installed.
+# docs/PLATFORMS.md ("macOS: the realistic path") has each measurement and the
+# phase it belongs to. What matters for reading a green tick on this job is that
+# none of the following has ever run in CI, on any runner:
 #
-#   * mpv cannot load a ButterEye filter at all. Its `vapoursynth` filter dlopens
-#     VSScript by bare leaf name, and Homebrew keeps that file inside the
-#     formula's libexec virtualenv, off dyld's search path, so the filter fails to
-#     create and the session rolls back with BE-3003. That is what makes
-#     tests/integration/test_hdr_live_real.py red on a Mac with the bottles
-#     installed. Offline render through vspipe is unaffected and works.
-#   * the doctor still speaks Fedora on a Mac (dnf advice, /usr/lib64 search
-#     paths, rpm queries) - phase 2's vocabulary work.
+#   * live smoothing in mpv, which is the thing ButterEye is for. Phase 4 is what
+#     made it work: mpv's `vapoursynth` filter dlopens VSScript by bare leaf name,
+#     and Homebrew keeps that file inside the `vapoursynth` formula's libexec
+#     virtualenv where dyld never looks, so no ButterEye filter could be created
+#     inside mpv at all and every session rolled back with BE-3003.
+#     osapi.use_bundled_runtime now hands each child mpv the file and its
+#     directory, and tests/integration/test_hdr_live_real.py - red in phases 0 to
+#     3 - passes on that Mac with nothing exported by hand. It cannot pass here: it
+#     needs a real mpv.
+#   * offline render end to end (vspipe | ffmpeg | mkvmerge), which wants three
+#     bottles this job does not install.
+#   * anything GPU-backed. The runner's Metal GPU is real - that is why it is
+#     printed below, and it is the one way these runners beat the GPU-less Windows
+#     ones - but macOS has no system Vulkan: the loader and MoltenVK are Homebrew
+#     bottles too, so with none installed there is no Vulkan instance to create and
+#     neither mvgpu nor RIFE-ncnn can run a frame. On macOS the `gpu` gate asks
+#     `vulkaninfo --summary` for a non-CPU device (tests/conftest.py
+#     `_have_gpu_darwin`), so without that bottle every `gpu` test skips with
+#     "needs vulkaninfo (brew install vulkan-tools) to find the Metal GPU" - not
+#     because they all want the RPMs, which an earlier version of this header
+#     claimed and tests/integration/test_mvgpu_live_real.py (integration + gpu, no
+#     `devbox`) disproves. Both engines were measured on the developer Mac through
+#     MoltenVK instead: mvgpu's in-between frame bit-exact, RIFE-ncnn correct but
+#     offline-only on an M2.
+#   * the plugins, which this job does not build. tests/macos/test_plugins_macos.py
+#     wants BUTTEREYE_TEST_PLUGINS pointing at a packaging/macos/build-plugins.sh
+#     output directory and skips without it.
+#   * the Homebrew tap in packaging/macos/homebrew/. No formula has been installed,
+#     bottled or audited anywhere - not by this job, not by a human - so nothing
+#     here would notice if one were broken.
+#   * the GUI as a user meets it. Every step below runs with
+#     QT_QPA_PLATFORM=offscreen, because a headless runner has no window server
+#     to give Qt its real `cocoa` platform, so the `macos` style this job never
+#     loads is the style every Mac user would see - and the two do not agree.
+#     Measured on the developer Mac, same tree and same command with only the
+#     platform changed, tests/gui/test_theme_scale.py is 16 passed under
+#     offscreen and 4 failed, 12 passed under cocoa (a monospace face at 15.0 pt
+#     against a 19.5 pt heading, because the Mac style hands out
+#     .AppleSystemUIFont at its own size; a light-scheme contrast of 4.29 against
+#     the 4.5 the test demands; the dark palette's contrast; and a focus-frame
+#     test that times out waiting for a frame the Mac style draws itself). That
+#     is a real finding with no gate behind it: it belongs to the GUI phase, and
+#     no CI runner can see it.
+#   * tests/macos/test_doctor_macos.py, which runs the whole doctor against the
+#     machine's own Homebrew, vulkaninfo and mpv. That file is how phase 2's macOS
+#     vocabulary is held to a real machine rather than to a fixture - the fixture
+#     half (tests/core/test_macos_doctor_pure.py) does run here - and only a Mac
+#     with the bottles can run it.
 #
-# Unlike the GPU-less Windows runners, GitHub's macos-14 and newer images are real
-# Apple Silicon with a working Metal GPU, so this is where the MoltenVK work will
-# be able to run for real later; that is why the runner's GPU is printed below.
-# The `gpu` tests still skip, because every one of them also carries the `devbox`
-# marker and so wants the RPMs as well.
+# Adding `brew install` steps would close part of that, and deliberately has not
+# been done: it would make this a different and much slower job, and whether to
+# pay for it is the owner's call rather than this file's. A second, opt-in
+# workflow is the shape that would fit; it is a proposal, not a decision, and
+# until one exists this job's blindness is the honest reading of a green tick.
 #
 # tools/macos-tests.sh runs the same two commands with the same exclusions on a
 # Mac. Keep the two lists in step: neither can call the other, because this job
 # installs its own pinned tools through setup-python and wants the type check as a
-# step of its own so all three platforms report.
+# step of its own so all three platforms report. The one difference is deliberate:
+# that script sets BUTTEREYE_TEST_BREW and this job never does (see the test step).
 
 name: macOS
 
@@ -119,6 +162,16 @@ jobs:
       # missing piece rather than failing, so they stay in the selection and come
       # out as skips. The exclusions below are the whole measured list, and each
       # says who owns it.
+      #
+      # tests/macos/test_doctor_macos.py is the same idea with a switch of its
+      # own: it runs the whole doctor against the machine's real Homebrew,
+      # vulkaninfo and mpv, so it asks for BUTTEREYE_TEST_BREW on top of macOS,
+      # the way tests/windows asks for BUTTEREYE_TEST_PLUGINS. This job installs
+      # no bottle, so it does not set it and the file skips itself - which is why
+      # there is no deselect for it below. tools/macos-tests.sh does set it,
+      # because a developer's Mac is the machine that file wants. The fixture half
+      # of the same ground, tests/core/test_macos_doctor_pure.py, needs no
+      # Homebrew and does run here.
       #
       # Two of phase 0's five are gone, both verified by running them here:
       #

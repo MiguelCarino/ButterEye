@@ -66,6 +66,11 @@ _DEFAULTS = ProviderRef("buttereye.core.profiles.defaults", "default_config")
 _DNF_INSTALL = re.compile(r"^sudo dnf install (.+)$")
 #: Windows: ``winget install --exact --id <Package.Id>`` (checks_pkgs.tool_fix)
 _WINGET_INSTALL = re.compile(r"^winget install (?:--\S+ )*(\S+)$")
+#: macOS: ``brew install <formula> [<formula> …]`` (checks_pkgs.tool_fix)
+_BREW_INSTALL = re.compile(r"^brew install (.+)$")
+#: the prefixes of the lines setup offers to run; an upgrade line is advice for a
+#: working install, not something a first run should put on its "to install" list
+_INSTALL_PREFIXES = ("sudo dnf", "winget install ", "brew install ")
 STEPS = 4
 
 
@@ -109,18 +114,19 @@ def _problem(f: Finding) -> bool:
 
 def dnf_lines(report: DoctorReport, *, trt: bool) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """(missing package names, exact command lines) from the report's findings:
-    the ``dnf`` lines on Linux, the ``winget`` lines on Windows."""
+    the ``dnf`` lines on Linux, the ``winget`` lines on Windows, the ``brew`` ones
+    on macOS. The name is the field's (``SetupPlan.dnf_lines``), not the tool's."""
     lines: list[str] = []
     pkgs: list[str] = []
     for f in report.findings:
         if not _problem(f) or (f.section is Section.TRT and not trt):
             continue
         for c in f.commands:
-            if not c.startswith(("sudo dnf", "winget install ")):
+            if not c.startswith(_INSTALL_PREFIXES):
                 continue
             if c not in lines:
                 lines.append(c)
-            m = _DNF_INSTALL.match(c) or _WINGET_INSTALL.match(c)
+            m = _DNF_INSTALL.match(c) or _WINGET_INSTALL.match(c) or _BREW_INSTALL.match(c)
             if m:
                 for p in m.group(1).split():
                     if p not in pkgs:
@@ -255,7 +261,14 @@ async def apply(
                     ErrorCode.MPV_NOT_FOUND,
                     M("mpv is not installed"),
                     M("The in-mpv probe needs mpv."),
-                    **tool_fix(M("Install the distro mpv package."), "sudo dnf install mpv", "mpv"),
+                    **tool_fix(
+                        M("Install the distro mpv package."),
+                        "sudo dnf install mpv",
+                        "mpv",
+                        # "the distro package" means nothing on a Mac; the line
+                        # tool_fix pairs with this is "brew install mpv"
+                        macos=M("Install mpv with Homebrew."),
+                    ),
                 )
             else:
                 probe = await run_probe(paths, mpv, trt=choices.backend is BackendId.RIFE_TRT)

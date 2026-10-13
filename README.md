@@ -58,14 +58,35 @@ it); see "NVIDIA TensorRT" under [Status](#status) to set it up yourself.
 **Coming later:** a COPR repository, so that `sudo dnf copr enable <owner>/buttereye`
 and `sudo dnf install buttereye` install and update everything. It isn't published yet.
 
-**macOS and Windows are not supported in 0.0.1**, and there are no builds for them.
-ButterEye is Linux-specific by design: it talks to mpv over a Unix domain socket (mpv's
-JSON IPC; Windows uses named pipes), its plugins are VapourSynth `.so` files loaded from
-Linux paths and built against Fedora's libraries, its checks read Linux-only sources
-(`/proc`, `journalctl` for GPU faults, `ldconfig`), and it is packaged and tested as
-Fedora RPMs only. Other Linux distributions may work from source (see Development setup)
-but are untested. What a Windows or macOS port would take is written up in
-[docs/PLATFORMS.md](docs/PLATFORMS.md).
+**macOS and Windows are not supported in 0.0.1**, and nothing for either is released.
+0.0.1 is packaged and tested as Fedora RPMs only; other Linux distributions may work
+from source (see Development setup) but are untested. Ports to both other systems are
+post-v1 work, held to the same bar as this one, and every step of each is written up
+with its measurements in [docs/PLATFORMS.md](docs/PLATFORMS.md). Windows has an
+installer that has been tested under Wine and on GitHub's Windows Server runners but
+never on a real Windows PC with a GPU.
+
+On macOS the short description is **ported and measured on one Mac; not released, not
+supported** — Apple Silicon, one Apple M2, the machine it was written on.
+**Measured there:** live smoothing runs in mpv with MVTools, `buttereye doctor` reports
+nothing blocking, an offline render goes through `vspipe`, `ffmpeg` and `mkvmerge` end
+to end, and every window opens and draws through Qt's real Mac platform
+([`docs/design/screenshots/macos/`](docs/design/screenshots/macos/)) — drawn and
+photographed, though, never yet driven by a person on a Mac.
+**Everything it needs, you would install yourself:** Homebrew's `mpv` (0.41 or newer,
+for its VapourSynth filter), `vapoursynth`, `vapoursynth-mvtools`, `ffms2`, `ffmpeg`,
+`mkvtoolnix`, `molten-vk`, `vulkan-loader` — and, for ButterEye's own GPU engines, a
+build from `packaging/macos/`, because there is no package. The Homebrew tap written
+there is unpublished and **no formula has ever been installed from it**. **Most of what
+a release would need is still unmeasured:** one machine, one macOS version, no Intel
+Mac, no second user account, no clean install of anything. And some of it will never
+exist on a Mac: the experimental NVIDIA TensorRT path cannot (no CUDA, no NVIDIA GPU),
+there will be no `.app` bundle, and RIFE on an M2 is for offline copies only — about
+five times too slow for live playback, where MVTools is what runs. Neither port is
+supported, nothing here is an offer of support or a promise that one is coming;
+[docs/PLATFORMS.md](docs/PLATFORMS.md) has every measurement and every gap, and
+[docs/macos-release-bar.md](docs/macos-release-bar.md) puts the same evidence as a
+release checklist with a verdict on each item.
 
 ## Status
 
@@ -126,7 +147,9 @@ Alpha (0.0.1), verified on the dev box (Fedora 44, RTX 4090, mpv 0.41.0, VapourS
 Taken over the real core on the dev box. The top row and the speed test show the default
 window and its Details dialog; the setup wizard and the rest come from the classic
 multi-page window (`BUTTEREYE_DEV=1 … --classic`, see below). More are in
-[`docs/design/screenshots/`](docs/design/screenshots/).
+[`docs/design/screenshots/`](docs/design/screenshots/); the same views captured on an
+Apple M2 are in [`docs/design/screenshots/macos/`](docs/design/screenshots/macos/),
+which is a record of what the port looks like and not a claim that macOS is supported.
 
 <table>
   <tr>

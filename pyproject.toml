@@ -2,6 +2,10 @@
 # Copyright (C) 2026 The ButterEye contributors
 
 [build-system]
+# >=77 for PEP 639 (``license`` as an SPDX expression and ``license-files``). A
+# Homebrew formula building this therefore needs setuptools present as a build
+# dependency rather than letting pip fetch one (Homebrew has python-setuptools
+# 84.0.0): building in a sandbox with no network is the shape a reviewer expects.
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
@@ -15,16 +19,26 @@ license-files = ["COPYING*", "LICENSES/*"]
 requires-python = ">=3.14"
 authors = [{ name = "The ButterEye contributors" }]
 keywords = ["mpv", "vapoursynth", "frame interpolation", "rife", "mvtools"]
+# Linux stays first and unchanged: Fedora is the supported platform (SCOPE §2).
+# macOS is here because a Homebrew tap now installs this distribution into the
+# formula's own virtual environment with Homebrew's python@3.14 (docs/PLATFORMS.md,
+# macOS phase 4), so "POSIX :: Linux" alone would have been wrong about where the
+# package installs. The Cocoa environment classifier is the same statement about Qt:
+# PySide6 draws through Cocoa there, not X11.
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: X11 Applications :: Qt",
+    "Environment :: MacOS X :: Cocoa",
     "Intended Audience :: End Users/Desktop",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.14",
     "Topic :: Multimedia :: Video :: Display",
 ]
 # PySide6-Essentials only (F17); on Fedora the distro python3-pyside6 provides it.
+# Keep it empty for the tap as well: Homebrew has a `pyside` formula (6.11.2), and a
+# formula that let pip fetch a Qt of its own would ship a second one.
 dependencies = []
 
 [project.urls]

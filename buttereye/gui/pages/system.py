@@ -8,7 +8,9 @@ the hardware box, the plugins table and the actions [Run checks again] (F5),
 
 TensorRT findings are shown only when the report included them (after the
 opt-in); before that one Info row "Experimental NVIDIA TensorRT: off" offers
-[Turn on…]. While the checks run, the section names appear as they finish.
+[Turn on…]. Where TensorRT can never run (``osapi.HAS_VSTRT``: macOS has no
+CUDA and no NVIDIA GPU) that row says why instead and offers nothing. While the
+checks run, the section names appear as they finish.
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from buttereye.core.api import (
     Section,
     Severity,
     command_hint,
+    osapi,
     render,
     unavailable_text,
 )
@@ -89,7 +92,12 @@ def hardware_lines(hw: HardwareInfo) -> tuple[list[str], list[str], str | None]:
             parts.append(_t("{size} video memory").format(size=human_bytes(g.vram_bytes)))
         if g.compute_cap:
             parts.append(_t("compute capability {cc}").format(cc=g.compute_cap))
-        parts.append(_t("PCI {pci}").format(pci=g.pci))
+        # No PCI line on macOS: an Apple GPU is on no PCI bus, so detection gives
+        # it an id of its own (``iokit:<n>``) and printing that after the word
+        # "PCI" would be a false label. The name is what identifies it there -
+        # unified memory and no driver version to show either.
+        if not osapi.IS_MACOS:
+            parts.append(_t("PCI {pci}").format(pci=g.pci))
         gpus.append(" · ".join(parts))
     vk: list[str] = []
     for d in hw.vulkan:
@@ -220,12 +228,23 @@ class SystemPage(Page):
         trl = QHBoxLayout(self.trt_row)
         trl.setContentsMargins(0, 0, 0, 0)
         self.trt_badge = StatusBadge("info", _t("Experimental NVIDIA TensorRT: off"), self.trt_row)
+        # Why it is off and cannot be turned on. Shown only where TensorRT can
+        # never run (``osapi.HAS_VSTRT``, macOS): there is no opt-in to offer, so
+        # the row has to say that much by itself -- the doctor's own TensorRT row
+        # is in the report but not in the tree until the opt-in is taken.
+        self.trt_note = QLabel(
+            _t("It needs CUDA and an NVIDIA GPU, which macOS doesn't have."), self.trt_row
+        )
+        self.trt_note.setWordWrap(True)
+        self.trt_note.setTextFormat(Qt.TextFormat.PlainText)
+        self.trt_note.setVisible(False)
         self.trt_button = QPushButton(_t("Turn &on…"), self.trt_row)
         self.trt_button.setObjectName("system.trt_on")
         self.trt_button.setAccessibleName(_t("Turn on experimental NVIDIA TensorRT"))
         self.trt_button.setAutoDefault(False)
         self.trt_button.clicked.connect(self.turn_on_trt)
-        trl.addWidget(self.trt_badge, 1)
+        trl.addWidget(self.trt_badge)
+        trl.addWidget(self.trt_note, 1)
         trl.addWidget(self.trt_button)
         self.trt_row.setVisible(False)
 
@@ -492,7 +511,11 @@ class SystemPage(Page):
         self.plugins_model.removeRows(0, self.plugins_model.rowCount())
         copies = {
             "buttereye": _t("ButterEye package"),
-            "distro": _t("Fedora package"),
+            # "distro" means "a copy VapourSynth autoloads, not ButterEye's own"
+            # (``probe.plugin_statuses``). On a Mac that copy came from Homebrew -
+            # mvtools.dylib in VapourSynth's autoload directory - and there is no
+            # distribution to name; the Fedora word is the else arm, unchanged.
+            "distro": _t("Homebrew formula") if osapi.IS_MACOS else _t("Fedora package"),
             "user-vstrt": _t("Built by you"),
             "none": _t("Not installed"),
         }
@@ -521,6 +544,15 @@ class SystemPage(Page):
     def _sync_trt_row(self) -> None:
         r = self.report
         self.trt_row.setVisible(r is not None and not r.trt_included)
+        if osapi.HAS_VSTRT:  # Linux and Windows: the opt-in is offered as before
+            return
+        # macOS: TensorRT needs CUDA and an NVIDIA GPU, and a Mac has neither and
+        # never will (``osapi.HAS_VSTRT``, phase 1). So the switch is not offered
+        # -- an opt-in that can never do anything is worse than no button -- and
+        # the note beside the badge says why, because without it the row would
+        # read as something the user had simply not turned on yet.
+        self.trt_button.setVisible(False)
+        self.trt_note.setVisible(True)
 
     def turn_on_trt(self) -> None:
         dlg = TrtOptInDialog(self)

@@ -6,6 +6,13 @@ A RIFE-ncnn session can finish with the right frame rate and still have faulted
 the GPU, so ButterEye counts kernel Xid lines instead of trusting exit codes.
 An unreadable journal is never reported as "no faults" (BE-1031, INFO).
 
+Neither other platform has a journal to read, and each says so in its own words
+rather than reporting a missing ``journalctl``: Windows records GPU faults in its
+event log, and macOS publishes "GPU Restart Count" and "Last GPU Restart" on the
+AGXAccelerator device, which takes the IOReport API or ``powermetrics`` as root.
+Both are *not read yet*, not absent; the scan is "not readable" there and the row
+is INFO (``xid_finding``).
+
 Reusable API (U10 live health, U11 bench call these):
 
 ``async scan_xid(*, since_wall=None, since_monotonic=None, pids=None,
@@ -47,6 +54,7 @@ Usage, e.g. after a bench run::
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import re
@@ -244,11 +252,49 @@ def filter_events(
     return tuple(sorted(out, key=_t))
 
 
-def current_boot_id() -> str | None:
+def _sysctl_string(name: str) -> str | None:
+    """A string ``sysctl``, read through libc rather than the ``sysctl`` program, so
+    it costs no subprocess. ``None`` for any failure. macOS only (see below)."""
     try:
-        raw = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-    except OSError:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.sysctlbyname.restype = ctypes.c_int
+        libc.sysctlbyname.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+        ]
+        key = name.encode("ascii")
+        size = ctypes.c_size_t(0)
+        if libc.sysctlbyname(key, None, ctypes.byref(size), None, 0) != 0:
+            return None
+        if not 0 < size.value <= 256:  # every id read here is a 36-byte UUID string
+            return None
+        buf = ctypes.create_string_buffer(size.value)
+        if libc.sysctlbyname(key, buf, ctypes.byref(size), None, 0) != 0:
+            return None
+    except OSError, ValueError:  # no libc handle, or a sysctl this kernel doesn't have
         return None
+    return buf.value.decode("ascii", "replace").strip() or None
+
+
+def current_boot_id() -> str | None:
+    """An id for the boot that is running, so faults from an earlier boot can be
+    discarded. Linux reads ``/proc/sys/kernel/random/boot_id``.
+
+    macOS has no such file; the equivalent is ``kern.bootsessionuuid``, which is
+    new at every boot. ``kern.uuid`` is **not** the same thing and must never be
+    read here: it identifies the hardware, and SCOPE forbids a machine identifier
+    reaching a finding or ``doctor --report``, which users attach to bug reports.
+    """
+    if osapi.IS_MACOS:
+        raw = _sysctl_string("kern.bootsessionuuid") or ""
+    else:
+        try:
+            raw = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        except OSError:
+            return None
     return raw.replace("-", "").lower() or None
 
 
@@ -278,9 +324,12 @@ async def scan_xid(
     journalctl: str = "journalctl",
 ) -> XidScan:
     """See the module docstring. Read-only; never raises for journal problems.
-    Windows has no kernel log to read: the scan is always "not readable" there."""
+    Neither Windows nor macOS has a kernel log to read: the scan is always "not
+    readable" there, with the reason each platform owes the user."""
     if osapi.IS_WINDOWS:
         return XidScan(False, (), WINDOWS_NOT_CHECKED)
+    if osapi.IS_MACOS:
+        return XidScan(False, (), MACOS_NOT_READ)
     argv = [journalctl, "-k", "--no-pager", "-q", "-o", "json", "--grep=NVRM: Xid"]
     if since_wall is not None:
         argv.append(f"--since=@{max(0, int(since_wall) - 1)}")
@@ -380,12 +429,15 @@ def doctor_xid_findings(
     """Doctor rows for a whole-boot ``scan`` (see the module docstring).
 
     The cutoff is the later of ``marker.started`` and ``installed_at`` (the RIFE
-    plugin package's INSTALLTIME). Faults before it are listed in an INFO row
-    (``gpu_fault.xid_older``) with no engine advice; they never make
-    ``gpu_fault.xid`` DEGRADED, so backend selection ignores them. The "GPU fault
-    in RIFE-ncnn" title is used only when a fault after the cutoff comes from a
-    recorded session pid, or from vspipe (which only ButterEye pipelines run
-    with the RIFE plugin); generic mpv/vo names alone stay neutral.
+    plugin package's INSTALLTIME; the macOS analogue is the Homebrew keg's install
+    time, ``doctor.brew.BrewKeg.installed_at``, which the caller passes in the same
+    way - no Mac scan is readable in this version, so nothing uses it there yet).
+    Faults before it are listed in an INFO row (``gpu_fault.xid_older``) with no
+    engine advice; they never make ``gpu_fault.xid`` DEGRADED, so backend selection
+    ignores them. The "GPU fault in RIFE-ncnn" title is used only when a fault after
+    the cutoff comes from a recorded session pid, or from vspipe (which only
+    ButterEye pipelines run with the RIFE plugin); generic mpv/vo names alone stay
+    neutral.
     """
     if not scan.readable:
         return (xid_finding(scan, since_text="since this boot"),)
@@ -453,6 +505,8 @@ def doctor_xid_findings(
 
 #: XidScan.error on Windows (see ``xid_finding``)
 WINDOWS_NOT_CHECKED = "Windows keeps no kernel log to scan"
+#: XidScan.error on macOS: the counters exist, ButterEye does not read them yet
+MACOS_NOT_READ = "macOS keeps its GPU restart counters in IOReport, which isn't read yet"
 
 
 def xid_finding(
@@ -464,6 +518,22 @@ def xid_finding(
     pipeline. ``None`` (callers whose scan is already limited to their own
     pids and time window: bench, smoke test, live health) decides from the
     process names."""
+    if not scan.readable and osapi.IS_MACOS:
+        return Finding(
+            id="gpu_fault.xid",
+            section=Section.GPU_FAULT,
+            severity=Severity.INFO,
+            code=None,
+            title=M("GPU faults aren't checked on macOS yet"),
+            cause=M(
+                "macOS does keep a GPU fault history - the graphics device publishes "
+                '"GPU Restart Count" and "Last GPU Restart" - but reading it needs the '
+                "IOReport API or powermetrics as root, and ButterEye does neither yet. "
+                "On Linux it counts NVIDIA Xid errors in the kernel log; a Mac has no "
+                "NVIDIA GPU."
+            ),
+            fix=M(""),
+        )
     if not scan.readable and osapi.IS_WINDOWS:
         return Finding(
             id="gpu_fault.xid",

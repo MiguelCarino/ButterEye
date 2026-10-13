@@ -6,6 +6,13 @@
 on a ``testsrc2`` clip. The script writes a JSON report into the 0700 runtime
 directory; it is read and deleted at once. Plugin code only ever runs inside
 mpv, never in ButterEye's process (§8.1).
+
+On macOS there is one more way for this to fail that is nothing to do with
+ButterEye's script: mpv has to ``dlopen`` VapourSynth's VSScript library and
+cannot find it by itself. ``osapi.use_bundled_runtime`` hands it the file, so what
+is left here is reporting the cases where that cannot work -- no VapourSynth, or an
+mpv the system protects from the variables that carry the answer
+(``_vsscript_finding``).
 """
 
 from __future__ import annotations
@@ -21,6 +28,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 from buttereye.core import osapi
+from buttereye.core.commands import install_command
+from buttereye.core.doctor import brew
+from buttereye.core.doctor.checks_mpv import dyld_restricted
 from buttereye.core.doctor.checks_pkgs import (
     MVTOOLS_SO,
     PKG_MVTOOLS,
@@ -35,13 +45,23 @@ from buttereye.core.doctor.proc import CmdResult, run
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
 from buttereye.core.paths import ensure_runtime_dir
-from buttereye.core.types import Finding, Msg, Paths, PluginStatus, ProbeResult, Section, Severity
+from buttereye.core.types import (
+    Finding,
+    Msg,
+    Paths,
+    PluginStatus,
+    ProbeResult,
+    Section,
+    Severity,
+    _BREW_AUTOLOAD_GLOB,
+)
 
 PROBE_VPY = Path(__file__).with_name("probe.vpy")
 PROBE_SOURCE = "av://lavfi:testsrc2=size=320x240:rate=24,format=yuv420p"
 #: Distro autoload directories (R72 on F44; R79 uses site-packages/vapoursynth/plugins).
 #: Windows: the per-user plugins64 folder, ``vs-plugins`` beside an installed
-#: VapourSynth, and the same site-packages folder in any Python.
+#: VapourSynth, and the same site-packages folder in any Python. macOS: Homebrew's,
+#: derived from its prefix.
 if osapi.IS_WINDOWS:
     _APPDATA = os.environ.get("APPDATA", "")
     AUTOLOAD_DIRS: tuple[str, ...] = (
@@ -56,9 +76,45 @@ if osapi.IS_WINDOWS:
                          "vapoursynth", "plugins"),
         )
     )  # fmt: skip
+elif osapi.IS_MACOS:
+    # Homebrew has no fixed autoload directory to list: VapourSynth's own is a
+    # directory under its prefix that every plugin formula drops its .dylib into
+    # (measured: mvtools.dylib and libffms2.dylib there), and both the prefix (it
+    # moves with the architecture) and the python3.x in the path (whichever
+    # python@3.x the formula depends on today) have to be derived. The glob is
+    # imported from core.types rather than repeated, because that is the pattern
+    # phase 1 gives the generated scripts: a doctor that looked in a different
+    # directory from the one a script loads out of would be a worse bug than a
+    # private import.
+    AUTOLOAD_DIRS = ()
+    AUTOLOAD_GLOBS = (str(brew.prefix() / _BREW_AUTOLOAD_GLOB),)
 else:
     AUTOLOAD_DIRS = ("/usr/lib64/vapoursynth", "/usr/lib/vapoursynth")
     AUTOLOAD_GLOBS = ("/usr/lib*/python3*/site-packages/vapoursynth/plugins",)
+
+#: mpv's ``vapoursynth`` filter does not link VapourSynth: it loads VSScript at run
+#: time, from ``VSSCRIPT_PATH`` when that is set and otherwise by two bare library
+#: names it dlopens in turn (``osapi._darwin.VSSCRIPT_NAMES``), and it reads that
+#: variable on every platform rather than only on Windows. This is the second of the
+#: two names, which is the one mpv's failure message quotes, because it is the one it
+#: tried last. Measured on Homebrew's mpv 0.41.0 (``strings`` has "VSSCRIPT_PATH" and
+#: both names; ``otool -L`` lists no VapourSynth library).
+MPV_VSSCRIPT_NAME = "libvapoursynth-script.dylib"
+#: What Homebrew's VapourSynth really ships, and where: a file of the *first* name,
+#: inside the virtual environment the formula builds under ``libexec``, which the
+#: dynamic loader never searches. So mpv's dlopen fails before any ButterEye script
+#: runs (BE-1005) until something hands it the file, which is what
+#: ``osapi.use_bundled_runtime`` now does for every player ButterEye starts.
+#: ``lib/`` comes first for an installation that puts it where the loader does look -
+#: a from-source VapourSynth, or a Homebrew tap that links it there.
+BREW_VSSCRIPT_NAME = "libvsscript.dylib"
+BREW_VSSCRIPT_GLOBS = (
+    f"lib/{BREW_VSSCRIPT_NAME}",
+    f"Cellar/vapoursynth/*/libexec/lib/python3.*/site-packages/vapoursynth/{BREW_VSSCRIPT_NAME}",
+)
+#: mpv's own words when the dlopen above failed (it says this and carries on
+#: without the filter, exiting 0, so the probe's only trace is this line)
+_MPV_VSSCRIPT_FAILED = "Failed to load VapourSynth VSScript library"
 
 ActiveCopy = Literal["buttereye", "distro", "user-vstrt", "none"]
 
@@ -251,7 +307,16 @@ def plugin_statuses(
             if spec.ns == "trt":
                 active = "user-vstrt" if spec.path is not None else "none"
             elif info is not None and spec.path is not None and spec.path.is_file():
-                active = "buttereye"
+                # macOS: ButterEye's plugin directory can *be* Homebrew's autoload
+                # directory, because ``types.macos_plugin_dir`` falls back to it
+                # until a tap fills ButterEye's own (phase 4). A plugin that sits
+                # in an autoload directory is the system's copy whatever directory
+                # ButterEye reads it from -- VapourSynth has already loaded it, and
+                # the version is Homebrew's choice, not one ButterEye measured.
+                # Linux and Windows never put their own directory on that list, so
+                # the test is False there and the answer is unchanged.
+                autoloaded = osapi.IS_MACOS and _distro_copy(spec) == str(spec.path)
+                active = "distro" if autoloaded else "buttereye"
             elif _distro_copy(spec) is not None:
                 active = "distro"
         variant = rife_variant(info)[0] if spec.ns == "rife" else None
@@ -304,6 +369,149 @@ def _f(
     )
 
 
+def vsscript_library(prefix: Path | None = None) -> Path | None:
+    """The VSScript library this Mac has, or None if it has none.
+
+    The seam answers first (``osapi.vsscript_library``), and that is the point: the
+    run-time fix that makes mpv able to load VSScript asks the same function, so the
+    doctor cannot pass a file ButterEye would not use, or blame one it would. The
+    Cellar globs below are the second answer, for the fixture half of this check -
+    ``prefix`` is a planted keg, and on a machine that is not a Mac the seam has
+    nothing to say, which is the only way the macOS row can be tested in Fedora CI.
+    """
+    if prefix is None:
+        from_seam = osapi.vsscript_library()
+        if from_seam is not None:
+            return from_seam
+    base = brew.prefix() if prefix is None else prefix
+    for pattern in BREW_VSSCRIPT_GLOBS:
+        try:
+            found = sorted(base.glob(pattern))
+        except OSError:
+            found = []
+        if found:
+            return found[-1]  # the newest keg of the formula
+    return None
+
+
+def vsscript_load_failed(text: str) -> bool:
+    """Does mpv's output say it could not load VSScript at all? Then nothing in the
+    script ran, and no package is missing: the library has a different name here."""
+    return _MPV_VSSCRIPT_FAILED in text or MPV_VSSCRIPT_NAME in text
+
+
+def _vsscript_evidence(text: str, lib: Path | None = None) -> tuple[str, ...]:
+    """mpv's failure line, shortened -- dyld appends every directory it tried, a
+    kilobyte of paths that say nothing the cause does not already say -- and then what
+    this process would have handed the player, which is the fact that tells "the fix
+    did not reach mpv" apart from "it reached mpv and mpv refused the file"."""
+    out: list[str] = []
+    for ln in text.splitlines():
+        if _MPV_VSSCRIPT_FAILED in ln:
+            short = ln.strip()
+            out.append(short if len(short) <= 160 else short[:160] + " …")
+            break
+    if lib is not None:
+        for name in ("VSSCRIPT_PATH", osapi.DYLD_FALLBACK):
+            value = os.environ.get(name)
+            out.append(f"{name}={value}" if value else f"{name} is not set")
+    return tuple(out)
+
+
+def _vsscript_finding(outcome: ProbeOutcome) -> Finding:
+    """BE-1005 on macOS, where the probe fails for one measured reason that is not
+    a missing package: mpv looks for VSScript by two bare leaf names, and the file
+    Homebrew installs is on no path the dynamic loader searches. Saying "install
+    python3-vapoursynth" there is wrong twice over -- the package exists only on
+    Fedora, and VapourSynth is installed.
+
+    Phase 4 is what answers it, so this row no longer tells the user to do ButterEye's
+    job for it: ``osapi.use_bundled_runtime`` hands the file to every player ButterEye
+    starts. What is left for the doctor is the cases where that cannot work, and there
+    are three. VapourSynth is not installed, so there is no file to hand over. Or this
+    mpv is a program the system protects, which never receives a ``DYLD_*`` variable
+    (``checks_mpv.dyld_restricted``) -- the silent failure worth naming, because
+    everything is installed and correct and the filter still cannot load. Or neither,
+    and the player did not get this process's environment at all, which the evidence
+    says by naming what this process would have passed it.
+    """
+    res = outcome.cmd
+    text = f"{res.stderr}\n{res.stdout}" if res is not None else ""
+    lib = vsscript_library()
+    if lib is None:
+        return _f(
+            "probe.run",
+            Severity.BLOCKING,
+            M("mpv can't load VapourSynth's VSScript library"),
+            code=ErrorCode.PROBE_FAILED,
+            cause=M(
+                "mpv's vapoursynth filter loads VSScript at run time by the bare name "
+                "{name}, and no VapourSynth is installed for it to load.",
+                {"name": MPV_VSSCRIPT_NAME},
+            ),
+            fix=M(
+                "Install VapourSynth with Homebrew. It ships VSScript as {shipped}, and "
+                "ButterEye hands that file to the players it starts.",
+                {"shipped": BREW_VSSCRIPT_NAME},
+            ),
+            commands=(install_command("vapoursynth"),),
+            evidence=_vsscript_evidence(text),
+        )
+    export = f"export VSSCRIPT_PATH={lib}"
+    binary = res.argv[0] if res is not None and res.argv else None
+    restricted = dyld_restricted(binary) if binary is not None else None
+    if restricted is not None:
+        return _f(
+            "probe.run",
+            Severity.BLOCKING,
+            M("The system stops ButterEye handing this mpv the VSScript library"),
+            code=ErrorCode.PROBE_FAILED,
+            cause=M(
+                "{mpv} is a protected program, so the system removes the library-path "
+                "variable ButterEye sets to lead a player to VSScript at {path}. Nothing "
+                "is wrong with your installation: this mpv cannot be given the file that "
+                "way.",
+                {"mpv": binary or "", "path": str(lib)},
+            )
+            if restricted == "flag"
+            else M(
+                "{mpv} runs from a directory the system protects, so the system removes "
+                "the library-path variable ButterEye sets to lead a player to VSScript at "
+                "{path}. Nothing is wrong with your installation: this mpv cannot be given "
+                "the file that way.",
+                {"mpv": binary or "", "path": str(lib)},
+            ),
+            fix=M(
+                "Use Homebrew's mpv, which is not protected, and make sure it comes first "
+                "on PATH. Or export VSSCRIPT_PATH, which mpv reads and the system does not "
+                "remove, in the shell you start ButterEye from.",
+            ),
+            commands=(export,),
+            evidence=_vsscript_evidence(text, lib),
+        )
+    return _f(
+        "probe.run",
+        Severity.BLOCKING,
+        M("mpv did not load the VSScript library ButterEye pointed it at"),
+        code=ErrorCode.PROBE_FAILED,
+        cause=M(
+            "mpv's vapoursynth filter loads VSScript at run time by the bare name {name}, "
+            "which no file on this Mac has: VSScript is {path}. ButterEye hands that file "
+            "to the players it starts, this mpv did not load it, and nothing about this mpv "
+            "says the system stopped it. The details below say what this ButterEye would "
+            "have passed it.",
+            {"name": MPV_VSSCRIPT_NAME, "path": str(lib)},
+        ),
+        fix=M(
+            "Export VSSCRIPT_PATH in the shell you start ButterEye from and run the doctor "
+            "again. If that makes it pass, the player was started without ButterEye's own "
+            "environment.",
+        ),
+        commands=(export,),
+        evidence=_vsscript_evidence(text, lib),
+    )
+
+
 def probe_findings(
     outcome: ProbeOutcome | None,
     plugins: Sequence[PluginStatus],
@@ -324,6 +532,9 @@ def probe_findings(
             )
         ]
     if outcome.raw is None:
+        cmd_text = f"{outcome.cmd.stderr}\n{outcome.cmd.stdout}" if outcome.cmd else ""
+        if osapi.IS_MACOS and vsscript_load_failed(cmd_text):
+            return [_vsscript_finding(outcome)]
         return [
             _f(
                 "probe.run",
@@ -339,6 +550,10 @@ def probe_findings(
                     "sudo dnf install python3-vapoursynth vapoursynth-tools",
                     "vapoursynth",
                     windows=M("Install VapourSynth for Windows; mpv loads it from there."),
+                    macos=M(
+                        "Make sure Homebrew's VapourSynth is the one mpv loads, and look at "
+                        "the details below for what mpv said."
+                    ),
                 ),
                 evidence=outcome.cmd.tail() if outcome.cmd else (),
             )
@@ -367,6 +582,7 @@ def probe_findings(
                     "sudo dnf upgrade mpv vapoursynth-tools python3-vapoursynth",
                     "vapoursynth",
                     windows=M("Update VapourSynth; mpv and vspipe then use the same one."),
+                    macos=M("Update mpv and VapourSynth together, so both come from one brew."),
                     verb="upgrade",
                 ),
                 evidence=ev,
@@ -476,6 +692,8 @@ def parse_vspipe_core(text: str) -> str | None:
 
 
 __all__ = [
+    "BREW_VSSCRIPT_NAME",
+    "MPV_VSSCRIPT_NAME",
     "PROBE_VPY",
     "PluginSpec",
     "ProbeOutcome",
@@ -489,4 +707,6 @@ __all__ = [
     "trt_version_of",
     "user_vstrt",
     "version_text",
+    "vsscript_library",
+    "vsscript_load_failed",
 ]

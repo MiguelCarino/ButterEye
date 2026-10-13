@@ -14,7 +14,7 @@
 
 Name:           buttereye-vs-rife-ncnn
 Version:        9.33
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        RIFE frame interpolation for VapourSynth on ncnn/Vulkan (ButterEye build)
 
 # Plugin MIT (HolyWu); bundled RIFE/VapourSynth4.h LGPL-2.1-or-later;
@@ -46,6 +46,11 @@ Patch0:         buttereye-vs-rife-ncnn-no-pack8.patch
 # gpu_thread) instead of three fresh full-frame mmaps per interpolated frame;
 # page faults were 25-40 % of vspipe CPU. Output is bit-identical.
 Patch1:         buttereye-vs-rife-ncnn-host-pool.patch
+# load_param_model's non-Windows branch sprintf'd its two model paths into two
+# fixed char[256] stack buffers: a model_path of 242 characters or more aborted
+# the process (SIGABRT), taking vspipe or mpv with it. Reachable here, not only
+# off Linux. Applied to both builds.
+Patch2:         buttereye-vs-rife-ncnn-model-path.patch
 
 BuildRequires:  gcc-c++
 BuildRequires:  meson
@@ -74,6 +79,7 @@ cp -p %{SOURCE4} %{SOURCE5} %{SOURCE6} .
 %autopatch -p1
 %else
 %patch -P1 -p1
+%patch -P2 -p1
 mkdir -p subprojects/ncnn/glslang
 tar -xzf %{SOURCE2} -C subprojects/ncnn --strip-components=1
 tar -xzf %{SOURCE3} -C subprojects/ncnn/glslang --strip-components=1
@@ -114,6 +120,11 @@ if ldd %{buildroot}%{_libdir}/buttereye/vapoursynth/librife.so | grep -q 'libncn
 %{_libdir}/buttereye/vapoursynth/librife.so
 
 %changelog
+* Sun Oct 12 2026 The ButterEye contributors - 9.33-2
+- Fix the model-path buffer overflow in load_param_model (Patch2): a model_path
+  of 242 characters or more overran parampath into modelpath and aborted the
+  process; the paths are std::string now. Output is bit-identical.
+
 * Sat Oct 10 2026 The ButterEye contributors - 9.33-1
 - First release package (from the M0(f) spike spec); ship the
   rife-ncnn-vulkan, LGPL-2.1 and WTFPL licence texts

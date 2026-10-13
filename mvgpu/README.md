@@ -29,13 +29,20 @@ smooth = core.mvgpu.Interpolate(clip, fps_num=120, fps_den=1[, device=0])
 
 ## Build
 
-Needs `vulkan-headers`, `vulkan-loader-devel`, `vapoursynth-devel`, `meson`, `gcc-c++` and a
-GLSL → SPIR-V compiler (`glslang` from Fedora, or any `glslang`/`glslangValidator`):
+Needs `vulkan-headers`, `vulkan-loader-devel`, `vapoursynth-devel`, `meson` (1.1 or newer:
+the options live in `meson.options`), `gcc-c++` and a GLSL → SPIR-V compiler (`glslang` from
+Fedora, or any `glslang`/`glslangValidator`):
 
 ```sh
 meson setup build [-Dglslang=/path/to/glslang] [-Dplugindir=...]
 ninja -C build            # build/libmvgpu.so
 ```
+
+On arm64 macOS the same two lines build `build/libmvgpu.dylib` natively, with no source
+changes and no cross toolchain: `brew install meson ninja pkgconf glslang vulkan-loader
+molten-vk vapoursynth` is the whole dependency list (`PATH=/opt/homebrew/bin:$PATH` so meson
+finds Homebrew's `pkg-config` and `glslang`). Nothing here compiles a `.metal` file, so a full
+Xcode install is not needed — MoltenVK translates the SPIR-V at run time.
 
 The version (`meson.build`, now 0.0.1) is also what the plugin reports to VapourSynth:
 0.0.1 as (0, 1), x.y.z as (x, 100·y + z). `plugindir` (default
@@ -60,6 +67,77 @@ sudo dnf install buttereye-vs-mvgpu
 `BackendId.MVGPU` ("GPU motion vectors"): Automatic takes it after RIFE where RIFE can't keep
 up at full size or can't reach the display rate (SCOPE §5.3, GUI.md §11.9), the speed test
 measures it, and the simple window offers "Fastest — GPU (motion vectors)".
+
+## macOS: Vulkan through MoltenVK
+
+macOS has no native Vulkan. MoltenVK implements it on Metal and registers itself as a
+**portability driver** (its ICD JSON says `"is_portability_driver": true`), and the Vulkan
+loader hides such a driver from an application that has not asked to see it: `vkCreateInstance`
+returns `VK_ERROR_INCOMPATIBLE_DRIVER` (-9) and nothing else happens. So `Gpu::init` enables
+`VK_KHR_portability_enumeration` and sets `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR`.
+
+It asks only after the plain call has been refused. `Gpu::init` creates the instance exactly
+as it always did — no extensions, flags 0 — and only when that returns
+`VK_ERROR_INCOMPATIBLE_DRIVER`, **and** the loader advertises the extension, does it set the
+two fields and try once more. So on every machine with a native driver the first call succeeds
+and the `VkInstanceCreateInfo` is byte for byte the one Linux and Windows have always passed;
+where no driver at all answers, the retry fails the same way and the error text is unchanged
+(measured, with a deliberately broken ICD as the only driver).
+
+The trigger is the refusal rather than the platform or the extension's presence, for two
+separate reasons. Not `#ifdef __APPLE__`, because being a portability driver is a property of
+the ICDs installed on the machine rather than of the operating system — translation layers
+exist on Linux and Windows too — and a platform macro would be a lie about what was detected.
+Not the extension list on its own, because the loader turns out to advertise
+`VK_KHR_portability_enumeration` **unconditionally** (measured on loader 1.4.363: it is listed
+with no portability driver installed, and even when the only ICD is a broken one, because the
+loader rather than a driver implements it). Asking on that basis would therefore set the flag
+on Linux too, where a portability driver installed beside the real one would start appearing in
+the device list and shift the indices `device=` selects. The list is still checked before the
+retry, because enabling an extension the loader does not advertise fails with
+`VK_ERROR_EXTENSION_NOT_PRESENT` — which matters for loaders older than 1.3.212, where the
+extension did not exist.
+
+Device choice is unchanged, and on an Apple Silicon Mac it is the second test that fires:
+MoltenVK reports the GPU as `INTEGRATED`, never `DISCRETE`, so "the first discrete GPU, else
+the first non-CPU device" picks it on the second clause (measured with an instrumented build:
+one device, `Apple M2`, `deviceType` 1, chosen by the non-CPU clause — the null guard after the
+loop never runs). A discrete card still wins where there is one.
+
+## Measured (Apple M2, MoltenVK 1.4.2, 2026-10-12)
+
+VapourSynth R81 from Homebrew, Apple clang 21, Vulkan loader 1.4.363. `libmvgpu.dylib` is an
+arm64 Mach-O bundle that exports `_VapourSynthPluginInit2` and links only
+`libvulkan.1.dylib`, `libc++.1.dylib` and `libSystem.B.dylib`.
+
+The correctness check is the Linux one (a textured 96×96 square moving 16 px a frame, 640×368,
+24 → 48): the in-between frame is **bit-exact** with the square drawn at the half-way position
+— mean absolute error 0.0 and maximum 0.0 over the square's rows, against 8.43 for a blend of
+the two source frames and 9.72 against either source frame alone. Source positions come
+through untouched and a `_SceneChangeNext` frame is repeated, as on Linux.
+
+| synthetic, `vspipe` to /dev/null | out fps |
+|---|---|
+| 720p 8-bit, 24 → 120 | 287 |
+| 1080p 8-bit, 24 → 60 | 112 |
+| 1080p 8-bit, 24 → 120 | 137 |
+| 4K 8-bit, 24 → 60 | 30 |
+| 4K 8-bit, 24 → 120 | 36 |
+| 4K 10-bit, 24 → 120 | 34 |
+
+Warm figures (the first run after a cold GPU is about half as fast). A higher output rate is
+faster per frame because one block search is amortised over more in-between frames. The shape
+matches the RTX 4090 table below, about 14× slower: at 4K this M2 is far short of live
+playback, and 1080p → 120 (137 fps) is the largest live case with headroom.
+`MVGPU_PROFILE=1` at 4K: 0.87 ms CPU + 3.35 ms GPU per load, 35.14 ms GPU + 0.75 ms CPU per
+render — GPU-bound, not readback-bound.
+
+The limits are not tight: `maxComputeWorkGroupInvocations` 1024 against the 512 the coarse
+search needs, `maxStorageBufferRange` 4294967295 against the 16 bytes a pixel the vector field
+wants (127 MiB at 4K). All seven shaders translate from SPIR-V to MSL and compile with no
+MoltenVK warning: with `MVK_CONFIG_DEBUG=1 MVK_CONFIG_LOG_LEVEL=4` a full render logs 8
+SPIR-V → MSL conversions and 10 Metal shader compilations and not one `[mvk-warn]` or
+`[mvk-error]` line.
 
 ## Measured (RTX 4090, 2026-10-10)
 

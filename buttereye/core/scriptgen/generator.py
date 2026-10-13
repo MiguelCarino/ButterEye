@@ -23,7 +23,7 @@ from typing import Any
 
 from buttereye.core import osapi
 from buttereye.core.mpvctl.ipc import LABEL, VF_ADD_PREFIX, quote
-from buttereye.core.types import BackendId, homebrew_prefix, macos_plugin_dir
+from buttereye.core.types import BackendId, homebrew_prefix, macos_plugin_dir, macos_plugin_dirs
 
 TEMPLATE = Path(__file__).with_name("template.vpy")
 BLOCK_BEGIN = "# --- ButterEye data block (generated) ---"
@@ -67,6 +67,13 @@ def _default_plugin_dir() -> Path:
 
         return install_dir() / "vapoursynth"
     if osapi.IS_MACOS:
+        # one directory, not the two-entry search path the doctor asks
+        # (``types.macos_plugin_dirs``): ``PLUGIN_DIR`` is a single literal in the
+        # data block and ``_load`` joins one absolute path per plugin onto it. That
+        # is enough, because the directory this leaves out on a Mac is Homebrew's
+        # autoloaded one, and ``_load`` skips the ``LoadPlugin`` for a namespace
+        # VapourSynth has already autoloaded -- so the plugin the doctor found
+        # there is the plugin the clip goes through either way.
         return macos_plugin_dir()
     return Path("/usr/lib64/buttereye/vapoursynth")
 
@@ -85,15 +92,23 @@ def _macos_ffms2() -> Path:
     autoload one and holds the very ``libffms2.dylib`` the core autoloads. Then
     the SOVERSION 5 name under ``<prefix>/lib``, the exact analogue of Fedora's
     and the one that cannot turn into a newer, incompatible library under
-    ButterEye. Then the unversioned link brew always makes, which is also the
-    name worth reporting as missing when there is no Homebrew ffms2 at all.
+    ButterEye. Then every other directory a plugin can be in
+    (``macos_plugin_dirs``): with the tap installed, ``_default_plugin_dir`` is
+    ButterEye's own directory and the autoload one is no longer on this list by
+    accident, so without this the doctor could report ffms2 present -- its globs
+    search both -- while the script named a file that is not there and raised
+    "the ffms2 source plugin is not installed". Last, the unversioned link brew
+    always makes, which is the name worth reporting as missing when there is no
+    Homebrew ffms2 at all.
     """
-    own = _default_plugin_dir() / osapi.plugin_file("libffms2.so")
-    if own.is_file():
-        return own
     lib = homebrew_prefix() / "lib"
-    versioned = lib / "libffms2.5.dylib"
-    return versioned if versioned.is_file() else lib / "libffms2.dylib"
+    name = osapi.plugin_file("libffms2.so")
+    candidates = (
+        _default_plugin_dir() / name,
+        lib / "libffms2.5.dylib",
+        *(d / name for d in macos_plugin_dirs()),
+    )
+    return next((p for p in candidates if p.is_file()), lib / "libffms2.dylib")
 
 
 def _default_ffms2() -> Path:

@@ -17,7 +17,7 @@ import pytest
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QWizard
 
-from buttereye.core.api import BackendId, ConfigChanged, Feature, Section, Severity
+from buttereye.core.api import BackendId, ConfigChanged, Feature, Section, Severity, osapi
 from buttereye.core.testing import scenarios as sc
 from buttereye.gui.context import GuiContext
 from buttereye.gui.dialogs import setup_wizard as sw
@@ -286,25 +286,72 @@ def test_downloads_page_when_downloads_not_listed(make_wizard: Any, qtbot: Any) 
     assert d.confirmed() == frozenset()
 
 
-def _with_packages() -> Any:
+def _with_packages(lines: tuple[str, ...] = ()) -> Any:
     return dataclasses.replace(
         sc.get("fresh_box"),
         missing_packages=("ffms2", "mkvtoolnix"),
-        dnf_lines=("sudo dnf install ffms2", "sudo dnf install mkvtoolnix"),
+        dnf_lines=lines or ("sudo dnf install ffms2", "sudo dnf install mkvtoolnix"),
     )
 
 
-def test_packages_page(make_wizard: Any, qtbot: Any) -> None:
-    h = make_wizard(_with_packages())
+#: One case per platform: the two ``osapi`` flags, the lines the core hands this
+#: page there, the copy button's accessible name and the sentence around them.
+#: The page has to name the tool its own lines use - a Mac user reading
+#: ``brew install`` must not be told ButterEye never runs dnf. The platform is
+#: forced, so every run checks all three; the Fedora case is unchanged.
+_PACKAGE_WORDING = [
+    pytest.param(
+        False,
+        False,
+        ("sudo dnf install ffms2", "sudo dnf install mkvtoolnix"),
+        "Copy dnf command 1 of 2",
+        "ButterEye never runs dnf",
+        id="fedora",
+    ),
+    pytest.param(
+        True,
+        False,
+        ("winget install --exact --id ffms2", "winget install --exact --id mkvtoolnix"),
+        "Copy winget command 1 of 2",
+        "ButterEye never runs winget",
+        id="windows",
+    ),
+    pytest.param(
+        False,
+        True,
+        ("brew install ffms2", "brew install mkvtoolnix"),
+        "Copy brew command 1 of 2",
+        "ButterEye never runs brew",
+        id="macos",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("is_windows", "is_macos", "lines", "copy_name", "promise"), _PACKAGE_WORDING
+)
+def test_packages_page(
+    make_wizard: Any,
+    qtbot: Any,
+    monkeypatch: Any,
+    is_windows: bool,
+    is_macos: bool,
+    lines: tuple[str, ...],
+    copy_name: str,
+    promise: str,
+) -> None:
+    monkeypatch.setattr(osapi, "IS_WINDOWS", is_windows)
+    monkeypatch.setattr(osapi, "IS_MACOS", is_macos)
+    h = make_wizard(_with_packages(lines))
     w = h.wizard
     _to_checks_done(h, qtbot)
     w.next()
     w.next()
     assert w.currentId() == PAGE_PACKAGES
     p = w.packages
-    assert [f.text() for f in p.fields] == ["sudo dnf install ffms2", "sudo dnf install mkvtoolnix"]
-    assert p.fields[0].accessibleName() == "Copy dnf command 1 of 2"
-    assert "ButterEye never runs dnf" in p.body.text()
+    assert [f.text() for f in p.fields] == list(lines)
+    assert p.fields[0].accessibleName() == copy_name
+    assert promise in p.body.text()
     assert check_names_and_buddies(p, w) == []
     before = h.core.fake_call_count("doctor")
     p.again.click()

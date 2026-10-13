@@ -38,6 +38,13 @@
 # problem for a later phase, not a fixture problem, and it means the gate is
 # green with the Homebrew bottles absent and red with them present.
 #
+# This script sets BUTTEREYE_TEST_BREW, which is what opts
+# tests/macos/test_doctor_macos.py in: that file runs the whole doctor against
+# this machine's real Homebrew, vulkaninfo and mpv, so it says "the bottles are
+# here" rather than assuming it. .github/workflows/macos.yml installs no bottle
+# and so never sets it, and those tests skip there by design. A developer's Mac
+# is the machine they want, which is why they are asked for here.
+#
 # ASSUMED INSTALLED: Homebrew, and a Python 3.14 (brew install python@3.14).
 # The test tools go in a venv this script makes and then reuses:
 #
@@ -99,6 +106,13 @@ cd "$repo" || exit 2
 # reason and because it is what CI measures; set it yourself to override.
 export QT_QPA_PLATFORM=${QT_QPA_PLATFORM:-offscreen}
 export QT_ACCESSIBILITY=${QT_ACCESSIBILITY:-1}
+
+# The opt-in gate for tests/macos/test_doctor_macos.py, in the shape
+# tests/windows uses (BUTTEREYE_TEST_PLUGINS and its neighbours). No colon in the
+# default, so BUTTEREYE_TEST_BREW= opts out: the doctor against a real Homebrew
+# is the point of running on a Mac, but a machine part-way through the brew
+# install line above can turn it off rather than read three failures.
+export BUTTEREYE_TEST_BREW=${BUTTEREYE_TEST_BREW-1}
 
 # all three platforms run even when one fails, so a broken platform is never
 # hidden behind the one before it. This is the part that polices the port from

@@ -92,8 +92,18 @@ USER_MODEL_SUBDIR = "models"
 PROBE_TIMEOUT_S = 60.0
 REMUX_TIMEOUT_S = 6 * 3600.0
 RENICE = 10  # §7.6: renders always run at lower CPU priority than the desktop
-#: ffms2 comes with ButterEye on Windows (its installer), with dnf on Fedora
-INSTALL_FFMS2 = "" if osapi.IS_WINDOWS else "sudo dnf install ffms2"
+#: ffms2 comes with ButterEye on Windows (its installer), with dnf on Fedora and
+#: with Homebrew on macOS, where packaging it is phase 4 of the port. The same
+#: three answers as ``capabilities._FFMS2_INSTALL``, for the same condition:
+#: ``ffms2`` is not a key in the DNF/WINGET/BREW maps, because those three are
+#: kept the same shape and Windows installs it rather than naming it.
+INSTALL_FFMS2 = (
+    ""
+    if osapi.IS_WINDOWS
+    else "brew install ffms2"
+    if osapi.IS_MACOS
+    else "sudo dnf install ffms2"
+)
 INSTALL_MKVTOOLNIX = install_command("mkvtoolnix")
 PROGRESS_INTERVAL_S = 0.5
 

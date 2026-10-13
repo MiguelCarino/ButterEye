@@ -4,9 +4,9 @@
 
 Locations table: what each directory holds, its path, its true size ("0 bytes"
 when empty) and whether ButterEye may delete it. RPM-owned rows are never
-cleanable; they show the dnf command for orientation only (never run). Rows
-with a clean target carry a checkbox; [Clean selected…] confirms the exact
-paths and sizes first.
+cleanable; they show the package-manager command (dnf, or brew on macOS) for
+orientation only (never run). Rows with a clean target carry a checkbox;
+[Clean selected…] confirms the exact paths and sizes first.
 
 Models table: packaged models are not removable. [Download…] asks for consent
 (URL, size, licence, SHA-256; nothing pre-checked) and shows byte progress
@@ -96,6 +96,56 @@ def _t(text: str) -> str:
     return QCoreApplication.translate("StoragePage", text)
 
 
+def _packaged_label() -> str:
+    """What to call the directories this platform's packages own.
+
+    ``StorageKind.RPM`` is the Fedora name for "packaged": the RPM paths on
+    Fedora, the install folder on Windows, Homebrew's prefix on a Mac. The label
+    has to name the tool the machine really has, so a Mac user is not told dnf
+    put files on a machine that has no dnf. Three-way as in pages/system.py; the
+    Fedora arm is last and unchanged.
+    """
+    if osapi.IS_WINDOWS:
+        return _t("Installed with ButterEye")
+    if osapi.IS_MACOS:
+        return _t("Installed by Homebrew")
+    return _t("Installed by dnf")
+
+
+def _tick_description() -> str:
+    """The locations table's accessible description. A screen reader reads it out,
+    so the reason a row cannot be ticked has to be the real one on this machine."""
+    if osapi.IS_WINDOWS:
+        return _t(
+            "Space ticks a folder to clean. Folders installed with ButterEye can't be ticked."
+        )
+    if osapi.IS_MACOS:
+        return _t("Space ticks a folder to clean. Folders installed by Homebrew can't be ticked.")
+    return _t("Space ticks a folder to clean. Folders installed by dnf can't be ticked.")
+
+
+def _not_deletable() -> str:
+    """The Deletable cell of a packaged row."""
+    if osapi.IS_WINDOWS:
+        return _t("No — installed with ButterEye")
+    if osapi.IS_MACOS:
+        return _t("No — installed by Homebrew")
+    return _t("No — installed by dnf")
+
+
+def _not_removable() -> str:
+    """Why a packaged model can't be removed here, with ``{name}`` to fill in.
+
+    A Mac reaches this row only when something put a model in Homebrew's
+    ``share/buttereye``, which until the tap of phase 4 nothing does; if one is
+    there, Homebrew is what put it there, so Homebrew is what is named."""
+    if osapi.IS_WINDOWS:
+        return _t("{name} came with ButterEye's installer and can't be removed here.")
+    if osapi.IS_MACOS:
+        return _t("{name} was installed by Homebrew and can't be removed here.")
+    return _t("{name} was installed by dnf and can't be removed here.")
+
+
 def kind_name(kind: StorageKind) -> str:
     names = {
         StorageKind.CONFIG: _t("Settings"),
@@ -107,9 +157,7 @@ def kind_name(kind: StorageKind) -> str:
         StorageKind.LOGS: _t("Logs"),
         StorageKind.BENCH: _t("Benchmark results"),
         StorageKind.RUNTIME: _t("Live files"),
-        StorageKind.RPM: (
-            _t("Installed with ButterEye") if osapi.IS_WINDOWS else _t("Installed by dnf")
-        ),
+        StorageKind.RPM: _packaged_label(),
     }
     return names[kind]
 
@@ -143,8 +191,23 @@ def cleanable(e: StorageEntry) -> bool:
 
 
 def dnf_remove_line(e: StorageEntry) -> str:
+    """The orientation line for a packaged row: how a user would remove what owns
+    this directory. ButterEye never runs it.
+
+    macOS names the route rather than a formula. ``RPM_PACKAGES`` can name the
+    packages owning each *fixed* RPM path, but the two macOS rows sit under
+    Homebrew's prefix, which this page does not know, and both arrive here as
+    ``StorageKind.RPM`` with nothing to tell the plugin directory from the models
+    one. Homebrew owns the plugin directory (``vapoursynth-mvtools`` and
+    ``ffms2`` drop their ``.dylib`` there) and nothing owns the models directory
+    until the tap of phase 4, so printing one ``brew uninstall <formula>`` here
+    would be right on one row and invented on the other. Which package owns a
+    path is a core question; see the report.
+    """
     if osapi.IS_WINDOWS:  # ButterEye's own folder: removed with ButterEye itself
         return _t("Uninstall ButterEye in Settings › Apps")
+    if osapi.IS_MACOS:
+        return _t("Remove it with Homebrew: brew uninstall <formula>")
     pkgs = RPM_PACKAGES.get(e.path)
     if pkgs:
         return "sudo dnf remove " + " ".join(pkgs)
@@ -155,6 +218,26 @@ def clean_listing(entries: Sequence[StorageEntry]) -> str:
     return "\n".join(f"{e.path} — {size_text(e.bytes)}" for e in entries)
 
 
+def _clean_intro() -> str:
+    """The confirmation sentence, with ``{size}`` still to fill in. The promise it
+    makes - that packaged files are never touched - has to name the packager this
+    machine really has, or it reads as a promise about a tool that is not here."""
+    if osapi.IS_WINDOWS:
+        return _t(
+            "The contents of these folders will be deleted ({size} in total). "
+            "Files installed with ButterEye are never touched."
+        )
+    if osapi.IS_MACOS:
+        return _t(
+            "The contents of these folders will be deleted ({size} in total). "
+            "Files installed by Homebrew are never touched."
+        )
+    return _t(
+        "The contents of these folders will be deleted ({size} in total). "
+        "Files installed by dnf are never touched."
+    )
+
+
 class CleanConfirmDialog(FitDialog):
     """Lists the exact paths and sizes before anything is deleted."""
 
@@ -163,20 +246,7 @@ class CleanConfirmDialog(FitDialog):
         self.setObjectName("clean_confirm")
         self.setWindowTitle(_t("Clean selected folders"))
         total = sum(e.bytes or 0 for e in entries)
-        self.intro = QLabel(
-            (
-                _t(
-                    "The contents of these folders will be deleted ({size} in total). "
-                    "Files installed with ButterEye are never touched."
-                )
-                if osapi.IS_WINDOWS
-                else _t(
-                    "The contents of these folders will be deleted ({size} in total). "
-                    "Files installed by dnf are never touched."
-                )
-            ).format(size=human_bytes(total)),
-            self,
-        )
+        self.intro = QLabel(_clean_intro().format(size=human_bytes(total)), self)
         self.intro.setWordWrap(True)
         self.intro.setTextFormat(Qt.TextFormat.PlainText)
         self.listing = QPlainTextEdit(clean_listing(entries), self)
@@ -258,6 +328,13 @@ def file_install_unavailable_text() -> str:
             "Installing or removing a model from a file isn't in this build yet. "
             "Packaged models come and go with ButterEye's installer."
         )
+    if osapi.IS_MACOS:
+        # ButterEye has no macOS package yet (phase 4 taps it), so there is no
+        # packaged model on a Mac at all - saying dnf would be doubly wrong
+        return _t(
+            "Installing or removing a model from a file isn't in this build yet. "
+            "ButterEye has no macOS package yet, so no models come packaged."
+        )
     return _t(
         "Installing or removing a model from a file isn't in this build yet. "
         "Packaged models are installed and removed with dnf."
@@ -318,11 +395,7 @@ class StoragePage(Page):
         )
         self.loc_model.itemChanged.connect(lambda _i: self._sync_clean())
         self.loc_table = flat_view(self.loc_box, self.loc_model, _t("Storage locations"))
-        self.loc_table.setAccessibleDescription(
-            _t("Space ticks a folder to clean. Folders installed with ButterEye can't be ticked.")
-            if osapi.IS_WINDOWS
-            else _t("Space ticks a folder to clean. Folders installed by dnf can't be ticked.")
-        )
+        self.loc_table.setAccessibleDescription(_tick_description())
         self.loc_table.selectionModel().currentRowChanged.connect(lambda *_a: self._sync_rpm())
         self.rpm_caption = QLabel(_t("For orientation only (ButterEye never runs it):"), self)
         self.rpm_caption.setWordWrap(True)
@@ -478,11 +551,7 @@ class StoragePage(Page):
                         Qt.CheckState.Checked if e.path in checked else Qt.CheckState.Unchecked
                     )
                 if e.rpm_owned:
-                    deletable = (
-                        _t("No — installed with ButterEye")
-                        if osapi.IS_WINDOWS
-                        else _t("No — installed by dnf")
-                    )
+                    deletable = _not_deletable()
                 elif e.deletable:
                     deletable = _t("Yes")
                 else:
@@ -722,11 +791,7 @@ class StoragePage(Page):
             self.remove_note.setText(note)
             self.remove_button.setAccessibleDescription(note)
         elif m is not None and not m.removable:
-            note = (
-                _t("{name} came with ButterEye's installer and can't be removed here.")
-                if osapi.IS_WINDOWS
-                else _t("{name} was installed by dnf and can't be removed here.")
-            ).format(name=m.name)
+            note = _not_removable().format(name=m.name)
             self.remove_note.setText(note)
             self.remove_button.setAccessibleDescription(note)
         else:

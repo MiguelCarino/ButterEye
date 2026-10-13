@@ -220,6 +220,11 @@
     </message>
     <message>
         <location filename="buttereye/gui/pages/about.py"/>
+        <source>Yes (tap)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/about.py"/>
         <source>You have {installed}. {opens}</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4619,6 +4624,16 @@ It uses no network unless you start a download yourself.</source>
     </message>
     <message>
         <location filename="buttereye/gui/dialogs/setup_wizard.py"/>
+        <source>Copy brew command</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/setup_wizard.py"/>
+        <source>Copy brew command {i} of {n}</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/setup_wizard.py"/>
         <source>Copy dnf command</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4745,6 +4760,11 @@ It uses no network unless you start a download yourself.</source>
     <message>
         <location filename="buttereye/gui/dialogs/setup_wizard.py"/>
         <source>Run these in PowerShell or a Command Prompt, then press Check again. ButterEye never runs winget.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/setup_wizard.py"/>
+        <source>Run these in a terminal, then press Check again. ButterEye never runs brew.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5842,6 +5862,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
+        <source>Installed by Homebrew</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
         <source>Installed by dnf</source>
         <translation type="unfinished"></translation>
     </message>
@@ -5858,6 +5883,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
         <source>Installed {name}.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
+        <source>Installing or removing a model from a file isn't in this build yet. ButterEye has no macOS package yet, so no models come packaged.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5942,6 +5972,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
+        <source>No — installed by Homebrew</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
         <source>No — installed by dnf</source>
         <translation type="unfinished"></translation>
     </message>
@@ -6007,6 +6042,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
+        <source>Remove it with Homebrew: brew uninstall &lt;formula&gt;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
         <source>Remove model</source>
         <translation type="unfinished"></translation>
     </message>
@@ -6037,6 +6077,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
+        <source>Space ticks a folder to clean. Folders installed by Homebrew can't be ticked.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
         <source>Space ticks a folder to clean. Folders installed by dnf can't be ticked.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -6058,6 +6103,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
         <source>TensorRT engines</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
+        <source>The contents of these folders will be deleted ({size} in total). Files installed by Homebrew are never touched.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -6118,6 +6168,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/pages/storage.py"/>
         <source>{name} came with ButterEye's installer and can't be removed here.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/storage.py"/>
+        <source>{name} was installed by Homebrew and can't be removed here.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -6334,6 +6389,16 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/pages/system.py"/>
         <source>Hardware</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/system.py"/>
+        <source>Homebrew formula</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/system.py"/>
+        <source>It needs CUDA and an NVIDIA GPU, which macOS doesn't have.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

@@ -129,6 +129,18 @@ DOCTOR_GATED: frozenset[Feature] = frozenset(
 #: libx265 nor libsvtav1 (§7.5). Documented in GUI.md §11.
 HDR10_ENCODER_FINDING = "render.hdr10_encoder"
 
+#: Last-resort install line for ffms2, used only when the doctor's own finding
+#: carries none. Windows ships ffms2 with the installer, so there is nothing for
+#: the user to run; ``ffms2`` is a Homebrew formula (checked 2026-10-12), while
+#: packaging it for macOS is phase 4 of the port (docs/PLATFORMS.md).
+_FFMS2_INSTALL: tuple[str, ...] = (
+    ()
+    if osapi.IS_WINDOWS
+    else ("brew install ffms2",)
+    if osapi.IS_MACOS
+    else ("sudo dnf install ffms2",)
+)
+
 # ---------------------------------------------------------------------------
 # Resolution
 # ---------------------------------------------------------------------------
@@ -243,7 +255,26 @@ def compute(
             if report is not None
             else []
         )
-        if trt_findings:
+        if not osapi.HAS_VSTRT:
+            # macOS. "TensorRT isn't set up … trtexec and vstrt were not found"
+            # invites the user to go and install them; there is nothing to install
+            # here, because TensorRT needs CUDA and no Apple Silicon Mac has an
+            # NVIDIA GPU. Same reason and code as the findings arm below, a message
+            # that says permanent rather than pending.
+            #
+            # This has to come FIRST, not inside ``if trt_findings:``: the doctor's
+            # TensorRT section is one INFO row on macOS (``trt_macos_finding``) and
+            # an INFO row is not a problem, so a Mac would otherwise fall through to
+            # ``trt_static`` - available, because ``backends.trt.build_engine``
+            # imports - and report a feature that cannot exist.
+            states[Feature.TRT] = CapState(
+                False,
+                Reason.MISSING_DEPENDENCY,
+                ErrorCode.TRT_UNSUPPORTED,
+                Msg(_TRT_IMPOSSIBLE),
+                _commands(trt_findings),
+            )
+        elif trt_findings:
             states[Feature.TRT] = unavailable_state(
                 Feature.TRT,
                 Reason.MISSING_DEPENDENCY,
@@ -266,8 +297,7 @@ def compute(
                     Feature.RENDER,
                     Reason.MISSING_DEPENDENCY,
                     ErrorCode.FFMS2_MISSING,
-                    commands=_commands(ffms2)
-                    or (() if osapi.IS_WINDOWS else ("sudo dnf install ffms2",)),
+                    commands=_commands(ffms2) or _FFMS2_INSTALL,
                 )
         if not states[Feature.RENDER].available:
             states[Feature.RENDER_HDR10] = states[Feature.RENDER]
@@ -294,6 +324,15 @@ def compute(
 # ---------------------------------------------------------------------------
 # §5.2 wording. The msgid's first line is the headline; the rest is the body.
 # ---------------------------------------------------------------------------
+
+#: macOS only (``osapi.HAS_VSTRT`` False): the TensorRT path cannot be set up here
+#: at all, so the (TRT, MISSING_DEPENDENCY) text below, which names the two pieces
+#: as missing, would read as a to-do list. Phase 1 of the port measured this.
+_TRT_IMPOSSIBLE = (
+    "TensorRT can't run on macOS.\n"
+    "It needs CUDA and an NVIDIA GPU, and macOS has neither. RIFE runs through "
+    "Vulkan on the GPU this Mac has."
+)
 
 _LIVE_NI = (
     "Live playback control isn't in this build yet.\n"
@@ -340,6 +379,11 @@ _TEXTS: dict[tuple[Feature, Reason], str] = {
         + (
             "Packaged models come with ButterEye's installer."
             if osapi.IS_WINDOWS
+            # No packaged models exist for macOS yet: the plugin builds are phase 3
+            # of the port and there is no tap to install them from (phase 4), so
+            # pointing at a package manager here would be a command that cannot work.
+            else "There are no packaged models for macOS yet."
+            if osapi.IS_MACOS
             else "Packaged models are installed with dnf."
         )
         + " You can install a model archive from a file."

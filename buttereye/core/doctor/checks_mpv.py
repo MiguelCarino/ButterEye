@@ -3,6 +3,13 @@
 """mpv checks (SCOPE F1): binary, host vs Flatpak/Snap, version, VapourSynth
 filter, conflicting user settings, mpvSockets.
 
+On macOS one more shape of mpv has to be named rather than only refused: the
+application bundle from mpv.io, which is the mpv a Mac user most likely already
+has and has no VapourSynth filter in it (``app_bundle``, ``_bundle_fix``). A third
+question about the binary is asked here and answered in the probe section, because
+that is where it shows: whether the system protects it, and so drops the
+``DYLD_*`` variables that make mpv able to load VSScript (``dyld_restricted``).
+
 The user's ``mpv.conf`` is only read, never written.
 """
 
@@ -14,9 +21,11 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from buttereye.core import osapi
-from buttereye.core.doctor.checks_pkgs import tool_fix
+from buttereye.core.commands import install_command
+from buttereye.core.doctor.checks_pkgs import Fix, tool_fix
 from buttereye.core.doctor.proc import run
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
@@ -25,6 +34,15 @@ from buttereye.core.types import Finding, Msg, Paths, Section, Severity
 MIN_MPV = (0, 41, 0)
 _VERSION = re.compile(r"\bmpv\s+v?(\d+)\.(\d+)(?:\.(\d+))?")
 _SANDBOX_MARKERS = ("/var/lib/flatpak/", "/.local/share/flatpak/", "/snap/", "/var/lib/snapd/")
+#: An mpv shipped as a macOS application bundle: its binary sits in
+#: ``<name>.app/Contents/MacOS/``. This is the mpv a Mac user is likeliest to
+#: already have -- the mpv.io / stolendata bundle -- and it is built without the
+#: VapourSynth filter (measured: 0.40.0, and ``--vf=help`` lists format, lavfi,
+#: lavfi-bridge, sub, fingerprint and gpu, with no vapoursynth), so it fails both
+#: the version check and the filter check. A bundle is not a sandbox
+#: (``sandbox_kind`` is the analogous job for Flatpak and Snap): it is a layout,
+#: and the answer for it is Homebrew's mpv, which both of those checks then give.
+_APP_BUNDLE_MARKER = "/Contents/MacOS/"
 #: mpvSockets is a Unix-socket script: nothing of it to find on Windows
 MPVSOCKETS_DIR = Path("/tmp/mpvSockets")
 
@@ -91,6 +109,71 @@ def sandbox_kind(binary: str) -> str | None:
     return None
 
 
+def app_bundle(binary: str) -> str | None:
+    """The macOS application bundle ``binary`` (resolved) runs from, else None."""
+    real = os.path.realpath(binary)
+    if _APP_BUNDLE_MARKER not in real:
+        return None
+    bundle = real.split(_APP_BUNDLE_MARKER, 1)[0]
+    return bundle if bundle.endswith(".app") else None
+
+
+#: ``SF_RESTRICTED`` (``sys/stat.h``): the file flag that marks a program System
+#: Integrity Protection owns. dyld drops every ``DYLD_*`` variable when it starts one,
+#: and those are what ButterEye uses on macOS to make mpv able to load VapourSynth's
+#: VSScript library (``osapi.use_bundled_runtime``), so such an mpv cannot be handed
+#: VSScript that way. Measured on this port's Mac: ``/bin/sh``, ``/usr/bin/true``,
+#: ``/usr/bin/python3`` and the Finder all have ``st_flags`` 0x00080020, and a
+#: ``DYLD_LIBRARY_PATH`` handed to ``/bin/sh`` arrives empty there, while Homebrew's
+#: mpv carries no flags at all and the same variable arrives intact.
+_SF_RESTRICTED = 0x00080000
+#: The roots the system protects, where a program is restricted whether or not its own
+#: file carries the flag. ``/usr/local`` is deliberately not one of them: it is
+#: writable, which is why Homebrew uses it on Intel Macs.
+_SIP_ROOTS = ("/System/", "/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/usr/libexec/")
+#: Which test said a program is restricted: its own file flag, or the directory it
+#: sits in. The in-mpv probe turns each into a sentence of its own rather than pasting
+#: a fragment into one (``probe._vsscript_finding``).
+DyldReason = Literal["flag", "directory"]
+
+
+def dyld_restricted(binary: str) -> DyldReason | None:
+    """Why dyld would drop the ``DYLD_*`` variables ButterEye sets for this program,
+    or None when nothing here says it would.
+
+    Two things can be tested from outside the process, and both are measured
+    (``_SF_RESTRICTED``): the ``restricted`` file flag, and a path inside a protected
+    system root. They are not the whole rule - a setuid program is restricted too, and
+    so is one signed with a hardened runtime, which no file flag shows - so None means
+    "nothing here says it is restricted", never "it certainly is not". Not macOS-only
+    by accident: ``st_flags`` is absent from a Linux ``stat`` result, where the answer
+    is None for every program.
+    """
+    real = os.path.realpath(binary)
+    if any(real.startswith(root) for root in _SIP_ROOTS):
+        return "directory"
+    try:
+        flags: int = getattr(os.stat(real), "st_flags", 0)
+    except OSError:
+        return None
+    return "flag" if flags & _SF_RESTRICTED else None
+
+
+def _bundle_fix(bundle: str) -> Fix:
+    """The one answer for an mpv that is an application bundle. Both the version
+    check and the filter check end here, so they cannot tell the same user two
+    different things: an app bundle is not what ``brew upgrade mpv`` upgrades."""
+    return {
+        "fix": M(
+            "{bundle} is an application bundle, which Homebrew does not update. Install "
+            "Homebrew's mpv, which is newer and has the VapourSynth filter, and make sure "
+            "it comes first on PATH.",
+            {"bundle": bundle},
+        ),
+        "commands": (install_command("mpv"),),
+    }
+
+
 async def mpv_checks(
     *, mpv: str | None = None, which: Mapping[str, str | None] | None = None
 ) -> tuple[list[Finding], MpvFacts]:
@@ -110,12 +193,17 @@ async def mpv_checks(
                     windows=M(
                         "Install mpv for Windows (shinchiro's build has the VapourSynth filter)."
                     ),
+                    macos=M("Install Homebrew's mpv; it is built with the VapourSynth filter."),
                 ),
             )
         ], MpvFacts(None, None, False)
 
     out: list[Finding] = []
     sandbox = sandbox_kind(exe)
+    # An app bundle answers both the version and the filter check (``_bundle_fix``),
+    # and both rows then name the binary, which is what says it is one.
+    bundle = app_bundle(exe) if osapi.IS_MACOS else None
+    bundle_ev: tuple[str, ...] = (os.path.realpath(exe),) if bundle is not None else ()
     if sandbox:
         out.append(
             _f(
@@ -161,6 +249,7 @@ async def mpv_checks(
                     "sudo dnf reinstall mpv",
                     "mpv",
                     windows=M("Reinstall mpv."),
+                    macos=M("Install mpv again with Homebrew."),
                 ),
                 evidence=ver_res.tail(),
             )
@@ -173,7 +262,12 @@ async def mpv_checks(
                 M("mpv {v} is too old", {"v": ".".join(map(str, version))}),
                 code=ErrorCode.MPV_TOO_OLD,
                 cause=M("ButterEye needs mpv 0.41.0 or newer."),
-                **tool_fix(M("Update mpv."), "sudo dnf upgrade mpv", "mpv", verb="upgrade"),
+                **(
+                    _bundle_fix(bundle)
+                    if bundle is not None
+                    else tool_fix(M("Update mpv."), "sudo dnf upgrade mpv", "mpv", verb="upgrade")
+                ),
+                evidence=bundle_ev,
             )
         )
     else:
@@ -196,16 +290,30 @@ async def mpv_checks(
                 Severity.BLOCKING,
                 M("mpv has no VapourSynth filter"),
                 code=ErrorCode.MPV_NO_VS_FILTER,
-                cause=M("Your mpv was built without VapourSynth."),
-                **tool_fix(
-                    M("Install the distro mpv package."),
-                    "sudo dnf install mpv",
-                    "mpv",
-                    windows=M(
-                        "Install mpv for Windows (shinchiro's build has the VapourSynth filter)."
-                    ),
+                cause=M("Your mpv was built without VapourSynth.")
+                if bundle is None
+                else M(
+                    "{bundle} was built without VapourSynth: its mpv --vf=help lists no "
+                    "vapoursynth filter, so ButterEye cannot smooth anything through it.",
+                    {"bundle": bundle},
                 ),
-                evidence=vf_res.tail(3) if not vf_res.ok else (),
+                **(
+                    _bundle_fix(bundle)
+                    if bundle is not None
+                    else tool_fix(
+                        M("Install the distro mpv package."),
+                        "sudo dnf install mpv",
+                        "mpv",
+                        windows=M(
+                            "Install mpv for Windows (shinchiro's build has the VapourSynth "
+                            "filter)."
+                        ),
+                        macos=M(
+                            "Install Homebrew's mpv; it is built with the VapourSynth filter."
+                        ),
+                    )
+                ),
+                evidence=vf_res.tail(3) if not vf_res.ok else bundle_ev,
             )
         )
     usable = not sandbox and version is not None and version >= MIN_MPV and vf_ok
@@ -399,7 +507,10 @@ def mpvsockets_finding(
     ButterEye starts (user scripts load there too), so an installed script is
     Degraded (errors.md); a leftover socket folder alone is only a fact (INFO).
     The text never promises attaching while ``Feature.ATTACH`` is unavailable.
-    Windows: nothing to check (the script needs Unix sockets)."""
+    Windows: nothing to check (the script needs Unix sockets). macOS is checked as
+    Linux is: it has Unix sockets, the script's folder is ``~/.config/mpv/scripts``
+    there too (measured: Homebrew's mpv resolves ``~~home/`` to ``~/.config/mpv``,
+    not to anything under ``~/Library``), and ``/tmp`` is the same writable place."""
     if osapi.IS_WINDOWS:
         return None
     sockets_dir = MPVSOCKETS_DIR if sockets_dir is None else sockets_dir
@@ -470,6 +581,8 @@ __all__ = [
     "MpvFacts",
     "parse_version",
     "has_vs_filter",
+    "app_bundle",
+    "dyld_restricted",
     "sandbox_kind",
     "mpv_checks",
     "read_user_conf",

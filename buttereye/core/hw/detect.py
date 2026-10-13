@@ -5,8 +5,18 @@
 Sources, all read-only: ``/sys/class/drm/card*/device`` (+ hwdata ``pci.ids``),
 ``vulkaninfo`` text output (subprocess) and ``nvidia-smi`` (subprocess, optional).
 Windows has no sysfs: there the GPU list comes from the physical Vulkan devices
-(``gpus_from_vulkan``), and nvidia-smi adds what it knows as on Linux.
+(``gpus_from_vulkan``), and nvidia-smi adds what it knows as on Linux. macOS has
+no sysfs either: there it comes from IOKit through ``system_profiler``, with
+``ioreg`` as the fallback (``read_iokit_gpus``), and nvidia-smi is never run.
 No NVIDIA or Vulkan library is ever loaded into this process (§8.1).
+
+What macOS asks for is deliberately narrow (SCOPE §2: nothing that identifies
+the machine may reach a log or a report bundle): ``SPDisplaysDataType`` and the
+few keys ``parse_system_profiler_gpus`` names, never
+``SPHardwareDataType`` (the machine's serial number and UUID) and never
+``sysctl kern.uuid``. The display report does carry an attached monitor's serial
+number, so the raw output stays inside the parser and never reaches a Finding,
+a log or a report bundle.
 
 CPU Vulkan devices (llvmpipe/lavapipe) are listed but never chosen as the
 interpolation device. With several non-CPU devices the discrete device with the
@@ -21,9 +31,11 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
+import json
 import os
 import re
 import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +57,7 @@ VENDOR_NAMES: dict[int, str] = {
     0x13B5: "ARM",
     0x5143: "Qualcomm",
     0x1AF4: "virtio",
+    0x106B: "Apple",
 }
 
 DeviceType = Literal["discrete", "integrated", "virtual", "cpu", "other"]
@@ -208,6 +221,7 @@ class SysGpu:
     driver: str | None  # kernel driver ("nvidia", "amdgpu", "i915", ...)
     vram_bytes: int | None  # amdgpu mem_info_vram_total
     display_connected: bool  # a connector of this card reports "connected"
+    name: str | None = None  # a source that names the GPU itself (macOS: the chip)
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +306,185 @@ def gpus_from_vulkan(vulkan: Sequence[VkParsed]) -> tuple[SysGpu, ...]:
         seen.add(key)
         out.append(SysGpu(f"gpu{len(out)}", key, v.vendor_id or 0, 0, None, None, False))
     return tuple(out)
+
+
+# ---------------------------------------------------------------------------
+# IOKit (macOS)
+# ---------------------------------------------------------------------------
+
+#: The GPU report, read as JSON. Both programs are named by absolute path: an
+#: application launched from Finder inherits a minimal ``PATH``, and these two
+#: are part of macOS, not something a user installed.
+SP_DISPLAYS = ("/usr/sbin/system_profiler", "-json", "SPDisplaysDataType")
+#: The fallback: the Apple Silicon GPU's own IOKit node, one level deep. 0.01 s
+#: against ``system_profiler``'s 0.13 s (measured on an M2), but its keys are
+#: not an interface Apple documents, so the readable source goes first.
+IOREG_AGX = ("/usr/sbin/ioreg", "-rd1", "-c", "AGXAccelerator")
+
+#: ``spdisplays_vendor`` carries a token, not a number. Only the Apple token is
+#: measured (``sppci_vendor_Apple`` on an M2); the others are matched on a
+#: substring because Intel Macs are out of the first cut, and a vendor that
+#: matches nothing stays unknown rather than being guessed at. The numbers are
+#: the real PCI vendor ids, which is how the rest of this module keys a vendor;
+#: an Apple GPU is not a PCI device and 0x106b only names its maker, which is
+#: also what Apple itself prints ("Vendor: Apple (0x106b)").
+SP_VENDORS: tuple[tuple[str, int], ...] = (
+    ("apple", 0x106B),
+    ("nvidia", 0x10DE),
+    ("amd", 0x1002),
+    ("ati", 0x1002),
+    ("intel", 0x8086),
+)
+
+#: The mock ICD that Vulkan-Tools ships answers as a virtual GPU with this
+#: vendor id (``mock_icd``'s own constant; measured through ``vulkaninfo`` with
+#: ``VK_ICD_FILENAMES`` pointed at it: "Vulkan Mock Device",
+#: ``VIRTUAL_GPU``, an 8 GB heap, PCI 0000:00:00.0). Homebrew installs it with
+#: ``vulkan-tools`` -- which is the package the doctor asks a Mac user for --
+#: and its caveat invites pointing ``VK_ICD_FILENAMES`` at it, so a ButterEye
+#: that believed it would report a software device as the GPU and send RIFE
+#: there. A virtio GPU on Linux is a real device, so the exclusion is by this
+#: vendor id, not by the device type.
+MOCK_VENDOR_ID = 0xBA5EBA11
+
+_IOREG_NODE = re.compile(r"^\+-o\s")
+_IOREG_KV = re.compile(r'^\s*"([A-Za-z0-9_-]+)"\s*=\s*(.*?)\s*$')
+
+
+def _sp_vendor_id(token: object) -> int:
+    """PCI vendor id for a ``spdisplays_vendor`` token (0 when it names none)."""
+    if not isinstance(token, str):
+        return 0
+    name = token.removeprefix("sppci_vendor_").lower()
+    return next((vid for key, vid in SP_VENDORS if key in name), 0)
+
+
+def parse_system_profiler_gpus(text: str) -> tuple[SysGpu, ...]:
+    """GPUs from ``system_profiler -json SPDisplaysDataType`` (macOS).
+
+    Five keys are read and nothing else in that report leaves this function:
+    ``sppci_device_type`` (is this entry a GPU), ``sppci_model`` or ``_name``
+    (the chip, e.g. "Apple M2"), ``spdisplays_vendor``, and inside
+    ``spdisplays_ndrvs`` only ``spdisplays_online``. The report also carries an
+    attached monitor's serial number, which is why the raw text stays here and
+    only these fields reach a ``SysGpu``.
+
+    Apple Silicon has one integrated GPU whose memory it shares with the CPU,
+    and it is not on a PCI bus: there is no PCI address, no PCI device id, no
+    kernel driver version a user could act on and no VRAM of its own, so each
+    of those is left an explicit unknown. ``vram_bytes`` in particular is not
+    filled from Vulkan's device-local heap, which on MoltenVK is the whole of
+    system memory and would read as a 16 GB graphics card.
+    """
+    try:
+        doc = json.loads(text)
+    except ValueError:  # includes JSONDecodeError: not JSON, or empty output
+        return ()
+    entries = doc.get("SPDisplaysDataType") if isinstance(doc, dict) else None
+    if not isinstance(entries, list):
+        return ()
+    out: list[SysGpu] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        kind = entry.get("sppci_device_type")
+        if isinstance(kind, str) and kind != "spdisplays_gpu":
+            continue
+        name = entry.get("sppci_model") or entry.get("_name")
+        displays = entry.get("spdisplays_ndrvs")
+        connected = any(
+            isinstance(d, dict) and d.get("spdisplays_online") != "spdisplays_no"
+            for d in (displays if isinstance(displays, list) else ())
+        )
+        out.append(
+            SysGpu(
+                card=f"gpu{len(out)}",
+                # No PCI address exists; the key only has to be stable and say
+                # where it came from, as Windows' "vk:<uuid>" does.
+                pci=f"iokit:{len(out)}",
+                vendor_id=_sp_vendor_id(entry.get("spdisplays_vendor")),
+                device_id=0,
+                driver=None,
+                vram_bytes=None,
+                display_connected=connected,
+                name=name if isinstance(name, str) and name else None,
+            )
+        )
+    return tuple(out)
+
+
+def _ioreg_vendor_id(raw: str | None) -> int:
+    """``<6b100000>`` -> 0x106b (an IOKit data property, little-endian)."""
+    m = re.fullmatch(r"<([0-9a-fA-F]+)>", (raw or "").strip())
+    if not m or len(m.group(1)) % 2:
+        return 0
+    return int.from_bytes(bytes.fromhex(m.group(1))[:4], "little")
+
+
+def parse_ioreg_gpus(text: str) -> tuple[SysGpu, ...]:
+    """GPUs from ``ioreg -rd1 -c AGXAccelerator`` (the macOS fallback).
+
+    Two keys per node: ``model`` ("Apple M2") and ``vendor-id``
+    (``<6b100000>``, the PCI vendor id little-endian). Nothing here says which
+    GPU drives a display, so ``display_connected`` is False; with one GPU
+    ``build_hardware`` still names it the decode device. The node also publishes
+    performance counters and a submitting process's pid, which are not read.
+    """
+    out: list[SysGpu] = []
+    fields: dict[str, str] = {}
+
+    def flush() -> None:
+        # Only a quoted string is a name; an IOKit property can also be data
+        # (``<4a343933>``) or a number, and neither is a GPU model.
+        raw = fields.get("model", "").strip()
+        model = raw[1:-1].strip() if len(raw) > 2 and raw[0] == raw[-1] == '"' else ""
+        if not model:
+            return
+        out.append(
+            SysGpu(
+                card=f"gpu{len(out)}",
+                pci=f"iokit:{len(out)}",
+                vendor_id=_ioreg_vendor_id(fields.get("vendor-id")),
+                device_id=0,
+                driver=None,
+                vram_bytes=None,
+                display_connected=False,
+                name=model,
+            )
+        )
+
+    for ln in text.splitlines():
+        if _IOREG_NODE.match(ln):
+            flush()
+            fields = {}
+            continue
+        m = _IOREG_KV.match(ln)
+        if m and m.group(1) in ("model", "vendor-id") and m.group(1) not in fields:
+            fields[m.group(1)] = m.group(2)
+    flush()
+    return tuple(out)
+
+
+async def read_iokit_gpus(*, timeout_s: float = 4.0) -> tuple[SysGpu, ...]:
+    """The macOS GPU list: ``system_profiler``'s display report, falling back to
+    ``ioreg``'s Apple Silicon GPU node when that answers nothing. ``timeout_s``
+    is for both together, so a hung first program cannot spend the second's
+    share of the doctor's budget as well."""
+    deadline = time.monotonic() + timeout_s
+    res = await run(SP_DISPLAYS, timeout_s=timeout_s)
+    gpus = parse_system_profiler_gpus(res.stdout) if res.ok else ()
+    left = deadline - time.monotonic()
+    if gpus or left <= 0.0:
+        return gpus
+    res = await run(IOREG_AGX, timeout_s=left)
+    return parse_ioreg_gpus(res.stdout) if res.ok else ()
+
+
+def drop_mock_devices(vulkan: Sequence[VkParsed]) -> tuple[VkParsed, ...]:
+    """The Vulkan devices without the mock ICD's fake GPU (``MOCK_VENDOR_ID``).
+    Indices stay as ``vulkaninfo`` numbered them, so a config ``gpu = <index>``
+    still means the same device."""
+    return tuple(v for v in vulkan if v.vendor_id != MOCK_VENDOR_ID)
 
 
 SMI_QUERY = (
@@ -394,6 +587,7 @@ def build_hardware(
         name = (
             (s.name if s else None)
             or (vk.device.name if vk else None)
+            or g.name
             or pci_name(g.vendor_id, g.device_id, ids_file)
             or f"PCI device {g.vendor_id:04x}:{g.device_id:04x}"
         )
@@ -494,21 +688,41 @@ async def probe_hardware(
     timeout_s: float = 6.0,
 ) -> HwProbe:
     """Run the detection subprocesses concurrently and assemble the result."""
-    sysfs = () if osapi.IS_WINDOWS else read_sysfs_gpus(sys_root)
+    # Neither Windows nor macOS has sysfs; both fill the list further down, one
+    # from the Vulkan devices and the other from IOKit.
+    sysfs: tuple[SysGpu, ...] = (
+        () if osapi.IS_WINDOWS or osapi.IS_MACOS else read_sysfs_gpus(sys_root)
+    )
     if osapi.IS_WINDOWS:  # the NVIDIA driver puts nvidia-smi on PATH
         want_smi = osapi.executable("nvidia-smi") is not None
+    elif osapi.IS_MACOS:
+        # Not absent by luck: NVIDIA's last macOS driver was for 10.13 and no
+        # Apple Silicon Mac has an NVIDIA GPU, so nvidia-smi can never answer
+        # here. The same fact makes TensorRT impossible (``osapi.HAS_VSTRT``).
+        want_smi = False
     else:
         want_smi = any(g.vendor_id == 0x10DE for g in sysfs) or Path("/dev/nvidia0").exists()
     vk_task = asyncio.ensure_future(run_vulkaninfo(timeout_s))
+    # macOS reads its GPU while vulkaninfo runs; neither waits for the other.
+    iokit_task = (
+        asyncio.ensure_future(read_iokit_gpus(timeout_s=min(timeout_s, 4.0)))
+        if osapi.IS_MACOS
+        else None
+    )
     smi_res: CmdResult | None = None
     try:
         if want_smi:
             smi_res = await run(SMI_QUERY, timeout_s=min(timeout_s, 4.0))
         vk_res = await vk_task
+        if iokit_task is not None:
+            sysfs = await iokit_task
     finally:
-        if not vk_task.done():
-            vk_task.cancel()
+        for task in (vk_task, iokit_task):
+            if task is not None and not task.done():
+                task.cancel()
     vulkan = parse_vulkaninfo(vk_res.stdout) if vk_res.ok else ()
+    if osapi.IS_MACOS:
+        vulkan = drop_mock_devices(vulkan)
     smi = parse_nvidia_smi(smi_res.stdout) if smi_res is not None and smi_res.ok else ()
     if osapi.IS_WINDOWS:
         sysfs = gpus_from_vulkan(vulkan)
@@ -531,6 +745,10 @@ __all__ = [
     "parse_nvidia_smi",
     "read_sysfs_gpus",
     "gpus_from_vulkan",
+    "read_iokit_gpus",
+    "parse_system_profiler_gpus",
+    "parse_ioreg_gpus",
+    "drop_mock_devices",
     "choose_device",
     "build_hardware",
     "pci_name",

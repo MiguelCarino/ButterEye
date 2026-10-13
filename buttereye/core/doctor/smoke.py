@@ -2,7 +2,13 @@
 # Copyright (C) 2026 The ButterEye contributors
 """Setup smoke test (SCOPE §4.7 step 3): a short vspipe run of ``smoke.vpy`` on a
 generated clip, bounded by 10 s, followed by an Xid scan for the run's pid (a
-run can finish and still have faulted the GPU, M0(f))."""
+run can finish and still have faulted the GPU, M0(f)).
+
+The plugin and model directories come from ``Paths``, so each platform's answer is
+already in them (phase 1): on macOS the plugin directory is Homebrew's autoload
+directory, where ``smoke.vpy`` finds ``mvtools.dylib`` loaded already and skips its
+own ``LoadPlugin``. Measured there: 24 frames in, 48 out, 898 fps through the real
+``vspipe``. Only the "no vspipe" advice had to be told where vspipe comes from."""
 
 from __future__ import annotations
 
@@ -23,6 +29,9 @@ SMOKE_VPY = Path(__file__).with_name("smoke.vpy")
 TIMEOUT_S = 10.0
 RIFE_THREADS = 4  # gpu_thread=4: ~72 fps at 1080p 2x on the dev box (M0(f))
 _OUTPUT = re.compile(r"Output (\d+) frames in ([\d.]+) seconds \(([\d.]+) fps\)")
+#: macOS: ``vspipe`` is in Homebrew's ``vapoursynth`` formula and nowhere else
+#: (``tool_fix`` gives the ``brew install`` line that goes with this)
+INSTALL_VSPIPE_MACOS = M("Install VapourSynth with Homebrew; its formula ships vspipe.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,8 +153,10 @@ async def smoke_test(
             f.code,
             f.title,
             f.cause,
-            # Windows: vspipe comes with ButterEye's installer (Repair), not winget
-            REPAIR if osapi.IS_WINDOWS else f.fix,
+            # Windows: vspipe comes with ButterEye's installer (Repair), not winget.
+            # macOS: Homebrew's vapoursynth formula is what ships it, so the generic
+            # "choose another backend" advice would send the user the wrong way.
+            REPAIR if osapi.IS_WINDOWS else INSTALL_VSPIPE_MACOS if osapi.IS_MACOS else f.fix,
             ()
             if osapi.IS_WINDOWS
             else tool_fix(M(""), "sudo dnf install vapoursynth-tools", "vapoursynth")["commands"],
@@ -172,4 +183,11 @@ async def smoke_test(
     return SmokeOutcome(True, fps, None, log, faults)
 
 
-__all__ = ["SMOKE_VPY", "SmokeOutcome", "smoke_argv", "smoke_test", "parse_fps"]
+__all__ = [
+    "INSTALL_VSPIPE_MACOS",
+    "SMOKE_VPY",
+    "SmokeOutcome",
+    "smoke_argv",
+    "smoke_test",
+    "parse_fps",
+]

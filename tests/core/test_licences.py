@@ -15,6 +15,12 @@ from buttereye.core.errors import ErrorCode
 from buttereye.core.types import Severity
 
 
+#: The COPR table, named rather than taken from the running platform: ``COMPONENTS``
+#: is the Windows table on Windows and the Homebrew-tap one on macOS, and these tests
+#: are about the Fedora rows wherever they run.
+_FEDORA = licences.components(windows=False)
+
+
 def info(
     name: str,
     files: list[Path],
@@ -65,7 +71,7 @@ def make_db(tmp_path: Path, *, drop: str | None = None) -> RpmDb:
 
 
 def test_ncnn_and_glslang_rows_conveyed(tmp_path: Path) -> None:
-    rows = {r.name: r for r in licences.build_third_party(make_db(tmp_path), None)}
+    rows = {r.name: r for r in licences.build_third_party(make_db(tmp_path), None, _FEDORA)}
     for name in ("ncnn", "glslang"):
         r = rows[name]
         assert r.conveyed and r.detected and r.finding is None
@@ -94,7 +100,9 @@ def test_ncnn_and_glslang_rows_conveyed(tmp_path: Path) -> None:
 def test_missing_licence_file_is_be1021(tmp_path: Path) -> None:
     rows = {
         r.name: r
-        for r in licences.build_third_party(make_db(tmp_path, drop="LICENSE.ncnn.txt"), None)
+        for r in licences.build_third_party(
+            make_db(tmp_path, drop="LICENSE.ncnn.txt"), None, _FEDORA
+        )
     }
     f = rows["ncnn"].finding
     assert f is not None and f.code is ErrorCode.LICENCE_FILE_MISSING
@@ -107,7 +115,7 @@ def test_incomplete_model_texts_flagged(tmp_path: Path) -> None:
     db = make_db(tmp_path)
     only_one = info("buttereye-rife-ncnn-models", [tmp_path / "licenses/models/LICENSE"])
     db = RpmDb(True, MappingProxyType({**db.packages, "buttereye-rife-ncnn-models": only_one}))
-    rows = {r.name: r for r in licences.build_third_party(db, None)}
+    rows = {r.name: r for r in licences.build_third_party(db, None, _FEDORA)}
     f = rows["RIFE ncnn models"].finding
     assert f is not None and f.code is ErrorCode.LICENCE_FILE_MISSING
     assert f.cause.params["need"] == 4
@@ -298,7 +306,7 @@ def test_linux_rows_unchanged() -> None:
     linux = {c.name: c for c in licences.components(windows=False)}
     assert linux["FFmpeg"].spdx == "GPL-3.0-or-later" and not linux["FFmpeg"].conveyed
     assert not linux["ffms2"].conveyed and not linux["PySide6 / Qt"].conveyed
-    if not licences.osapi.IS_WINDOWS:
+    if not (licences.osapi.IS_WINDOWS or licences.osapi.IS_MACOS):
         assert licences.COMPONENTS == licences.components(windows=False)
 
 
@@ -310,3 +318,95 @@ def test_windows_source_offer_is_sources_txt(tmp_path: Path) -> None:
     offer.parent.mkdir()
     offer.write_text("where the source is")
     assert licences._source_link(windows=True, install=tmp_path) == str(offer)
+
+
+# ---------------------------------------------------------------------------
+# macOS: what the Homebrew tap conveys, and what it only drives
+# (packaging/macos/SOURCES.md). Pure, so these run on every platform: the macOS
+# legal statement must not be changeable from a Fedora checkout without a red test.
+# ---------------------------------------------------------------------------
+
+_MACOS = licences.components(windows=False, macos=True)
+
+#: What the tap's own formulae build, and nothing else (SOURCES.md, "What the tap
+#: conveys, and where its source is", plus the shader inside ButterEye itself).
+_TAP_CONVEYS = {"RIFE-ncnn-Vulkan", "RIFE ncnn models", "mvgpu", "FSRCNNX x2 8-0-4-1 shader"}
+
+
+def test_macos_conveys_only_what_the_tap_builds() -> None:
+    """Every other row is a Homebrew bottle the user installs: Homebrew declares the
+    licence, carries the source duty and ships the text in its own keg."""
+    assert {c.name for c in _MACOS if c.conveyed} == _TAP_CONVEYS
+    assert [c.name for c in _MACOS if not c.conveyed] == [
+        "ncnn",
+        "libomp",
+        "MVTools",
+        "PySide6 / Qt",
+        "mpv",
+        "VapourSynth",
+        "FFmpeg",
+        "ffms2",
+        "mkvtoolnix",
+    ]
+    # The tap links nothing statically (-Duse_system_ncnn=true), so the relation the
+    # Fedora and Windows tables give ncnn and glslang cannot appear on any row here.
+    assert licences.REL_STATIC not in [c.relation for c in _MACOS]
+
+
+def test_macos_rife_rows_match_the_tap_formula() -> None:
+    rows = {c.name: c for c in _MACOS}
+    rife = rows["RIFE-ncnn-Vulkan"]
+    assert rife.spdx == "MIT AND LGPL-2.1-or-later AND WTFPL"  # the formula's license all_of
+    assert rife.conveyed
+    assert "glslang" not in rows  # the tap's build neither links nor ships it
+    ncnn = rows["ncnn"]
+    assert ncnn.package == "ncnn"  # the Homebrew formula, which is what a user installs
+    assert ncnn.spdx == "BSD-3-Clause" and ncnn.spdx_from_rpm
+    assert not ncnn.conveyed and ncnn.relation == licences.REL_LINKED_RIFE
+    assert rows["libomp"].relation == licences.REL_LINKED_RIFE and not rows["libomp"].conveyed
+    mv = rows["MVTools"]
+    assert not mv.conveyed and mv.spdx == "GPL-2.0-or-later" and mv.spdx_from_rpm
+    # TensorRT only, and osapi.HAS_VSTRT is False on macOS; no tap formula has either.
+    assert "vsmlrt.py" not in rows and "onnxconverter-common" not in rows
+
+
+def test_macos_table_shares_the_fedora_rows_it_does_not_change() -> None:
+    """The rows that are already true on a Mac are the Fedora objects themselves, so
+    the two tables cannot drift apart."""
+    fedora = {c.name: c for c in _FEDORA}
+    mac = {c.name: c for c in _MACOS}
+    for name in (
+        "FSRCNNX x2 8-0-4-1 shader",
+        "PySide6 / Qt",
+        "mpv",
+        "VapourSynth",
+        "FFmpeg",
+        "ffms2",
+        "mkvtoolnix",
+    ):
+        assert mac[name] is fedora[name], name
+
+
+def test_macos_tap_keg_without_root_licence_texts_is_not_a_packaging_bug() -> None:
+    """A tap keg installs its licence texts under
+    ``<keg>/share/doc/<formula>/licenses``, which ``brew.BrewKeg.licence_files`` does
+    not read: it reports the keg's root. Counting texts here would therefore report a
+    packaging bug (BE-1021) against formulae that do install them."""
+    db = RpmDb(
+        True,
+        MappingProxyType(
+            {
+                "buttereye-vs-rife-ncnn": info("buttereye-vs-rife-ncnn", [], evr="9.33"),
+                "buttereye-rife-ncnn-models": info(
+                    "buttereye-rife-ncnn-models", [], evr="r9_mod_v33"
+                ),
+                "buttereye-vs-mvgpu": info(
+                    "buttereye-vs-mvgpu", [], evr="0.0.3", lic="AGPL-3.0-or-later"
+                ),
+            }
+        ),
+    )
+    rows = {r.name: r for r in licences.build_third_party(db, None, _MACOS)}
+    for name in ("RIFE-ncnn-Vulkan", "RIFE ncnn models", "mvgpu"):
+        assert rows[name].detected and rows[name].conveyed, name
+        assert rows[name].finding is None, name
