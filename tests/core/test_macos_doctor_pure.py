@@ -44,6 +44,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from fractions import Fraction
@@ -91,6 +92,21 @@ APPLE_M2 = VulkanDevice(0, "0000106b-1b00", "Apple M2", "Apple", "integrated", 1
 RTX = VulkanDevice(0, "uuid-nv", "NVIDIA GeForce RTX 4090", "NVIDIA", "discrete", 24 * GiB)
 
 
+#: Read once, before any fixture flips ``sys.platform``.
+_REALLY_DARWIN = sys.platform == "darwin"
+
+
+class _NoDarwin:
+    """``osapi._darwin`` off a Mac: every name is a test failure that says which
+    macOS call a pure test reached. Pure tests answer those calls themselves
+    (``HOMEBREW_PREFIX``, an explicit ``XDG_RUNTIME_DIR``, a monkeypatched seam)."""
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("__"):
+            raise AttributeError(name)  # introspection, not a macOS call
+        pytest.fail(f"a pure test reached the macOS-only call _darwin.{name}()")
+
+
 @pytest.fixture
 def as_macos(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """The platform answers a Mac gives, on whatever machine this runs on.
@@ -102,6 +118,15 @@ def as_macos(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(osapi, "IS_MACOS", True)
     monkeypatch.setattr(osapi, "IS_WINDOWS", False)
     monkeypatch.setattr(osapi, "HAS_VSTRT", False)
+    if not _REALLY_DARWIN:
+        # ``commands.sys`` is *the* ``sys``: flipping its platform flips every
+        # ``sys.platform == "darwin"`` guard in the product, and the bodies of those
+        # guards call ``osapi.d`` and ``paths._darwin``, which are only imported on a
+        # real Mac (``test_darwin_modules_are_used_only_where_they_are_imported``).
+        # Off a Mac a stub stands in, so a test that reaches a real macOS system call
+        # fails saying which one, instead of with a NameError.
+        monkeypatch.setattr(osapi, "d", _NoDarwin(), raising=False)
+        monkeypatch.setattr(bepaths, "_darwin", _NoDarwin(), raising=False)
     monkeypatch.setattr(commands.sys, "platform", "darwin")
     yield
 
@@ -408,15 +433,24 @@ def _hw(*devs: VulkanDevice, threads: int = 8) -> HwProbe:
 def _paths(tmp_path: Path) -> Paths:
     """Paths with ButterEye's private directories pointed at an empty folder.
 
-    ``resolve()`` is called before the platform is flipped on purpose: the folder
-    layout is phase 1's and has its own tests, and a Linux machine cannot answer
-    ``confstr(_CS_DARWIN_USER_TEMP_DIR)``.
+    ``resolve()`` gets an environment of its own rather than the machine's: a
+    ``HOME`` and a private ``XDG_RUNTIME_DIR`` under ``tmp_path``. The folder layout
+    is phase 1's and has its own tests; what matters here is that the answer does
+    not depend on where the suite runs. Without it, a test that has already
+    flipped the platform to macOS asks for ``confstr(_CS_DARWIN_USER_TEMP_DIR)``,
+    which a Linux machine cannot answer, and on Linux a shell with no login
+    session (a container, a CI step) has no ``XDG_RUNTIME_DIR`` at all.
     """
     root = tmp_path / "empty"
     (root / "plugins").mkdir(parents=True)
     (root / "data").mkdir()
+    (tmp_path / "home").mkdir(exist_ok=True)
+    run = tmp_path / "run"
+    run.mkdir(mode=0o700, exist_ok=True)
+    run.chmod(0o700)
+    env = {"HOME": str(tmp_path / "home"), "XDG_RUNTIME_DIR": str(run)}
     return dataclasses.replace(
-        resolve(), rpm_plugin_dir=root / "plugins", rpm_data_dir=root / "data"
+        resolve(env), rpm_plugin_dir=root / "plugins", rpm_data_dir=root / "data"
     )
 
 
@@ -941,6 +975,11 @@ def test_the_probe_blames_vsscript_rather_than_a_fedora_package(
     assert not probe.vsscript_load_failed("[vapoursynth] Script evaluation failed\n")
 
     monkeypatch.setenv("HOMEBREW_PREFIX", str(tmp_path))
+    # the seam's answer is the real Mac's (``_darwin.vsscript_library`` reads this
+    # machine's ``sys.path`` too), so it says nothing here, as it does on Linux,
+    # and the row is built from the planted keg on every platform; the seam half
+    # is tests/macos's
+    monkeypatch.setattr(osapi, "vsscript_library", lambda: None)
     outcome = probe.ProbeOutcome(None, CmdResult(("mpv",), 0, "", failed), "no report")
     rows = probe.probe_findings(outcome, (), vspipe_core=None)
     assert len(rows) == 1
@@ -1068,8 +1107,14 @@ def test_the_lite_model_is_the_default_until_a_benchmark_says_otherwise(as_macos
     from buttereye.core.bench import runner
 
     report, cfg = _ready_mac(), default_config()
-    # with no benchmark the Apple GPU gets the lite model, whatever is packaged
-    assert select.select(report, cfg, ()).model == select.MODEL_MID
+    # with no benchmark a Mac is not offered RIFE for live play at all
+    # (decide.rife_live_needs_proof); a user who picks RIFE anyway gets the lite
+    # model, whatever is packaged
+    assert select.select(report, cfg, ()).backend is BackendId.MVTOOLS
+    rife = dataclasses.replace(
+        cfg, general=dataclasses.replace(cfg.general, backend_override=BackendId.RIFE_NCNN)
+    )
+    assert select.select(report, rife, ()).model == select.MODEL_MID
     assert select._default_model(_report(APPLE_M2, (select.MODEL_MID,))) == select.MODEL_MID
     assert select._default_model(_report(APPLE_M2, (select.MODEL_HIGH,))) == select.MODEL_HIGH
 
@@ -1217,3 +1262,294 @@ def test_the_engine_chooser_asks_every_plugin_directory_a_mac_has(
         assert found is not None and found.parent == where
         assert bepaths.plugin_dir_for(paths, name) == where
     assert bepaths.plugin_dir_for(paths, pk.MVTOOLS_SO) != paths.rpm_plugin_dir
+
+
+def test_offline_render_asks_every_plugin_directory_a_mac_has(
+    as_macos: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The render half of the test above, which the search-path fix missed.
+
+    ``render/jobs.py`` went on asking ``paths.rpm_plugin_dir`` alone in two
+    places after live play and the benchmark were given the search path, and the
+    same scratch prefix measured what that costs (docs/macos-release-bar.md,
+    item 6): ``jobs._installed`` answered ``[mvgpu, rife-ncnn]`` and the render
+    script's ``PLUGIN_DIR`` named ButterEye's own directory, so ``buttereye
+    render`` - the half SCOPE §1 calls the one that always works - lost MVTools
+    the moment the tap was installed. Both call sites are asked here, through
+    the render provider's own functions rather than the search repeated.
+    """
+    from buttereye.core.render import jobs
+
+    monkeypatch.setenv("HOMEBREW_PREFIX", str(tmp_path))
+    autoload = tmp_path / "lib" / "python3.14" / "site-packages" / "vapoursynth" / "plugins"
+    own = tmp_path / "lib" / "buttereye" / "vapoursynth"
+    share = tmp_path / "share" / "buttereye"
+    model = share / jobs.MODEL_SUBDIR / "rife-v4.26_ensembleFalse"
+    for d in (autoload, own, model):
+        d.mkdir(parents=True)
+    (model / "flownet.param").write_bytes(b"")
+    # under each name a caller asks for (``_plant``): ``installed_backends`` asks
+    # ``osapi.plugin_file`` at call time, the script names ``BACKEND_PLUGIN``'s
+    _plant(
+        autoload, osapi.plugin_file("mvtools.so"), decide.BACKEND_PLUGIN[BackendId.MVTOOLS]
+    )
+    _plant(
+        own,
+        osapi.plugin_file("librife.so"),
+        decide.BACKEND_PLUGIN[BackendId.RIFE_NCNN],
+        decide.BACKEND_PLUGIN[BackendId.MVGPU],
+    )
+    paths = dataclasses.replace(_paths(tmp_path), rpm_plugin_dir=own, rpm_data_dir=share)
+    cfg = default_config()
+    cfg = dataclasses.replace(
+        cfg, general=dataclasses.replace(cfg.general, trt_experimental=False)
+    )
+    ctx = SimpleNamespace(paths=paths, config=lambda: cfg)
+
+    # Not vacuous: the single directory render used to ask has no MVTools in it
+    old = decide.installed_backends(paths.rpm_plugin_dir, share / jobs.MODEL_SUBDIR)
+    assert BackendId.MVTOOLS not in old
+
+    installed = jobs._installed(ctx)  # type: ignore[arg-type]
+    assert installed == {BackendId.MVGPU, BackendId.RIFE_NCNN, BackendId.MVTOOLS}
+
+    # a render pinned to the CPU engine finds it, rather than "not installed"
+    cpu = next(p for p in cfg.profiles if p.backend == BackendId.MVTOOLS.value)
+    assert jobs._engine(ctx, cpu)[0] is BackendId.MVTOOLS  # type: ignore[arg-type]
+
+    # and the script names the directory each engine's plugin is really in,
+    # the one the doctor reports it in (paths.plugin_dir_for)
+    assert jobs._constants(ctx, BackendId.MVTOOLS).plugin_dir == autoload  # type: ignore[arg-type]
+    assert jobs._constants(ctx, BackendId.MVGPU).plugin_dir == own  # type: ignore[arg-type]
+    assert jobs._constants(ctx, BackendId.RIFE_NCNN).plugin_dir == own  # type: ignore[arg-type]
+    # no plugin to resolve (TensorRT loads vstrt from its install): the packaged one
+    assert jobs._constants(ctx, None).plugin_dir == own  # type: ignore[arg-type]
+
+
+def test_offline_render_keeps_its_one_directory_off_macos(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    """Fedora and Windows have exactly one plugin directory, and render must go on
+    naming exactly it - the fix above may not move a script off it.
+
+    ``as_linux`` is applied after ``_paths``, for the reason ``_paths`` gives: the
+    folder layout is resolved for the machine the test runs on."""
+    from buttereye.core.render import jobs
+
+    paths = _paths(tmp_path)
+    request.getfixturevalue("as_linux")
+    own = paths.rpm_plugin_dir
+    _plant(own, osapi.plugin_file("mvtools.so"), decide.BACKEND_PLUGIN[BackendId.MVTOOLS])
+    cfg = default_config()
+    cfg = dataclasses.replace(
+        cfg, general=dataclasses.replace(cfg.general, trt_experimental=False)
+    )
+    ctx = SimpleNamespace(paths=paths, config=lambda: cfg)
+    assert bepaths.plugin_dirs(paths) == (own,)
+    assert BackendId.MVTOOLS in jobs._installed(ctx)  # type: ignore[arg-type]
+    for engine in (None, BackendId.MVTOOLS, BackendId.RIFE_NCNN, BackendId.MVGPU):
+        assert jobs._constants(ctx, engine).plugin_dir == own  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------- the chooser and m0s
+#: The spike's own file, read rather than copied: the regression below is the
+#: measured reproduction in docs/macos-release-bar.md item 4, and a transcribed
+#: figure could drift from the rows the document quotes.
+M0S = Path(__file__).resolve().parents[2] / "docs" / "spikes" / "m0s-results.json"
+
+
+def _m0s_runs() -> list[dict[str, Any]]:
+    runs: list[dict[str, Any]] = json.loads(M0S.read_text(encoding="utf-8"))["runs"]
+    return runs
+
+
+def _m0s_result(run: dict[str, Any]) -> BenchResult:
+    """One m0s run as the stored ``BenchResult`` the chooser reads. Faults are
+    None: the spike records them as not checked on macOS (IOReport unread)."""
+    w, h = (int(n) for n in run["size"].split("x"))
+    ms = tuple(
+        BenchMeasurement(
+            e["label"],
+            BackendId(e["backend"]),
+            e["model"],
+            float(e["vspipe_fps"] or 0.0),
+            float(e["mpv_fps"] or 0.0),
+            float(e["cov"]) if e["cov"] is not None else 0.0,
+            bool(e["repeatable"]),
+            0.0,
+            0.0,
+            None,
+            bool(e["realtime"]),
+            None,
+        )
+        for e in run["engines"]
+    )
+    return BenchResult(
+        BenchRequest(w, h, Fraction(run["source_fps"])),
+        ms,
+        run["recommended"],
+        datetime(2026, 10, 13, tzinfo=UTC),
+        APPLE_M2.uuid,
+    )
+
+
+def _spike_runs() -> list[dict[str, Any]]:
+    """The spike's own complete runs: every engine measured. Left out are the
+    phase-5 review's ``review-*`` rows (in-mpv figures for one or two engines,
+    the rest not reported, so they cannot show what the chooser would weigh) and
+    pass ``x``, which the spike itself discarded."""
+    return [r for r in _m0s_runs() if not r["pass"].startswith("review") and r["pass"] != "x"]
+
+
+def _runs_recommending_mvgpu() -> list[Any]:
+    return [
+        pytest.param(r, id=f"{r['size']}-{r['pass']}")
+        for r in _spike_runs()
+        if r["recommended"] == "mvgpu"
+    ]
+
+
+@pytest.mark.parametrize("run", _runs_recommending_mvgpu())
+def test_a_benchmark_that_recommends_mvgpu_keeps_rife_off_live_playback(
+    as_macos: None, run: dict[str, Any]
+) -> None:
+    """The release bar's step 1, on its own measured reproduction.
+
+    ``_ready_mac`` is the state a tap install is meant to produce: RIFE, MVTools
+    and all three models, so ``ranked`` is ``(rife-ncnn, mvtools)``. Fed a real
+    m0s run that recommends mvgpu - every 720p and 1080p run, and the 1440p runs
+    where mvgpu cleared the bar - ``select`` used to throw the run away whole and
+    fall to ``ranked[0]``: live ``rife-ncnn``, ``from_benchmark`` False, "model
+    chosen without a benchmark", in a run that had measured every RIFE model at a
+    fraction of the 55.14 fps bar. mvgpu is never ranked (live play picks it per
+    file), so the answer the run supports among the rankable engines is MVTools,
+    which held real time in every one of these runs.
+    """
+    report, cfg = _ready_mac(), default_config()
+    result = _m0s_result(run)
+    # the shape the bug needs, read off the file rather than assumed
+    assert result.recommended == "mvgpu"
+    rife = [m for m in result.measurements if m.backend is BackendId.RIFE_NCNN]
+    assert rife and not any(m.realtime for m in rife)
+    assert any(m.backend is BackendId.MVTOOLS and m.realtime for m in result.measurements)
+    # and the chooser has RIFE to reach for: it is ranked first
+    unmeasured = select.select(report, cfg, ())
+    assert unmeasured.ranked == (BackendId.RIFE_NCNN, BackendId.MVTOOLS)
+
+    chosen = select.select(report, cfg, (result,))
+    assert chosen.backend is BackendId.MVTOOLS, chosen
+    assert chosen.from_benchmark
+    assert chosen.model is None
+    assert chosen.profile_id == "cpu"
+    assert chosen.reason.params == {"label": "mvtools"}
+    assert "playback picks it per video" in chosen.reason.key
+
+
+def test_a_benchmark_that_recommends_mvtools_is_still_taken_as_it_is(as_macos: None) -> None:
+    """The 1440p shape, which already worked: the recommendation is rankable, so
+    it wins unchanged and with the reason it always had."""
+    report, cfg = _ready_mac(), default_config()
+    run = next(r for r in _spike_runs() if r["recommended"] == "mvtools")
+    chosen = select.select(report, cfg, (_m0s_result(run),))
+    assert chosen.backend is BackendId.MVTOOLS and chosen.from_benchmark
+    assert chosen.reason.key.startswith("Fastest real-time configuration")
+
+
+def test_a_run_where_nothing_rankable_keeps_up_is_no_evidence_either_way(
+    as_macos: None,
+) -> None:
+    """A 4K run on an M2: RIFE timed out (stored as 0.0, "not measured") and both
+    motion-vector engines fell short, so ``recommended`` is None. The run says
+    nothing about which engine to prefer and is not stretched to - the chooser
+    answers as it does with no benchmark, and live play's per-file choice
+    (``decide.pick_engine``, against each engine's measured cap) is what then
+    decides. Recorded so the limit of the fix is a test and not a surprise."""
+    report, cfg = _ready_mac(), default_config()
+    run = next(r for r in _spike_runs() if r["size"] == "3840x2160")
+    assert run["recommended"] is None
+    chosen = select.select(report, cfg, (_m0s_result(run),))
+    assert not chosen.from_benchmark
+    assert chosen == select.select(report, cfg, ())
+
+
+# ---------------------------------------------------------------- the darwin-only names
+#: Module-level names bound only by ``if sys.platform == "darwin":`` imports, per file.
+_DARWIN_ONLY = {"core/osapi/__init__.py": "d", "core/paths.py": "_darwin"}
+
+
+def _is_darwin_guard(test: ast.expr) -> bool:
+    """``sys.platform == "darwin"``, the one test that binds the names above."""
+    return (
+        isinstance(test, ast.Compare)
+        and ast.unparse(test.left) == "sys.platform"
+        and len(test.ops) == 1
+        and isinstance(test.ops[0], ast.Eq)
+        and isinstance(test.comparators[0], ast.Constant)
+        and test.comparators[0].value == "darwin"
+    )
+
+
+def _unguarded_uses(tree: ast.AST, name: str) -> list[int]:
+    """Lines that bind or read the module-level ``name`` outside the body of an
+    ``if sys.platform == "darwin":`` -- skipping functions where ``name`` is a
+    local of their own (``osapi`` has a ``d = d.strip()`` that is not the module)."""
+    bad: list[int] = []
+
+    def local_to(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        args = fn.args
+        params = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
+        if any(a is not None and a.arg == name for a in params):
+            return True
+        return any(
+            isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
+            for n in ast.walk(fn)
+        )
+
+    def visit(node: ast.AST, guarded: bool) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and local_to(node):
+            return
+        if isinstance(node, ast.If) and _is_darwin_guard(node.test):
+            for child in node.body:
+                visit(child, True)
+            for child in node.orelse:
+                visit(child, guarded)
+            visit(node.test, guarded)
+            return
+        binds = isinstance(node, ast.ImportFrom) and any(
+            (a.asname or a.name) == name for a in node.names
+        )
+        if binds and not guarded:
+            bad.append(node.lineno)
+        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load):
+            if not guarded:
+                bad.append(node.lineno)
+        for child in ast.iter_child_nodes(node):
+            visit(child, guarded)
+
+    visit(tree, False)
+    return bad
+
+
+@pytest.mark.parametrize("rel", sorted(_DARWIN_ONLY))
+def test_darwin_modules_are_used_only_where_they_are_imported(rel: str) -> None:
+    """Why production code on Linux and Windows can never reach ``osapi.d`` or
+    ``paths._darwin``: both are imported under ``if sys.platform == "darwin":``,
+    and every read of them sits in the body of that same test. ``sys.platform``
+    does not change in a real process, so the name is bound exactly when the
+    code that reads it can run. Only a test that flips ``sys.platform`` can
+    break that pairing, which is what ``as_macos``'s stub is for.
+
+    The pairing is static, so it is checked statically: this test fails on the
+    first read of either name outside its guard (a ``sys.platform != "win32"``
+    or an ``osapi.IS_MACOS`` test is not the same guard, because a fixture can
+    set ``IS_MACOS`` alone)."""
+    name = _DARWIN_ONLY[rel]
+    src = (Path(bepaths.__file__).resolve().parents[1] / rel).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    imports = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.ImportFrom) and any((a.asname or a.name) == name for a in n.names)
+    ]
+    assert imports, f"{rel} no longer imports {name}; update _DARWIN_ONLY"
+    assert _unguarded_uses(tree, name) == []

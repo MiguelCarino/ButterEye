@@ -124,6 +124,16 @@ class Script:
         return ProbeOutcome(raw, None, None)
 
 
+@pytest.fixture(autouse=True)
+def linux_rife_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``devbox_report`` is the Linux dev box (RTX 4090), where Setup proposes
+    RIFE. Pinned, because this suite also runs on a Mac; the Mac answer is
+    ``test_a_mac_setup_proposes_mvtools_and_smoke_tests_it`` below."""
+    from buttereye.core.mpvctl import decide
+
+    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda: False)
+
+
 @pytest.fixture
 def script(xdg_env: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[Script]:
     s = Script()
@@ -319,3 +329,42 @@ async def test_blocking_and_unavailable_refused(script: Script, xdg_env: Any) ->
     assert script.calls == []
     assert not paths.config_file.exists()
     assert not Path(paths.logs_dir).exists()  # refused before anything ran
+
+
+async def test_a_mac_setup_proposes_mvtools_and_smoke_tests_it(
+    script: Script, xdg_env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a Mac with RIFE installed and no benchmark, first-run Setup used to
+    propose RIFE, smoke-test it (19.1 fps on a 720p clip - "Test run passed") and
+    leave the shipped Quality profile to run it live at 6-8 % of real time
+    (docs/macos-release-bar.md, items 4 and 18). A smoke test is a load check,
+    not a speed one: Setup now proposes MVTools there, smoke-tests that, and
+    writes no override, so live play stays on Automatic and RIFE waits for a
+    benchmark. Picking RIFE anyway is stored as the user's explicit choice."""
+    from buttereye.core.mpvctl import decide
+
+    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda: True)
+    tested: list[BackendId] = []
+
+    async def smoke(paths: Paths, backend: BackendId, **kw: Any) -> SmokeOutcome:
+        tested.append(backend)
+        return await script.smoke(paths, backend, **kw)
+
+    monkeypatch.setattr(setup, "smoke_test", smoke)
+    paths, report = resolve(), devbox_report()
+    plan = await setup.plan(paths, report, trt_experimental=False)
+    assert plan.proposed.backend is BackendId.MVTOOLS
+    assert BackendId.RIFE_NCNN in plan.proposed.ranked  # still there to choose
+    rife = next(b for b in plan.backends if b.id is BackendId.RIFE_NCNN)
+    assert rife.available
+    res = await setup.apply(
+        paths, plan, SetupChoices(BackendId.MVTOOLS, False, frozenset()), lambda p: None
+    )
+    assert res.smoke_ok and tested == [BackendId.MVTOOLS]
+    assert cfgmod.load(paths).config.general.backend_override is None
+
+    plan = await setup.plan(paths, report, trt_experimental=False)
+    await setup.apply(
+        paths, plan, SetupChoices(BackendId.RIFE_NCNN, False, frozenset()), lambda p: None
+    )
+    assert cfgmod.load(paths).config.general.backend_override is BackendId.RIFE_NCNN

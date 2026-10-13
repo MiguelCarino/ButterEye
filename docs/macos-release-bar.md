@@ -78,7 +78,7 @@ network home. They are items 11 and 12 below.
 | 1 | Live playback with real smoothing, in mpv, on this hardware | **VERIFIED** |
 | 2 | Offline render, end to end | **VERIFIED** |
 | 3 | The doctor tells the truth on a Mac | **VERIFIED** |
-| 4 | Every engine benchmarked on the real GPU, and the engine choice following it | **PARTLY VERIFIED** — every engine measured via a shadow prefix (`docs/spikes/m0s.md`); never from an install, the chooser still discards an mvgpu-recommended result, and the 1440p ordering does not reproduce |
+| 4 | Every engine benchmarked on the real GPU, and the engine choice following it | **PARTLY VERIFIED** — every engine measured via a shadow prefix (`docs/spikes/m0s.md`), and the chooser now follows those measurements when they recommend mvgpu (fixed and tested against the real rows); never from an install, and the 1440p ordering does not reproduce |
 | 5 | The GUI as a user sees it | **PARTLY VERIFIED** — drawn and captured on this Mac; never driven by a person |
 | 6 | The tap actually installed | **NOT VERIFIED** |
 | 7 | ButterEye's own tests run from the installed copy, in CI | **NOT VERIFIED** |
@@ -89,10 +89,10 @@ network home. They are items 11 and 12 below.
 | 12 | `flock` on an SMB/AFP network home | **CANNOT BE VERIFIED HERE** (needs a file server) |
 | 13 | `$TMPDIR` inside a sandboxed bundle | **CANNOT BE VERIFIED HERE** (needs a bundle that will never exist) |
 | 14 | Intel Macs | **CANNOT BE VERIFIED HERE** (needs Intel hardware) |
-| 15 | The model-path patch on Fedora, which this port changed | **CANNOT BE VERIFIED HERE** (needs a Fedora machine) |
+| 15 | The model-path patch on Fedora, which this port changed | **VERIFIED** (built for fc44 and fc45 in a Fedora container; before aborts at 242, after does not) |
 | 16 | Unicode and long paths | **NOT VERIFIED** |
 | 17 | Gatekeeper and code signing | **VERIFIED**, in the narrow form that applies to a tap |
-| 18 | RIFE live on an M2 | **MEASURED FALSE** — five times too slow; the docs must say offline-only |
+| 18 | RIFE live on an M2 | **MEASURED FALSE** — five times too slow; the docs must say offline-only, and the code now never picks it live on a Mac without a benchmark or the user's choice |
 | 19 | TensorRT on macOS | **WILL NEVER BE TRUE** |
 | 20 | A second machine of any kind | **NOT VERIFIED** — every macOS number in this repository comes from one M2 |
 
@@ -215,8 +215,11 @@ in `buttereye/core/doctor/` rather than verdicts, and neither changes one.
 ### 4. Every engine benchmarked on the real GPU — PARTLY VERIFIED
 
 **This item was written before `docs/spikes/m0s.md` landed, and the spike answers
-the measurement half of it.** What remains open is the install route and the
-chooser, so the verdict is downgraded from NOT VERIFIED rather than cleared. The
+the measurement half of it.** What remained open was the install route and the
+chooser, so the verdict was downgraded from NOT VERIFIED rather than cleared. The
+chooser half has since been fixed and tested against the spike's rows ("The
+chooser half", below); the install route and an idle re-measurement are what
+keep it from closing. The
 paragraph and the one-row table below record what a *plain Homebrew install*
 still measures, which is unchanged and is the thing item 6 unblocks.
 
@@ -344,54 +347,119 @@ pessimistic — it changes the answer, which is the same effect the spike alread
 recorded in the run it discarded (MVTools 32.39 instead of 57.16, every RIFE
 model timed out, and the verdict flipped to "nothing keeps up").
 
-That has a second consequence, for the chooser half of this item. When mvgpu
+That had a second consequence, for the chooser half of this item. When mvgpu
 clears the bar at 1440p, `bench` recommends mvgpu *there* too — and
-`select._from_bench` throws an mvgpu recommendation away whole. So the defect
-below is not a 720p-and-1080p curiosity: on a quiet machine it reaches SCOPE §1's
-v1 size as well.
+`select._from_bench` used to throw an mvgpu recommendation away whole. So the
+defect described next was not a 720p-and-1080p curiosity: on a quiet machine it
+reached SCOPE §1's v1 size as well. It is fixed, and the fix is tested against
+the 1440p runs that recommended mvgpu as well as the 720p and 1080p ones.
 
 The one result here that is **not** load-dependent: **RIFE-ncnn is offline-only
 at every size**. It misses the bar by a multiple — 2.7× short at 720p, 6.3× at
 1080p, 11× at 1440p — where mvgpu misses or clears it by a few per cent, so no
 amount of idling changes that verdict. Item 18 already records it.
 
+**The chooser half: what was wrong, and what landed (2026-10-13).**
+`select._from_bench` looked only at `res.recommended`, and mvgpu is deliberately
+absent from `ranked` — live play picks it per file and Setup never offers it
+(`select`'s module docstring, step 3) — so a run that recommended mvgpu, the
+normal case at 720p and 1080p on a Mac, was discarded whole. On this Mac today
+that was only a wrong reason: RIFE is not in the install database, `ranked` is
+`(mvtools,)`, and the fallback happened to land on MVTools. Once RIFE *is*
+available `ranked` becomes `(rife-ncnn, mvtools)` and the fallback is
+`ranked[0]`. Measured against `tests/core/test_macos_doctor_pure._ready_mac` —
+the fixture for a Mac with both plugins installed and all three models packaged,
+which is the state item 6 is meant to produce — fed the real rows of
+`m0s-results.json`, before the fix:
+
+```
+no benchmark     -> rife-ncnn  rife-v4.22_lite_ensembleFalse  from_benchmark False
+1280x720 a, b    -> rife-ncnn  rife-v4.22_lite_ensembleFalse  from_benchmark False
+1920x1080 a,b,c  -> rife-ncnn  rife-v4.22_lite_ensembleFalse  from_benchmark False
+2560x1440 f, h   -> rife-ncnn  rife-v4.22_lite_ensembleFalse  from_benchmark False
+reason: "RIFE (Vulkan) on Apple M2; model chosen without a benchmark."
+```
+
+— in runs whose own RIFE rows were 20.07 fps in mpv at 720p and 8.33 at 1080p
+with `realtime` False, against a 55.14 fps bar. The benchmark changed nothing it
+was built to change.
+
+The fix keeps mvgpu out of `ranked` and stops discarding the run. When the
+recommendation is rankable it wins exactly as before. When it is not, the same
+run is asked again restricted to the rankable engines, with
+`bench.runner.recommend`'s own rule — quality order, a repeatable measurement
+first, real time in mpv, no GPU fault — and the measurement it finds stands in.
+So an engine a run measured below real time is never chosen while another
+rankable engine in the same run held it. The same rows, after:
+
+```
+1280x720 a, b    -> mvtools  from_benchmark True
+1920x1080 a,b,c  -> mvtools  from_benchmark True
+2560x1440 f, h   -> mvtools  from_benchmark True
+reason: "mvtools keeps up in real time in your benchmark. Its first choice,
+         GPU motion vectors, is never a default: playback picks it per video."
+2560x1440 a-e, g, i (recommended mvtools) -> mvtools, as before, reason unchanged
+3840x2160 a, b (recommended None)         -> as with no benchmark (see below)
+no benchmark at all                       -> mvtools since item 18's fix
+```
+
+Held by
+`tests/core/test_macos_doctor_pure.py::test_a_benchmark_that_recommends_mvgpu_keeps_rife_off_live_playback`,
+parametrised over every complete spike run that recommended mvgpu (seven: 720p
+`a`, `b`; 1080p `a`, `b`, `c`; 1440p `f`, `h`), which reads `m0s-results.json`
+itself rather than a transcription, asserts the shape the bug needs off the file
+(mvgpu recommended, no RIFE row real time, MVTools real time) and that the
+fixture with no benchmark does reach for RIFE, and then asserts `mvtools` with
+`from_benchmark` True. Against the old `select.py` all seven fail with
+`rife-ncnn is not mvtools`. The two `review-*` rows are left out because they
+report one or two engines only, and pass `x` because the spike discarded it.
+
+Off macOS the change is confined to the same shape: a run whose recommendation
+cannot be ranked. On Linux that is a run recommending mvgpu where mvgpu is
+installed, and there the stand-in is whatever the run measured best among
+TensorRT, RIFE-ncnn and MVTools — RIFE with its measured model on a GPU where
+RIFE held real time, which is the engine the old fallback (`ranked[0]`) picked
+there too unless TensorRT was ranked first, now with the measured model and
+`from_benchmark` True (`tests/core/test_select.py`, two new tests, which also
+hold the repeatable-first rule). A run whose recommendation is rankable,
+and a run with no recommendation, choose exactly what they chose before; the
+existing selection tests pass unchanged.
+
+**What this did not touch, and a claim this paragraph used to make that was
+wrong.** `select.select` is not the per-file engine choice live play makes. It
+feeds the Setup wizard's proposal (and so the engine its smoke test runs unless
+the user picks another) and the Benchmark page's "Top candidates" line. An
+earlier version of this paragraph said, from reading the code, that live play
+on Automatic would not trust an unmeasured RIFE anyway. That was true of a
+profile set to Automatic and **false of the profiles a fresh install actually
+plays with**: the shipped Quality, Balanced and Fast profiles are pinned to
+RIFE-ncnn, the shipped rules give a 24p 1080p film Quality, and a pinned engine
+with no benchmark ran uncapped. It was then measured from the self-contained
+app with no benchmark on file (item 18): RIFE v4.26 live at 1080p, 6–8 % of real
+time. That is fixed too — item 18 has the change and the measurement.
+
 **Still not verified, and why this item is not closed:**
 
 - *Never from an install.* The shadow prefix reproduces the file layout a
   `brew install` would create, not the Cellar receipt the install database reads.
   Item 6 is untouched.
-- *The chooser still has no measured basis in the way SCOPE intends.*
-  `select._from_bench` looks only at `res.recommended` and mvgpu is deliberately
-  absent from `ranked`, so a run that recommends mvgpu — the normal case at 720p
-  and 1080p on a Mac, and at 1440p too whenever the machine is quiet enough for
-  mvgpu to clear the bar — is discarded whole: `from_benchmark` comes back False
-  with "MVTools on the CPU: RIFE can't run here", reproduced on 2026-10-13
-  against both a 720p and a 1080p history. A 1440p history, where `recommended`
-  is `mvtools`, is the one shape that *does* come back `from_benchmark` True — so
-  whether the measurement counts at all currently depends on which size the user
-  benchmarked.
-
-  **On this Mac today that is only a wrong reason; after item 6 it becomes a
-  wrong engine, and that reverses the order of the recommendation below.** Today
-  `ranked` is `(mvtools,)` — RIFE is not in the install database, so it is not
-  available — and discarding the mvgpu result lands on `mvtools`, the right
-  engine for the wrong reason. Once RIFE *is* available, `ranked` becomes
-  `(rife-ncnn, mvtools)` and the fallback is `ranked[0]`. Measured 2026-10-13
-  against `tests/core/test_macos_doctor_pure._ready_mac` — the fixture for a Mac
-  with both plugins installed and all three models packaged, which is the state
-  item 6 is meant to produce — fed the real 720p and 1080p rows of
-  `m0s-results.json`: `select.select` returns **`rife-ncnn` with
-  `rife-v4.22_lite_ensembleFalse` and `from_benchmark` False**, reason "RIFE
-  (Vulkan) on Apple M2; model chosen without a benchmark" — in a run whose own
-  RIFE measurement was 20.07 fps at 720p and 8.33 at 1080p with `realtime` False.
-  The same fixture with no benchmark at all gives the same answer, so the
-  benchmark changes nothing it was built to change. SCOPE F14 exists to stop
-  exactly this, and the one platform where it would fire is the platform where
-  its answer is thrown away. Item 18 says no user-facing string may claim live
-  RIFE on an M2; if a real install reaches that state, the engine *chooser*
-  would. Whether it does is item 6's question and nobody has run it — which is
-  the argument for closing this bullet **before** installing the tap rather than
-  after.
+- *The chooser half is fixed; what it does not reach is stated here.*
+  `setup.plan` calls `select.select` with **no** benchmark history at all
+  (`setup.py`, `select(report, cfg, ())`). On a Mac that no longer means RIFE:
+  with no benchmark showing RIFE in real time, the fallback proposes MVTools
+  ("MVTools on the CPU: RIFE is too slow for live playback on this Mac unless a
+  benchmark here shows otherwise. RIFE is still used to convert videos.") and
+  Setup smoke-tests MVTools (item 18). A history in which **nothing rankable**
+  held real time — both 4K runs, where `recommended` is None — is no evidence
+  either way, so the chooser answers exactly as with no benchmark, which on a Mac
+  is now that MVTools proposal (held by
+  `test_a_run_where_nothing_rankable_keeps_up_is_no_evidence_either_way`). Such
+  a run does show every rankable engine below the bar — the 4K RIFE rows are
+  timeouts, under about 1.23 fps, and MVTools measured 28.58 and 28.88 — but it
+  measures nothing about the smaller sizes a machine-wide default is mostly used
+  for, and the code does not extrapolate one. Whether a Setup run after a
+  benchmark should be handed the history is a question for the owner, not a
+  defect this item found.
 - *RIFE never enters the ranking at all*, because the macOS install database has
   no entry for ButterEye's own plugins, so `packaged_models()` is empty and
   `_default_model()` is None even with `librife.dylib` loading inside mpv. That
@@ -550,15 +618,15 @@ plugin_dir_for(libmvgpu.dylib) -> <prefix>/lib/buttereye/vapoursynth
 ```
 
 So the hazard is closed for the doctor, the engine chooser, live play and the
-benchmark, and the last line matters as much as the third: the doctor and the
+benchmark — and, since the paragraph below, offline render — and the last line matters as much as the third: the doctor and the
 generated script now resolve each plugin to the same copy, which is how
 "installed but not loading" used to happen.
 
-**One call site was missed, and it is a second hazard of the same shape.**
-`render/jobs.py` still asks one directory in two places — `_installed` passes
-`p.rpm_plugin_dir` to `decide.installed_backends`, and `_constants` builds
+**One call site was missed, and it was a second hazard of the same shape.**
+`render/jobs.py` asked one directory in two places — `_installed` passed
+`p.rpm_plugin_dir` to `decide.installed_backends`, and `_constants` built
 `ScriptConstants(ctx.paths.rpm_plugin_dir, …)`. Measured on the same scratch
-prefix, 2026-10-13:
+prefix, 2026-10-13, before the fix:
 
 ```
 render jobs._installed      -> [mvgpu, rife-ncnn]      (MVTOOLS: False)
@@ -566,13 +634,38 @@ render _constants PLUGIN_DIR -> <prefix>/lib/buttereye/vapoursynth
 mvtools really lives in      -> …/site-packages/vapoursynth/plugins
 ```
 
-So **offline render — item 2 — still loses MVTools the moment the tap is
-installed**, exactly as live play did. Live play happens to be the louder half
-and got fixed; `buttereye render` is the half SCOPE §1 calls the one that always
-works. The fix is two lines against the API above (`_paths.plugin_dirs(ctx.paths)`
-and `_paths.plugin_dir_for(ctx.paths, decide.BACKEND_PLUGIN.get(backend))`) and
-no test covers it yet, so it belongs with the step this item recommends rather
-than after it.
+So **offline render — item 2 — lost MVTools the moment the tap was installed**,
+exactly as live play did. Live play happened to be the louder half and got fixed
+first; `buttereye render` is the half SCOPE §1 calls the one that always works.
+
+**Fixed, with the API above and nothing new** (2026-10-13): `_installed` passes
+`paths.plugin_dirs(p)`, and `_constants` takes the job's engine and names
+`paths.plugin_dir_for(ctx.paths, decide.BACKEND_PLUGIN.get(engine))` — the
+directory that really holds that engine's plugin, which is the directory the
+doctor reports it in, as live play's script already did. TensorRT, which has no
+entry in `BACKEND_PLUGIN` and loads vstrt from its own install, still gets the
+packaged directory. Off macOS `plugin_dirs` is `(paths.rpm_plugin_dir,)`, so
+Fedora and Windows resolve the one directory they always did. Re-run through the
+render provider's own functions on the same prefix shape:
+
+```
+render jobs._installed               -> [mvgpu, mvtools, rife-ncnn]
+render _engine(profile "cpu")        -> mvtools
+render _constants(mvtools) PLUGIN_DIR -> <prefix>/lib/python3.14/site-packages/
+                                         vapoursynth/plugins
+render _constants(mvgpu)   PLUGIN_DIR -> <prefix>/lib/buttereye/vapoursynth
+```
+
+Held by
+`tests/core/test_macos_doctor_pure.py::test_offline_render_asks_every_plugin_directory_a_mac_has`,
+which asserts first that the single directory render used to ask has no MVTools
+in it, so it is not satisfied by the plant alone, and fails against the old
+`jobs.py` (`_installed` missing MVTools); its sibling
+`…::test_offline_render_keeps_its_one_directory_off_macos` holds the Linux
+answer to exactly `rpm_plugin_dir` for every engine. No real render was run on a
+tap-shaped prefix for this: the end-to-end render of item 2 used Homebrew's
+layout without ButterEye's own directory, and a render through the fixed code on
+an installed tap is part of item 6's run.
 
 **The test that holds it** is
 `tests/core/test_macos_doctor_pure.py::test_the_engine_chooser_asks_every_plugin_directory_a_mac_has`,
@@ -738,7 +831,7 @@ so this is hardware, not effort. Two concrete reasons it is not a formality:
   discovered, so an Intel Mac cannot install the tap today even by accident.
   That is the right default while nothing is measured.
 
-### 15. The model-path patch on Fedora — CANNOT BE VERIFIED HERE
+### 15. The model-path patch on Fedora — VERIFIED
 
 This is the one item where the macOS port changed a **supported** platform.
 `packaging/plugins/buttereye-vs-rife-ncnn-model-path.patch` rewrites RIFE's two
@@ -748,11 +841,38 @@ ships. The defect it fixes is real and reachable on Fedora — measured at exact
 242 characters of `model_path`, where the process `SIGABRT`s and takes `vspipe`
 or mpv with it (`packaging/macos/RIFE-SPIKE.md`, "The model-path abort").
 
-What has not happened is a Fedora build and run with the patch in: there is no
-Linux machine here and `mock` does not exist on a Mac. **What it would take:**
-`packaging/build.sh fedora-44-x86_64` on the dev box, then the 242-character
-repro before and after. Until then a Fedora regression caused by a macOS phase
-is possible, and the risk is this port's to declare rather than to hide.
+Measured 2026-10-13, without a Linux machine: `packaging/build-in-container.sh`
+runs `packaging/build.sh` unchanged in a pinned `fedora:44` amd64 container
+(qemu-user in the Mac's podman machine, mock with `isolation=simple`), and all
+five packages built for both chroots, the bundled-ncnn
+`buttereye-vs-rife-ncnn-9.33-2` among them (36 minutes per chroot, %check
+passing). The repro then ran in a fresh `fedora:44` and a fresh `fedora:45`
+amd64 container: the RIFE RPM installed, `mesa-vulkan-drivers` for a Vulkan
+device (llvmpipe; the plugin wants a device before it loads a model), the
+`rife-v4.26_ensembleFalse` model copied to a `model_path` of exactly N
+characters, and `core.rife.RIFE(..., model_path=...)` asked for one
+interpolated frame of a 64×64 grey clip. *Before* is v0.0.2's published
+`buttereye-vs-rife-ncnn-9.33-1` (checked against that release's `SHA256SUMS`);
+*after* is the new build:
+
+```
+                 len=200   241    242    245    260    300
+fc44 before 9.33-1  ok      ok    134    134    134    134
+fc44 after  9.33-2  ok      ok     ok     ok     ok     ok
+fc45 before 9.33-1  ok      ok    134    134    134    134
+fc45 after  9.33-2  ok      ok     ok     ok     ok     ok
+```
+
+Every `ok` is exit 0 with the same frame (min/max 0.5039/0.5039, before and
+after alike); every 134 is `SIGABRT`. The threshold is the same 242 the Mac
+measured, but on Fedora the abort is cleaner than the Mac's: the RPM is built
+with `_FORTIFY_SOURCE`, so `sprintf` becomes `__sprintf_chk` and glibc stops
+the process at the overflowing write — stderr reads `*** buffer overflow
+detected ***: terminated` — before `parampath` can run over into `modelpath`.
+Either way the whole process dies, so the patch is the fix on Fedora too, and
+no regression showed: the new build loads and runs at every length, the short
+ones included. Not covered: a real GPU (llvmpipe only), and the
+`--with system_ncnn` variant, which Fedora does not ship.
 
 ### 16. Unicode and long paths — NOT VERIFIED
 
@@ -789,7 +909,96 @@ because MoltenVK exposes one compute queue, where ButterEye's default is 4.
 
 So this is not an unmeasured item but a measured negative, and the bar's
 requirement is that no user-facing string claim otherwise: `buttereye render`
-uses RIFE on a Mac, live playback should not. The RIFE formula's `caveats` says
+uses RIFE on a Mac, live playback should not.
+
+**The code did not respect it, and on a fresh install it chose live RIFE.**
+Measured from the self-contained `ButterEye.app` with no benchmark on file (the
+`.app` work, `docs/PLATFORMS.md`, "The .app"): first-run Setup proposed RIFE and
+smoke-tested it at 19.1 fps on a 720p clip ("Test run passed"); then the shipped
+Quality profile — pinned to RIFE-ncnn, and the shipped rules' pick for a 24p
+1080p film — ran RIFE v4.26 live, uncapped because nothing was measured: at
+1080p mpv slowed to 6–8 % of real time (silently, "active, ok", 0 drops,
+because mpv slows the clock rather than dropping when there is no audio), and
+with audio it stalled, fell back to MVTools at the 60 Hz display target,
+stalled again and rolled back. 1440p ran at 4.8 % of real time; 4K stalled.
+Every RIFE script also carried `gpu_thread=4`, and ncnn printed its warning.
+
+**What changed (2026-10-13).** One rule, `decide.rife_live_needs_proof()`, True
+on macOS only: there, RIFE-ncnn runs live only on a benchmark that measured it
+(Automatic then weighs its in-mpv cap like any other engine's), or because the
+user chose it. It is applied at each place that could reach live RIFE without a
+measurement:
+
+- `session.wanted_backend`: a shipped Quality/Balanced/Fast profile still on its
+  shipped RIFE, with no Setup choice, asks for **Automatic** instead of pinning
+  RIFE. A Setup choice of RIFE (`backend_override`), a profile the user made or
+  moved to another engine, and the CPU profile all keep their engine.
+- `decide.pick_engine` on Automatic: an unmeasured GPU engine was trusted when it
+  was all there was; an unmeasured RIFE-ncnn on a Mac is now skipped for the
+  next engine (mvgpu, if installed) or gives "too demanding to smooth in real
+  time" when it is the only one, and "smooth anyway" on Automatic does not pick
+  it either.
+- `select.select`'s no-benchmark fallback, and so Setup's proposal and smoke
+  test: MVTools instead of RIFE when MVTools is available. Choosing RIFE in
+  Setup anyway is stored as an explicit `backend_override`, and is honoured.
+- `gpu_thread` is 1 on macOS (`scriptgen.rife_gpu_thread`, used by live play,
+  render, the benchmark's RIFE rows and the smoke test), from the spike's own
+  measurement: 18.81 / 19.66 / 17.62 fps at gt 1 / 2 / 4 on 720p — nothing
+  gained above 1, and a warning per load.
+
+Why MVTools and not mvgpu as the no-benchmark default: Automatic's existing rule
+is that an unmeasured GPU engine is never trusted with a live target, and
+nothing in the measurements argues for an exception — at 720p and 1080p the two
+were level in mpv (201.27 / 199.21 and 89.21 / 91.07), and at 1440p MVTools
+held real time in every run that was not overloaded where mvgpu held it in three
+of eleven (item 4). Once a benchmark is on file, mvgpu competes on its measured
+cap as before. RIFE stays available for `buttereye render` (render picks its
+engine from its own profile, untouched) and for a user who asks for it. Linux
+and Windows are unchanged: the rule is False there, because an RTX 4090 runs
+RIFE v4.26 live at 1080p and the shipped Quality profile is that machine's
+correct default before any benchmark.
+
+Held by tests on both sides of the rule: `tests/test_live_decisions.py`
+(`test_a_mac_never_runs_an_unmeasured_rife_live_on_automatic`,
+`…measured_rife_is_weighed_on_a_mac_like_anywhere_else`,
+`…mac_plays_the_shipped_quality_profile_with_mvtools_until_measured` against
+`…linux_plays_the_shipped_quality_profile_with_rife`,
+`…mac_still_runs_rife_live_when_the_user_chose_it`,
+`…mac_with_only_rife_does_not_smooth_live_without_a_benchmark`,
+`…linux_keeps_an_unmeasured_rife_when_it_is_all_there_is`),
+`tests/test_live_review_fixes.py::test_setup_choice_applies_to_shipped_profiles`,
+`tests/core/test_setup_cancel.py::test_a_mac_setup_proposes_mvtools_and_smoke_tests_it`
+and `tests/test_scriptgen.py::test_rife_gpu_thread_is_one_on_a_mac`. The
+existing Linux-shaped selection, setup and live tests now pin the Linux answer
+explicitly, because the suite also runs on a Mac.
+
+**Re-measured from a rebuilt disk image**, a fresh copy of the app taken out of
+it, `env -i` with an empty `HOME` and the system `PATH`, no benchmark on file —
+on a machine that was **not idle**: a virtual machine was using about four of
+the eight cores, and the 1-minute load average read 15.3–18.6 across these runs.
+
+```
+setup                       -> "Set up with mvtools."  smoke test: mvtools,
+                               720p, 160.26 fps; no backend_override written
+play, 1080p 23.976 + audio  -> 23.976 → 60.002 fps with mvtools
+                               dropping 47–81 % over 10 s, then stalled and
+                               rolled back to unsmoothed (real time, unsmoothed)
+play --profile cpu, 1080p   -> 23.976 → 47.952 fps with mvtools; 150 frames
+                               dropped in 10.2 s, recovered to "ok"
+play, 2160p 23.976 + audio  -> 23.976 → 60.002 fps with mvtools; stalled and
+                               rolled back to unsmoothed
+```
+
+So the engine choice is now the measured one — RIFE is not chosen at any size —
+but **this run does not show live smoothing holding real time**, and it would be
+wrong to read it as doing so: on this loaded machine even MVTools' plain 2×
+dropped frames at 1080p, where the app's earlier, quieter run measured MVTools
+2× at 1080p in real time with one drop. Two things remain open and are not
+fixed here: whether MVTools at the display's 60 Hz (2.5× from 24p, where every
+m0s figure is 2×) holds 1080p on an idle M2, and the 4K behaviour, where nothing
+holds real time on this Mac (item 4) and an unmeasured MVTools is tried, stalls
+once and rolls back — one stall now, where RIFE-then-MVTools was two. Both want
+an idle machine; the first also wants a benchmark at the display rate. The RIFE formula's `caveats` says
 so. It is "measured false on this hardware" rather than "will never be true",
 because it is a throughput number on one GPU generation and a future Apple GPU
 could change it; nothing about the architecture forbids it.
@@ -813,6 +1022,29 @@ That is the single largest unknown on the list, and it is the same unknown
 Windows has: the difference is that Windows has never run on real target
 hardware at all, where macOS has run on exactly one.
 
+## The .app route (0.0.3) — added for the experimental disk image
+
+This section was added with `packaging/macos/build-app.sh`; it does not change any
+verdict above, which are about the Homebrew route. `docs/PLATFORMS.md`, "The .app",
+has every command and number; this is the checklist form, for one machine (the dev
+M2, macOS 27.0.1) and a copy taken out of the mounted 0.0.3 image, run with `env -i`,
+a fresh `HOME` and the system `PATH`.
+
+| Question | Verdict |
+|---|---|
+| The image builds from pinned inputs, and the build refuses a bundle that names anything outside it | **VERIFIED** — `appstage.py check` (92 Mach-O files, arm64, no foreign load command) and `appstage.py scan` (no home folder, user or host name in the app or the sources tar) both gate the build |
+| The app needs nothing installed | **VERIFIED on this Mac** — `DYLD_PRINT_LIBRARIES` and `lsof` show nothing loaded from `/opt/homebrew` or `/usr/local` by ffmpeg, vulkaninfo, vspipe or mpv running a VapourSynth filter. **Not verified on a Mac without Homebrew**: this one has it, which is the harder case for the claim but not the same machine as a user's |
+| The doctor from the app | **VERIFIED** — 15 ok, 3 info, 1 degraded (mkvmerge, not carried), 0 blocking |
+| Live smoothing through the app's mpv | **VERIFIED** — MVTools 2× at 1080p in real time (15.08 s of video in 15 s); mvgpu after a benchmark, real time, 0 dropped frames |
+| Offline render through the app | **VERIFIED** — RIFE and MVTools, 1080p → 47.952 fps HEVC |
+| Every engine from the app | **VERIFIED** — RIFE (three models), mvgpu and MVTools all ran in `buttereye bench`; RIFE far below real time, as item 18 says |
+| Automatic live play on a fresh install | **MEASURED FALSE for real time** — before any benchmark it picks RIFE, which plays at 5-8 % of real time at 1080p and 1440p and stalls at 4K; reported to the engine chooser's owner, not changed here |
+| The window | **PARTLY VERIFIED** — opened with `open`, first-run setup ran, the app's Qt drew every simple-window view through `cocoa`; never driven by a person |
+| Gatekeeper: what a downloaded copy does | **VERIFIED** — refused (`spctl` rejected, `syspolicy_check`: ad hoc, no notarisation ticket), the app and each of its programs held for a prompt; `xattr -dr com.apple.quarantine` makes everything run |
+| Gatekeeper: System Settings ▸ Open Anyway | **NOT VERIFIED** — needs a person to click; whether it covers the programs inside the app is unknown, so the documented route is the Terminal command and the doctor flags a quarantined program |
+| `/Applications`, App Translocation, a second account, macOS older than 27, a second Mac | **NOT VERIFIED** |
+| CI builds the app | **NOT DONE** — the build needs Homebrew bottles, which `macos.yml` does not install |
+
 ## The regression contract, re-measured today
 
 Phase 5 was planned as a measuring phase that changed no code, and it did not
@@ -826,8 +1058,8 @@ Python:
 | Check | Command | Result |
 |---|---|---|
 | Three-platform type check | `for p in linux win32 darwin; do python -m mypy --platform $p buttereye; done` | `Success: no issues found in 112 source files` × 3 |
-| Gate, Homebrew tests opted in | `BUTTEREYE_TEST_BREW=1 python -m pytest tests/core tests/boundary tests/macos -q` | 864 passed, 12 skipped |
-| Gate, nothing opted in | `python -m pytest tests/core tests/boundary tests/macos -q` | 836 passed, 40 skipped |
+| Gate, Homebrew tests opted in | `BUTTEREYE_TEST_BREW=1 python -m pytest tests/core tests/boundary tests/macos -q` | 899 passed, 18 skipped (864 / 12 before release-bar step 1; the difference is step 1's and item 18's new tests and the `.app` work's) |
+| Gate, nothing opted in | `python -m pytest tests/core tests/boundary tests/macos -q` | 871 passed, 46 skipped (836 / 40 before step 1) |
 | Live smoothing, clean environment | `env -u VSSCRIPT_PATH -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH python -m pytest tests/integration/test_hdr_live_real.py -q` | 3 passed |
 
 Both gates were clean in these runs. An earlier run of the second one failed
@@ -840,20 +1072,35 @@ the condition that intermittent is described as needing. **The counts are not
 the contract**: other phase-5 work adds tests, so treat "green" as the check and
 re-measure the numbers rather than trusting these two.
 
-Linux and Windows behaviour is untouched: this document adds no code, and the
-code changes phase 5 did make leave both platforms answering exactly what they
-answered before. `paths.plugin_dirs` is `(paths.rpm_plugin_dir,)` off macOS — a
+Linux and Windows behaviour is untouched except in the one case named at the
+end of this paragraph: this document adds no code, and the code changes phase 5
+did make leave both platforms answering what they answered before. `paths.plugin_dirs` is `(paths.rpm_plugin_dir,)` off macOS — a
 one-element search path holding the single directory those callers already
 asked about — and `paths.plugin_in` accepts that one `Path` directly as well,
 which is what the tests that were written against the old signature still pass.
 The VSScript search is inside `_darwin` and reachable from neither. The
-three-platform type check above is the gate on all of it.
+render fix of item 6 uses the same `plugin_dirs` and `plugin_dir_for`, so
+Fedora and Windows still name `paths.rpm_plugin_dir` for every engine
+(`test_offline_render_keeps_its_one_directory_off_macos`). The one change that
+can reach Linux is the chooser fix of item 4, and only in the shape it was
+written for: a stored benchmark whose recommendation the chooser cannot rank —
+on Linux, a run recommending mvgpu where mvgpu is installed. Such a run used to
+be ignored and is now read for its best real-time rankable row; every other run,
+and every machine with no benchmark, chooses what it chose before, and the
+pre-existing `tests/core/test_select.py` passes unchanged. The three-platform
+type check above is the gate on all of it.
 
 ## Recommendation
 
 **This section is a recommendation, not a decision.** macOS being a supported
 platform is a SCOPE §2 non-goal and §13 is where the owner records decisions;
 nothing above or below edits either.
+
+**The owner's decision, 2026-10-13:** macOS ships in 0.0.3 as an *experimental*
+download — the ad-hoc-signed disk image described under "The .app" — on the same
+footing as the Windows installer in 0.0.2. It is still not a supported platform:
+SCOPE §2 is unchanged. The items below that this section calls blocking are
+blocking for *supported*, and the release notes carry the warnings listed here.
 
 ### Can macOS be described as supported?
 
@@ -874,8 +1121,9 @@ however well it runs for the person who built it.
 The three items that make "supported" unsayable in the strongest sense are 6
 (the tap), 4 (the engine choice) and 9 (a clean machine) — and they are one item
 in practice, because the first unlocks the other two. What changed during review
-is the *order*: item 4's chooser half now has to be closed before item 6 is run,
-not after, because installing the tap is what lets the chooser reach live RIFE.
+is the *order*: item 4's chooser half had to be closed before item 6 is run, not
+after, because installing the tap is what lets the chooser reach live RIFE. It
+now is (step 1 below).
 
 ### If not supported, what should the docs call it?
 
@@ -888,23 +1136,25 @@ gaps. Neither file needs a new adjective.
 **The shortest honest path to a release**, in the order that unblocks the most.
 **The order changed while this document was being reviewed**, and the reason is
 in item 4: installing the tap is what makes RIFE available to the engine
-chooser, and the chooser currently throws away the measurement that would keep
-RIFE off live playback. So the install is no longer step 1. If you disagree with
-that reordering, the measurement to argue with is the one in item 4's chooser
-bullet, not this list.
+chooser, and the chooser used to throw away the measurement that would keep RIFE
+off live playback. So the install is not step 1. If you disagree with
+that reordering, the measurement to argue with is the one in item 4's "The
+chooser half" paragraph, not this list.
 
 1. **Teach `select._from_bench` what to do with an mvgpu-recommended result**
-   (item 4). It is the smallest change on this list and it is the one that must
-   come *first*, because every later step installs the tap, and a Mac with the
-   tap installed and a 720p or 1080p benchmark on file is measured to choose
-   live `rife-ncnn` — the engine item 18 records as five times too slow — on the
-   strength of a run whose own RIFE rows were 20.07 and 8.33 fps. Today that is
-   invisible, because RIFE is not installed and the fallback happens to be
-   MVTools. Installing the tap is what makes it visible. (The sibling hazard,
-   one plugin directory hiding the other, is closed for the doctor, the chooser,
-   live play and the benchmark — `paths.plugin_dirs`, item 6 — but **not for
-   offline render**, which still asks one directory in `render/jobs.py` and so
-   still loses MVTools on a tap install. Two lines, measured, item 6.)
+   (item 4) — **done, 2026-10-13.** It had to come *first*, because every later
+   step installs the tap, and a Mac with the tap installed and a 720p or 1080p
+   benchmark on file was measured to recommend live `rife-ncnn` — the engine
+   item 18 records as five times too slow — on the strength of a run whose own
+   RIFE rows were 20.07 and 8.33 fps. The same fixture fed every complete m0s run
+   that recommended mvgpu now chooses `mvtools` with `from_benchmark` True, and
+   the regression test reads `m0s-results.json` itself and fails against the old
+   code. The sibling hazard, one plugin directory hiding the other, is now closed
+   for offline render too (`render/jobs.py` on `paths.plugin_dirs`, item 6), so it
+   is closed everywhere a plugin is looked up. A second path to live RIFE, which
+   step 1 as first written missed — the shipped RIFE profiles running unmeasured,
+   measured from the app at 6–8 % of real time — is closed as well, with
+   `gpu_thread` 1 on a Mac (item 18).
 2. **Tag a release and fill in the four checksums** (item 6). Everything else
    waits on this: `brew install` cannot be tried, the engines cannot reach
    `<prefix>/lib/buttereye/vapoursynth`, and the benchmark cannot see them.
@@ -920,11 +1170,10 @@ bullet, not this list.
    screen — and give the `tests/gui/test_theme_scale.py` failure an owner.
 6. **Exercise the cross-UID refusal** (item 10) on a machine with two accounts,
    and **unlink the socket under a live session** for item 11's consequence.
-7. **Build the Fedora RPM with the model-path patch in and run the 242-character
-   repro** (item 15), because that is a change this port made to a supported
-   platform.
+7. ~~**Build the Fedora RPM with the model-path patch in and run the 242-character
+   repro** (item 15)~~ — done 2026-10-13, fc44 and fc45, see item 15.
 
-Blocking, in the recommender's view: items 4, 6, 8, 9, 15, the half of item 5
+Blocking, in the recommender's view: items 4, 6, 8, 9, the half of item 5
 that is a person using the window, and item 10 if SCOPE §4.3 is to mean what it
 says. Merely unknown, and releasable with a sentence in the notes: items 11, 12,
 13, 14, 16, 20. Item 7 (a CI job that

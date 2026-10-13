@@ -45,6 +45,13 @@ Linux path everywhere the rows below do not say otherwise:
   not, because it ``dlopen``s VSScript by a bare leaf name and dyld never looks
   inside Homebrew. ``use_bundled_runtime`` hands mpv the file instead
   (``vsscript_library``, ``point_at_vsscript``).
+- the macOS app: ButterEye.app carries its own Python, VapourSynth, mpv, ffmpeg,
+  plugins and Vulkan, as the Windows installer does. ``MACOS_APP`` says whether
+  this process runs from it (decided by where the interpreter is, like
+  ``install_root`` on Windows), and when it does every program, plugin and model
+  is the app's by full path (``executable``, ``bundled_vspipe``,
+  ``types.macos_plugin_dir``) and the children's environment points at nothing
+  else (``point_at_app``). Outside the app none of this runs.
 
 mypy checks all three: ``mypy --platform linux``, ``mypy --platform win32``
 and ``mypy --platform darwin``.
@@ -58,6 +65,7 @@ import hashlib
 import importlib.util
 import ntpath
 import os
+import re
 import shutil
 import signal
 import socket
@@ -301,6 +309,13 @@ def vsscript_library() -> Path | None:
     this the same question the runtime asks, so a Mac user is told about the file
     ButterEye would actually use."""
     if sys.platform == "darwin":
+        if MACOS_APP is not None:
+            # the app's own, and only that: it is part of the bundle whose Python
+            # is already running this code, so it is trusted exactly as far as
+            # this code is (``point_at_app``), and nothing outside the app is
+            # asked at all
+            lib = app_runtime(MACOS_APP)["vsscript"]
+            return lib if lib.is_file() else None
         return d.vsscript_library()
     return None
 
@@ -389,6 +404,275 @@ def point_at_vsscript(
     env[DYLD_FALLBACK] = sep.join([folder] + rest)
 
 
+# ======================================================================== the macOS app
+#: macOS: the folders of ButterEye.app's Contents/Resources (packaging/macos/
+#: build-app.sh lays them out): ``bin`` holds the programs ButterEye starts,
+#: ``vapoursynth`` the plugins, ``share`` the models and the Vulkan manifest
+APP_BIN = "bin"
+#: the programs the app carries, which are never looked for anywhere else while
+#: ButterEye runs from it (``executable``)
+APP_TOOLS = frozenset({"mpv", "ffmpeg", "ffprobe", "vulkaninfo"})
+#: the bundle's MoltenVK manifest, relative to Resources
+APP_VULKAN_ICD = "share/vulkan/icd.d/MoltenVK_icd.json"
+#: variables that would make a child load something other than what the app
+#: carries, removed from the children's environment (``point_at_app`` says why)
+APP_UNSET = (
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "VAPOURSYNTH_EXTRA_PLUGIN_PATH",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
+    "DYLD_INSERT_LIBRARIES",
+)
+
+
+def app_resources(executable: str, module: str) -> Path | None:
+    """``Contents/Resources`` of the ButterEye.app this Python runs from, or None.
+
+    The macOS peer of ``install_root`` on Windows, and decided the same way: by
+    where the running interpreter is, never by an environment variable. The
+    app's launcher (packaging/macos/launcher.c) embeds
+    ``Contents/Resources/python``, and sets ``sys.executable`` to its
+    ``bin/python3.<minor>``, so all of these must hold:
+
+    - ``executable`` (``sys.executable``) is ``<x>.app/Contents/Resources/python/
+      bin/<file>``, resolved, so a symlink to a bundle elsewhere counts as that
+      bundle and nothing else;
+    - ``module`` (this file) is inside that same ``Resources/python``: an app's
+      Python made to run some other checkout's ``buttereye`` is not the app, and
+      must not hand that checkout the app's plugins;
+    - ``Resources`` holds the install record build-app.sh writes, and
+      ``Contents`` an ``Info.plist``.
+
+    Pure but for the ``stat`` calls, so tests answer it for a planted tree on any
+    platform. None for anything else: Homebrew's tap, a development venv, Linux,
+    Windows.
+    """
+    try:
+        exe = Path(executable).resolve()
+        mod = Path(module).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if len(exe.parts) < 7 or exe.parent.name != "bin" or exe.parent.parent.name != "python":
+        return None
+    resources = exe.parent.parent.parent
+    contents = resources.parent
+    if resources.name != "Resources" or contents.name != "Contents":
+        return None
+    if not contents.parent.name.endswith(".app"):
+        return None
+    if not mod.is_relative_to(resources / "python"):
+        return None
+    try:
+        ok = (resources / INSTALL_RECORD).is_file() and (contents / "Info.plist").is_file()
+    except OSError:
+        return None
+    return resources if ok else None
+
+
+def app_runtime(resources: Path) -> dict[str, Path]:
+    """The files of the app's own Python and VapourSynth, by role: the
+    interpreter (``python``), the library VSScript loads Python from
+    (``libpython``), VapourSynth's package folder (``vapoursynth``), and in it
+    ``vsscript`` and ``vspipe``. Paths only: whether each exists is the doctor's
+    question. The version is this interpreter's, which is the app's."""
+    minor = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    py = resources / "python"
+    vs = py / "lib" / minor / "site-packages" / "vapoursynth"
+    return {
+        "python": py / "bin" / minor,
+        "libpython": py / "lib" / f"lib{minor}.dylib",
+        "vapoursynth": vs,
+        "vsscript": vs / "libvsscript.dylib",
+        "vspipe": vs / "vspipe",
+    }
+
+
+def point_at_app(
+    env: MutableMapping[str, str], resources: Path, *, sep: str = os.pathsep
+) -> None:
+    """macOS app: make ``env`` lead every child ButterEye starts to what the app
+    carries, and to nothing else.
+
+    - ``PATH`` starts with ``Resources/bin``. ButterEye itself starts mpv, ffmpeg,
+      ffprobe and vulkaninfo by full path (``executable``); this is for the code
+      that still asks ``shutil.which`` and for a child's own children, so that the
+      first answer is the app's on every route.
+    - ``VSSCRIPT_PATH``: the app's ``libvsscript.dylib``, the exact file, as on
+      Windows. No ``DYLD_FALLBACK_LIBRARY_PATH`` is set: that was the Homebrew
+      route's answer for an mpv that ignores ``VSSCRIPT_PATH``, and the app's mpv
+      is known to read it, so the app sets no ``DYLD_*`` variable at all.
+    - ``VK_DRIVER_FILES``: the app's MoltenVK manifest, which makes the bundled
+      Vulkan loader use that driver and only that one. Without it the loader
+      searches ``/usr/local``, ``/opt/homebrew`` and the user's folders for
+      manifests, and a Mac with Homebrew's MoltenVK would hand the app's mpv a
+      driver from outside the app.
+    - ``PYTHONNOUSERSITE=1``, and no ``PYTHONHOME`` or ``PYTHONPATH``: VSScript
+      starts the app's Python *inside* mpv and vspipe, and that Python reads the
+      environment. Any of the three could make it import a different
+      ``vapoursynth`` package than the one beside the ``libvsscript.dylib`` it
+      came from (the user's ``~/Library/Python`` comes first on ``sys.path``).
+    - no ``VAPOURSYNTH_EXTRA_PLUGIN_PATH``: VapourSynth autoloads every plugin it
+      names, and a plugin already loaded is one ``_load`` in the generated script
+      skips -- so a variable pointing at Homebrew's plugins would put Homebrew's
+      MVTools in place of the app's.
+    - no ``DYLD_LIBRARY_PATH``, ``DYLD_FRAMEWORK_PATH`` or
+      ``DYLD_INSERT_LIBRARIES``: dyld searches the first two by leaf name before
+      a library's own path (phase 4 measured it replacing even an absolute
+      ``dlopen``), so a value left over from a shell would swap Homebrew's
+      ``libavcodec`` in under the app's mpv; the third loads code into every
+      child.
+
+    Idempotent. Never touches anything outside ``env``.
+    """
+    rt = app_runtime(resources)
+    first = os.fspath(resources / APP_BIN)
+    rest = [p for p in env.get("PATH", "").split(sep) if p and p.rstrip("/") != first]
+    env["PATH"] = sep.join([first] + rest)
+    env["VSSCRIPT_PATH"] = os.fspath(rt["vsscript"])
+    env["VK_DRIVER_FILES"] = os.fspath(resources / APP_VULKAN_ICD)
+    env["PYTHONNOUSERSITE"] = "1"
+    for name in APP_UNSET:
+        env.pop(name, None)
+
+
+#: the programs of ButterEye.app that ButterEye starts, relative to Contents/
+APP_PROGRAMS = (
+    "MacOS/ButterEye",
+    "Resources/bin/mpv",
+    "Resources/bin/ffmpeg",
+    "Resources/bin/ffprobe",
+    "Resources/bin/vulkaninfo",
+)
+
+
+def app_quarantined(
+    resources: Path, *, has_quarantine: Callable[[Path], bool] | None = None
+) -> tuple[Path, ...]:
+    """The app's programs that still carry ``com.apple.quarantine``.
+
+    A copy that came through a browser carries it on every file, and Gatekeeper
+    holds each quarantined program at its first ``exec`` until the user answers a
+    prompt -- measured, an ``mpv --version`` from such a copy waits there
+    indefinitely. That includes the programs ButterEye starts itself (mpv,
+    vspipe, ffmpeg), which is why the doctor names the one command that clears
+    the whole app. ``has_quarantine`` is for tests; off macOS nothing is read."""
+    if has_quarantine is None:
+        if sys.platform == "darwin":
+            has_quarantine = d.quarantined
+        else:
+            return ()
+    contents = resources.parent
+    programs = [contents / p for p in APP_PROGRAMS] + [app_runtime(resources)["vspipe"]]
+    return tuple(p for p in programs if p.exists() and has_quarantine(p))
+
+
+#: VSScript's own configuration file, relative to ``$XDG_CONFIG_HOME`` (or
+#: ``~/.config``): VapourSynth R81 reads it on macOS and Linux to learn which
+#: Python to start (``readEnvConfig`` in src/vsscript/vsscript.cpp)
+VSSCRIPT_CONFIG = Path("vapoursynth") / "vapoursynth.toml"
+#: the key of an entry for some ButterEye.app's VSScript: one ``register_vsscript``
+#: may remove once that file is gone
+_APP_VSSCRIPT_KEY = re.compile(
+    r'^"(/[^"]*\.app/Contents/Resources/python/lib/python3\.\d+/site-packages/'
+    r'vapoursynth/libvsscript\.dylib)"\s*='
+)
+
+
+def vsscript_config(env: Mapping[str, str]) -> Path | None:
+    """Where VSScript looks for its configuration with ``env``: VapourSynth
+    joins ``$XDG_CONFIG_HOME`` (else ``$HOME/.config``) with
+    ``vapoursynth/vapoursynth.toml``. None when neither gives an absolute path."""
+    base = env.get("XDG_CONFIG_HOME", "")
+    if not base:
+        home = env.get("HOME", "")
+        base = os.path.join(home, ".config") if home else ""
+    return Path(base) / VSSCRIPT_CONFIG if base and os.path.isabs(base) else None
+
+
+def vsscript_entry(vsscript: Path, python: Path, libpython: Path, mtime: int) -> str | None:
+    """One line of VSScript's configuration, exactly as ``vapoursynth config``
+    writes it: ``"<vsscript>" = ["<python>","<libpython>","<mtime>"]``.
+
+    VSScript accepts an entry only when its first string is the path it was
+    loaded from (``dladdr``, with ``/lib64/`` read as ``/lib/``) and the last is
+    the interpreter's modification time in seconds; otherwise it runs
+    ``vapoursynth config`` through the shell and, finding none, gives up. Its
+    reader unescapes backslashes but stops a string at the first quote, so a path
+    with a quote or a line break in it cannot be written at all (None)."""
+
+    def q(text: str) -> str | None:
+        if '"' in text or "\n" in text or "\r" in text:
+            return None
+        return '"' + text.replace("\\", "\\\\") + '"'
+
+    key = q(os.fspath(vsscript).replace("/lib64/", "/lib/"))
+    parts = [q(os.fspath(python)), q(os.fspath(libpython)), q(str(mtime))]
+    if key is None or any(p is None for p in parts):
+        return None
+    return f"{key} = [{','.join(p for p in parts if p is not None)}]"
+
+
+def merge_vsscript_config(text: str, line: str, *, exists: Callable[[str], bool]) -> str:
+    """``text`` (the configuration as it is) with ``line`` in it: an older entry
+    for the same VSScript replaced, an entry for a ButterEye.app whose VSScript
+    no longer ``exists`` dropped (a copy moved, deleted, or run once from a
+    translocated path), and every other line -- other VapourSynth installations,
+    comments -- kept as it was. Pure."""
+    key = line.split(" = ", 1)[0]
+    out: list[str] = []
+    for old in text.splitlines():
+        if old.split(" = ", 1)[0].strip() == key:
+            continue
+        m = _APP_VSSCRIPT_KEY.match(old)
+        if m is not None and not exists(m.group(1)):
+            continue
+        out.append(old)
+    out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def register_vsscript(env: Mapping[str, str], resources: Path) -> bool:
+    """macOS app: make sure VSScript's configuration names the app's Python for
+    the app's VSScript, so that mpv's ``vapoursynth`` filter and ``vspipe`` can
+    start it. True when the entry is there (already, or now).
+
+    This is the one file the app writes outside its own folders, and it is
+    VapourSynth's design rather than ButterEye's: R81's VSScript has no other way
+    to learn which Python to load, and ``vapoursynth config`` -- which a user of
+    a pip-installed VapourSynth runs by hand -- writes exactly this line. The
+    file is the user's, shared with every other VapourSynth they have; only the
+    app's own line is replaced, stale ButterEye.app lines are dropped
+    (``merge_vsscript_config``), and the write is atomic (a temporary file in
+    the same folder, then ``os.replace``). Nothing is written when the line is
+    already there, which is every start after the first.
+    """
+    config = vsscript_config(env)
+    if config is None:
+        return False
+    rt = app_runtime(resources)
+    line = vsscript_entry(
+        rt["vsscript"], rt["python"], rt["libpython"], int(rt["python"].stat().st_mtime)
+    )
+    if line is None:
+        return False
+    try:
+        text = config.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    new = merge_vsscript_config(text, line, exists=os.path.isfile)
+    if new == text:
+        return True
+    config.parent.mkdir(parents=True, exist_ok=True)
+    tmp = config.with_name(f".{config.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(new, encoding="utf-8")
+        os.replace(tmp, config)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return True
+
+
 def use_bundled_runtime() -> None:
     """Point the children ButterEye starts (mpv, vspipe) at the VapourSynth they
     are meant to use, through ``os.environ``, which they inherit.
@@ -397,10 +681,15 @@ def use_bundled_runtime() -> None:
     bundled runtime (``point_at_runtime``) -- and take the current folder out of
     the program search (``NO_CWD_SEARCH``, inherited by the children).
 
-    macOS: there is no bundle to point at, because Homebrew's ``python@3.14``
-    already *is* an interpreter whose VapourSynth is the one ``vspipe`` uses. What
-    mpv needs is the VSScript file, which it cannot find for itself
-    (``point_at_vsscript``). A no-op when VapourSynth is not installed.
+    macOS, running from ButterEye.app (``MACOS_APP``): everything the app carries
+    and nothing else (``point_at_app``), and VSScript's configuration line for
+    the app's Python (``register_vsscript``).
+
+    macOS otherwise (Homebrew): there is no bundle to point at, because
+    Homebrew's ``python@3.14`` already *is* an interpreter whose VapourSynth is
+    the one ``vspipe`` uses. What mpv needs is the VSScript file, which it cannot
+    find for itself (``point_at_vsscript``). A no-op when VapourSynth is not
+    installed.
 
     Nothing on Linux: it uses the distribution's, and mpv finds VSScript by name.
     """
@@ -413,6 +702,11 @@ def use_bundled_runtime() -> None:
             # whose cache directory cannot be written, must still open -- the
             # doctor is what tells the user. The filesystem is the only thing
             # here that can fail; the rest is string work on a mapping.
+            if MACOS_APP is not None:
+                point_at_app(os.environ, MACOS_APP)
+                with contextlib.suppress(OSError):
+                    register_vsscript(os.environ, MACOS_APP)
+                return
             with contextlib.suppress(OSError):
                 point_at_vsscript(os.environ, vsscript_library())
         return
@@ -428,10 +722,23 @@ INSTALL_RECORD = "buttereye-install.json"
 
 def install_root() -> str | None:
     """Windows: the folder the installer put this Python in (the parent of the
-    ``python`` folder, with the install record), else None."""
+    ``python`` folder, with the install record), else None. macOS:
+    ``Contents/Resources`` of the ButterEye.app this runs from (``MACOS_APP``),
+    which holds the same install record, else None."""
+    if IS_MACOS and not IS_WINDOWS and MACOS_APP is not None:
+        return os.fspath(MACOS_APP)
     python_dir, _ = runtime_dirs()
     root = os.path.dirname(python_dir)
     return root if os.path.isfile(os.path.join(root, INSTALL_RECORD)) else None
+
+
+#: macOS: ``Contents/Resources`` of the ButterEye.app this process runs from, or
+#: None (Homebrew, a development venv, and every other platform). Decided once,
+#: at import, from where the interpreter and this file are (``app_resources``):
+#: the app does not move while it runs. Every macOS answer that differs between
+#: the app and Homebrew -- the programs, the plugins, the models, the doctor's
+#: package database and its advice -- asks this one value.
+MACOS_APP: Path | None = app_resources(sys.executable, __file__) if IS_MACOS else None
 
 
 def install_mutex_name(folder: str) -> str:
@@ -455,9 +762,15 @@ def hold_install_mutex() -> None:
 
 def bundled_vspipe() -> str | None:
     """Windows: ``vspipe.exe`` of the running Python's VapourSynth package (the
-    installer's), by its full path, else None. Never searched for by name. Linux:
-    None (the distribution's vspipe, from PATH)."""
+    installer's), by its full path, else None. Never searched for by name. The
+    macOS app: its own ``vspipe``, the same way. Linux and Homebrew: None (the
+    vspipe on PATH)."""
     if not IS_WINDOWS:
+        if IS_MACOS and MACOS_APP is not None:
+            # the app's vspipe, from VapourSynth's wheel: it links the
+            # libvsscript.dylib beside it by @loader_path
+            app_vspipe = app_runtime(MACOS_APP)["vspipe"]
+            return os.fspath(app_vspipe) if app_vspipe.is_file() else None
         return None
     _, vs_dir = runtime_dirs()
     if vs_dir is None:
@@ -508,10 +821,17 @@ def search_windows_path(
 
 
 def executable(name: str) -> str | None:
-    """``shutil.which`` on Linux. On Windows a full path or None, never from the
+    """``shutil.which`` on Linux and macOS, except that ButterEye.app answers
+    for the programs it carries (``APP_TOOLS``) with its own copy and nothing
+    else. On Windows a full path or None, never from the
     current folder (``search_windows_path``), and preferring the windowed
     ``.exe``: mpv ships ``mpv.com`` (a console wrapper) next to ``mpv.exe``, and
     PATHEXT finds the ``.com`` first."""
+    if MACOS_APP is not None and name in APP_TOOLS:
+        # the app's own, by full path and never from PATH: a Homebrew mpv
+        # earlier on a user's PATH must not stand in for the one the app carries
+        tool = MACOS_APP / APP_BIN / name
+        return os.fspath(tool) if tool.is_file() else None
     if not IS_WINDOWS:
         return shutil.which(name)
     path, pathext = os.environ.get("PATH", ""), os.environ.get("PATHEXT", "")
@@ -752,8 +1072,15 @@ def ipc_peer(writer: asyncio.StreamWriter) -> tuple[int | None, bool] | None:
 
 
 __all__ = [
+    "APP_BIN",
+    "APP_PROGRAMS",
+    "APP_TOOLS",
+    "APP_UNSET",
+    "APP_VULKAN_ICD",
     "INSTALL_RECORD",
     "IS_MACOS",
+    "MACOS_APP",
+    "VSSCRIPT_CONFIG",
     "IS_WINDOWS",
     "NO_CWD_SEARCH",
     "VSTRT_LIB",
@@ -763,6 +1090,9 @@ __all__ = [
     "O_CLOEXEC",
     "O_NOFOLLOW",
     "DetachedChild",
+    "app_quarantined",
+    "app_resources",
+    "app_runtime",
     "bundled_vspipe",
     "executable",
     "fsync_dir",
@@ -782,9 +1112,12 @@ __all__ = [
     "owned_by_me",
     "pid_alive",
     "plugin_file",
+    "merge_vsscript_config",
+    "point_at_app",
     "point_at_runtime",
     "point_at_vsscript",
     "prepare_endpoint",
+    "register_vsscript",
     "replace",
     "runtime_dirs",
     "search_windows_path",
@@ -795,6 +1128,8 @@ __all__ = [
     "try_lock",
     "unlock",
     "use_bundled_runtime",
+    "vsscript_config",
+    "vsscript_entry",
     "vspipe",
     "vspipe_command",
     "vsscript_library",

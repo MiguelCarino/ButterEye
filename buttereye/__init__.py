@@ -2,4 +2,4 @@
 # Copyright (C) 2026 The ButterEye contributors
 """ButterEye: smooth-motion (frame interpolation) control center for mpv."""
 
-__version__ = "0.0.2"
+__version__ = "0.0.3"

@@ -443,7 +443,20 @@ def test_auto_30fps_goes_to_mvtools() -> None:
     assert pick.backend is BackendId.MVTOOLS and pick.target.target == 60 and pick.notice is None
 
 
-def test_auto_without_rife_benchmark_uses_mvtools() -> None:
+@pytest.fixture
+def rife_needs_no_proof(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Linux and Windows: an unmeasured RIFE may run live (``rife_live_needs_proof``
+    is False there). Pinned, because this suite also runs on a Mac."""
+    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda: False)
+
+
+@pytest.fixture
+def rife_needs_proof(monkeypatch: pytest.MonkeyPatch) -> None:
+    """macOS: RIFE-ncnn runs live only on a benchmark that measured it."""
+    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda: True)
+
+
+def test_auto_without_rife_benchmark_uses_mvtools(rife_needs_no_proof: None) -> None:
     pick = decide.pick_engine(_opts(None, None), NTSC, 60.0, TargetKind.X2, auto=True)
     assert pick.backend is BackendId.MVTOOLS and pick.notice is None
     # an unmeasured RIFE is still used when it is the only engine installed
@@ -843,7 +856,10 @@ async def test_mvtools_stall_turns_off(
 
 
 async def test_rife_stall_without_mvtools_turns_off(
-    tmp_path: Path, bench_history: list[BenchResult], no_xid: dict[str, Any]
+    tmp_path: Path,
+    bench_history: list[BenchResult],
+    no_xid: dict[str, Any],
+    rife_needs_no_proof: None,
 ) -> None:
     ctx = FakeCtx(_paths(tmp_path, mvtools=False), _config(_simple()))
     s = _session(ctx, tmp_path)
@@ -1163,3 +1179,119 @@ async def test_an_engine_the_user_chose_is_not_second_guessed(
     assert _engine(s) is BackendId.RIFE_NCNN
     assert s.health is Health.DROPPING  # reported, and the step-down offered as before
     assert not (ctx.paths.state_dir / live.livelimits.FILE).exists()
+
+
+# ---------------------------------------------------------------- RIFE live on a Mac
+# docs/macos-release-bar.md items 4 and 18: RIFE-ncnn on an M2 was measured
+# offline-only at every size, and a fresh install of the app with no benchmark
+# ran the shipped Quality profile's RIFE v4.26 live at 6-8 % of real time at
+# 1080p. On a Mac RIFE runs live only on a benchmark that measured it, or by the
+# user's own choice.
+
+
+def test_a_mac_never_runs_an_unmeasured_rife_live_on_automatic(rife_needs_proof: None) -> None:
+    # with MVTools there: MVTools, exactly as on Linux
+    pick = decide.pick_engine(_opts(None, None), NTSC, 60.0, TargetKind.X2, auto=True)
+    assert pick.backend is BackendId.MVTOOLS
+    # RIFE the only engine: nothing, rather than RIFE at a fraction of real time
+    only = decide.pick_engine([decide.EngineOption(BackendId.RIFE_NCNN, None)], NTSC, 60.0,
+                              TargetKind.X2, auto=True)  # fmt: skip
+    assert only.backend is None and only.target.bypass is BypassReason.NO_REALTIME
+    assert only.notice == decide.no_realtime_notice()
+    # unmeasured RIFE and mvgpu: mvgpu, the next engine (as on Linux it would be RIFE)
+    both = [decide.EngineOption(BackendId.RIFE_NCNN, None),
+            decide.EngineOption(BackendId.MVGPU, None)]  # fmt: skip
+    assert decide.pick_engine(both, NTSC, 60.0, TargetKind.X2, auto=True).backend is (
+        BackendId.MVGPU
+    )
+    # "smooth anyway" on Automatic is not a request for RIFE either
+    slow = [decide.EngineOption(BackendId.RIFE_NCNN, None),
+            decide.EngineOption(BackendId.MVTOOLS, 20.0)]  # fmt: skip
+    forced = decide.pick_engine(slow, Fraction(30), 60.0, TargetKind.X2, auto=True, forced=True)
+    assert forced.backend is BackendId.MVTOOLS
+
+
+def test_a_measured_rife_is_weighed_on_a_mac_like_anywhere_else(rife_needs_proof: None) -> None:
+    """A benchmark that measured RIFE holding real time still lets Automatic pick it,
+    and one that measured it too slow loses to MVTools on its cap - the rule is
+    about evidence, not about RIFE."""
+    fast = decide.pick_engine(_opts(RIFE_CAP), ODD, 180.0, TargetKind.X2, auto=True)
+    assert fast.backend is BackendId.RIFE_NCNN
+    slow = decide.pick_engine(_opts(8.79 / live.LIVE_HEADROOM), NTSC, 60.0, TargetKind.X2,
+                              auto=True)  # fmt: skip
+    assert slow.backend is BackendId.MVTOOLS
+
+
+def test_linux_keeps_an_unmeasured_rife_when_it_is_all_there_is(rife_needs_no_proof: None) -> None:
+    only = decide.pick_engine([decide.EngineOption(BackendId.RIFE_NCNN, None)], NTSC, 60.0,
+                              TargetKind.X2, auto=True)  # fmt: skip
+    assert only.backend is BackendId.RIFE_NCNN
+
+
+def _quality_session(ctx: FakeCtx, tmp_path: Path) -> live._Session:
+    """A session on the shipped Quality profile (RIFE v4.26), the rules' pick for a
+    24p 1080p film with the shipped config."""
+    s = _session(ctx, tmp_path)
+    s.profile_request = "quality"
+    return s
+
+
+async def test_a_mac_plays_the_shipped_quality_profile_with_mvtools_until_measured(
+    tmp_path: Path,
+    bench_history: list[BenchResult],
+    no_xid: dict[str, Any],
+    rife_needs_proof: None,
+) -> None:
+    ctx = FakeCtx(_paths(tmp_path), sc.default_config())
+    s = _quality_session(ctx, tmp_path)
+    _load(s, fps=23.976)
+    await s.apply(raise_on_fail=False)
+    assert _engine(s) is BackendId.MVTOOLS
+    assert s.auto_chosen  # Automatic chose it, so live correction may revisit it
+
+
+async def test_linux_plays_the_shipped_quality_profile_with_rife(
+    tmp_path: Path,
+    bench_history: list[BenchResult],
+    no_xid: dict[str, Any],
+    rife_needs_no_proof: None,
+) -> None:
+    ctx = FakeCtx(_paths(tmp_path), sc.default_config())
+    s = _quality_session(ctx, tmp_path)
+    _load(s, fps=23.976)
+    await s.apply(raise_on_fail=False)
+    assert _engine(s) is BackendId.RIFE_NCNN
+
+
+async def test_a_mac_still_runs_rife_live_when_the_user_chose_it(
+    tmp_path: Path,
+    bench_history: list[BenchResult],
+    no_xid: dict[str, Any],
+    rife_needs_proof: None,
+) -> None:
+    """RIFE stays the user's to choose: chosen in Setup (``backend_override``) or in
+    a profile of their own."""
+    chosen = FakeCtx(_paths(tmp_path), sc.default_config(backend_override=BackendId.RIFE_NCNN))
+    s = _quality_session(chosen, tmp_path)
+    _load(s, fps=23.976)
+    await s.apply(raise_on_fail=False)
+    assert _engine(s) is BackendId.RIFE_NCNN
+
+    pinned = FakeCtx(_paths(tmp_path), _config(_simple(BackendId.RIFE_NCNN)))
+    s2 = _session(pinned, tmp_path)
+    _load(s2, fps=23.976)
+    await s2.apply(raise_on_fail=False)
+    assert _engine(s2) is BackendId.RIFE_NCNN
+
+
+async def test_a_mac_with_only_rife_does_not_smooth_live_without_a_benchmark(
+    tmp_path: Path,
+    bench_history: list[BenchResult],
+    no_xid: dict[str, Any],
+    rife_needs_proof: None,
+) -> None:
+    ctx = FakeCtx(_paths(tmp_path, mvtools=False), sc.default_config())
+    s = _quality_session(ctx, tmp_path)
+    _load(s, fps=23.976)
+    await s.apply(raise_on_fail=False)
+    assert _engine(s) is not BackendId.RIFE_NCNN

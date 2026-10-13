@@ -360,7 +360,14 @@ def test_file_changed_safety_net(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_setup_choice_applies_to_shipped_profiles(tmp_path: Path) -> None:
+def test_setup_choice_applies_to_shipped_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from buttereye.core.mpvctl import decide
+
+    # Linux and Windows (pinned: this also runs on a Mac, where a shipped
+    # profile's unchosen RIFE becomes Automatic - asserted at the end)
+    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda: False)
     cfg = sc.default_config(backend_override=BackendId.MVTOOLS)
     s = _session(tmp_path, FakeCtx(sc.fake_paths(tmp_path), cfg))
     by_id = {p.id: p for p in cfg.profiles}
@@ -379,6 +386,17 @@ def test_setup_choice_applies_to_shipped_profiles(tmp_path: Path) -> None:
     # a shipped profile the user switched to another engine counts as pinned
     moved = dataclasses.replace(by_id["fast"], backend=BackendId.RIFE_TRT)
     assert s.wanted_backend(moved, cfg)[0] is BackendId.RIFE_TRT
+
+    # macOS (decide.rife_live_needs_proof): with no Setup choice the shipped
+    # RIFE profiles ask for Automatic; a Setup choice and a user's own profile
+    # still pin, and so does a shipped profile the user moved to another engine
+    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda: True)
+    for pid in ("quality", "balanced", "fast"):
+        assert s.wanted_backend(by_id[pid], sc.default_config()) == (None, None)
+        assert s.wanted_backend(by_id[pid], rife_cfg) == (BackendId.RIFE_NCNN, None)
+    assert s.wanted_backend(pinned, sc.default_config()) == (BackendId.RIFE_NCNN, None)
+    assert s.wanted_backend(by_id["cpu"], sc.default_config())[0] is BackendId.MVTOOLS
+    assert s.wanted_backend(moved, sc.default_config())[0] is BackendId.RIFE_TRT
 
 
 # ---------------------------------------------------------------------------

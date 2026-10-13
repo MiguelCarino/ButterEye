@@ -99,7 +99,7 @@ def _source_link(
     macos: bool = osapi.IS_MACOS,
     prefix: Path | None = None,
 ) -> str:
-    """Where the source is: on Windows the installer's source offer
+    """Where the source is: on Windows and in ButterEye.app the build's source offer
     (licenses\\SOURCES.txt: the sources tar of what it built, the upstream sources
     of what it bundles unchanged), on macOS the one the Homebrew tap installs into
     its keg (``MACOS_TAP_SOURCES``, which names every tap component's source and the
@@ -109,7 +109,8 @@ def _source_link(
     Fedora, the repository on macOS, which has no SRPM to download.
 
     ``prefix``: Homebrew's, for a test with a planted keg."""
-    if windows:
+    if windows or (macos and prefix is None and install is None and osapi.MACOS_APP is not None):
+        # ButterEye.app keeps its offer where the Windows installer does
         if install is None:
             from buttereye.core.paths import install_dir
 
@@ -519,7 +520,83 @@ def _macos_rows() -> tuple[Component, ...]:
     )
 
 
-COMPONENTS: tuple[Component, ...] = components(osapi.IS_WINDOWS, osapi.IS_MACOS)
+REL_LINKED_MVTOOLS = M("shared library MVTools links")
+REL_VULKAN_DRIVER = M("the Vulkan driver, loaded by the Vulkan loader")
+REL_LINKED_VULKAN = M("shared library mpv and the GPU plugins link")
+
+
+def _macos_app_rows() -> tuple[Component, ...]:
+    """The rows of the Licences tab in ButterEye.app (packaging/macos/build-app.sh).
+
+    The app *is* the distributor of everything in it, so every row it carries is
+    conveyed - the reverse of the tap's table above, where Homebrew conveyed the
+    bottles. The packages are the names in the app's install record
+    (buttereye-install.json, written by build-app.sh): the Homebrew formula each
+    bottle came from, and ButterEye's own names for what it built. Each row's
+    expression is read from that record, which took it from the bottle's own SBOM.
+    Every library mpv, FFmpeg and the plugins link is in the record and in
+    ``licenses/`` too; the rows below are the ones a user drives or would look for,
+    not all fifty.
+    """
+    r = _BY_NAME
+    w: Mapping[str, Component] = {c.name: c for c in _WINDOWS}
+    return (
+        replace(
+            r["RIFE-ncnn-Vulkan"], spdx="MIT AND LGPL-2.1-or-later AND WTFPL", pick=None
+        ),
+        replace(
+            r["ncnn"],
+            package="ncnn",
+            spdx="BSD-3-Clause",
+            relation=REL_LINKED_RIFE,
+            pick=None,
+            spdx_from_rpm=True,
+        ),
+        Component("libomp", "libomp", "MIT", REL_LINKED_RIFE, True, 1, spdx_from_rpm=True),
+        replace(r["MVTools"], spdx="GPL-2.0-or-later", pick=None, spdx_from_rpm=True),
+        Component(
+            "fftw",
+            "fftw",
+            "GPL-2.0-or-later AND BSD-2-Clause",
+            REL_LINKED_MVTOOLS,
+            True,
+            1,
+            spdx_from_rpm=True,
+        ),
+        r["RIFE ncnn models"],
+        r["mvgpu"],
+        r["FSRCNNX x2 8-0-4-1 shader"],
+        replace(r["PySide6 / Qt"], conveyed=True),
+        w["Shiboken6"],
+        w["Python"],
+        replace(r["mpv"], conveyed=True, min_texts=1),
+        replace(r["VapourSynth"], conveyed=True),
+        Component(
+            "FFmpeg", "ffmpeg", "GPL-3.0-or-later", REL_SEPARATE, True, 1, spdx_from_rpm=True
+        ),
+        Component("ffms2", "ffms2", "GPL-2.0-or-later", REL_LOADED, True, 1, spdx_from_rpm=True),
+        Component(
+            "MoltenVK", "molten-vk", "Apache-2.0", REL_VULKAN_DRIVER, True, 1, spdx_from_rpm=True
+        ),
+        Component(
+            "Vulkan loader",
+            "vulkan-loader",
+            "Apache-2.0",
+            REL_LINKED_VULKAN,
+            True,
+            1,
+            spdx_from_rpm=True,
+        ),
+        replace(w["Vulkan-Tools (vulkaninfo)"], pick=None, spdx_from_rpm=True),
+        r["mkvtoolnix"],
+    )
+
+
+COMPONENTS: tuple[Component, ...] = (
+    _macos_app_rows()
+    if osapi.MACOS_APP is not None
+    else components(osapi.IS_WINDOWS, osapi.IS_MACOS)
+)
 
 
 #: Rows whose ``Component.package`` *is* a Homebrew formula name, so the advice can
@@ -540,6 +617,8 @@ def _reinstall(c: Component) -> tuple[Msg, tuple[str, ...]]:
     installed the component."""
     if osapi.IS_WINDOWS:
         return pk.REPAIR, ()
+    if osapi.MACOS_APP is not None:
+        return pk.APP_REPAIR, ()
     if osapi.IS_MACOS:
         if c.package in _BREW_FORMULA_ROWS:
             return (

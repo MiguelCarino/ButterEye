@@ -26,6 +26,7 @@ import asyncio
 import glob
 import json
 import re
+import shlex
 import shutil
 import sys
 from collections.abc import Iterable, Mapping, Sequence
@@ -317,6 +318,12 @@ async def rpm_query(names: Iterable[str] = BUTTEREYE_PKGS + OTHER_PKGS) -> RpmDb
 
         return manifest_db(install_dir())
     if osapi.IS_MACOS:
+        if osapi.MACOS_APP is not None:
+            # ButterEye.app: its own install record, as on Windows. Homebrew,
+            # if this Mac has it, installed nothing the app runs.
+            from buttereye.core.paths import install_dir
+
+            return manifest_db(install_dir())
         return brew_db(names)
     if shutil.which("rpm") is None:
         return RpmDb(False, {}, "rpm is not installed")
@@ -370,6 +377,12 @@ def _brew(*formulae: str, verb: str = "install") -> tuple[str, ...]:
 
 #: Windows: ButterEye's own pieces come only from its installer
 REPAIR = M("Run the ButterEye installer again and choose Repair.")
+#: macOS, running from ButterEye.app: everything the doctor checks came inside the
+#: app, so the one repair is a fresh copy of it - there is no package manager to
+#: name and nothing to install beside it (``osapi.MACOS_APP``)
+APP_REPAIR = M("Download ButterEye again and replace ButterEye.app with the new copy.")
+#: the tools ``tool_fix`` names that ButterEye.app carries itself
+APP_CARRIES = frozenset({"mpv", "vapoursynth", "ffmpeg"})
 #: macOS: ButterEye has no macOS package of its own yet (phase 3 builds the
 #: plugins, phase 4 taps them), and Homebrew has no formula for RIFE-ncnn-Vulkan
 #: or mvgpu, so for ButterEye's own pieces there is nothing to type. Saying that
@@ -405,6 +418,8 @@ def platform_fix(
     if osapi.IS_WINDOWS:
         return {"fix": windows, "commands": ()}
     if osapi.IS_MACOS:
+        if osapi.MACOS_APP is not None:
+            return {"fix": APP_REPAIR, "commands": ()}
         return {"fix": macos, "commands": macos_commands}
     return {"fix": fix, "commands": commands}
 
@@ -430,6 +445,8 @@ def tool_fix(
         line = f"winget {verb} --exact --id {WINGET[winget_key]}"
         return {"fix": windows or fix, "commands": (line,)}
     if osapi.IS_MACOS:
+        if osapi.MACOS_APP is not None and winget_key in APP_CARRIES:
+            return {"fix": APP_REPAIR, "commands": ()}
         return {
             "fix": macos or fix,
             "commands": (_commands.install_command(winget_key, verb=verb),),
@@ -507,13 +524,13 @@ def _unreadable_db_finding(db: RpmDb) -> Finding:
     """The note for "the install database can't be read at all": no rpm on
     Linux, no install record on Windows, no Homebrew on macOS. Each platform
     says what is missing and what would fix it, and nothing else."""
-    if osapi.IS_WINDOWS:
+    if osapi.IS_WINDOWS or osapi.MACOS_APP is not None:
         return _f(
             "packages.rpm",
             Severity.INFO,
             M("ButterEye's install record can't be read"),
             cause=M("{why}", {"why": db.error or "unknown"}),
-            fix=REPAIR,
+            fix=REPAIR if osapi.IS_WINDOWS else APP_REPAIR,
         )
     if osapi.IS_MACOS:
         return _f(
@@ -535,9 +552,38 @@ def _unreadable_db_finding(db: RpmDb) -> Finding:
     )
 
 
+def app_quarantine_finding(resources: Path) -> Finding | None:
+    """ButterEye.app, downloaded and not yet cleared: macOS holds each of its
+    programs at first start until the user answers a prompt
+    (``osapi.app_quarantined``), mpv and vspipe included. One command clears
+    the whole app; it is the same one the README gives for a first start."""
+    held = osapi.app_quarantined(resources)
+    if not held:
+        return None
+    app = resources.parent.parent
+    return _f(
+        "packages.app_quarantine",
+        Severity.BLOCKING,
+        M("macOS is still holding ButterEye's programs back"),
+        cause=M(
+            "ButterEye.app came from a download, so macOS asks before each program in "
+            "it runs for the first time - mpv, vspipe and ffmpeg too, which ButterEye "
+            "starts in the background, where the question can go unseen and playback "
+            "waits for it."
+        ),
+        fix=M("Run this once in Terminal, then start ButterEye again."),
+        commands=(f"xattr -dr com.apple.quarantine {shlex.quote(str(app))}",),
+        evidence=tuple(str(p) for p in held),
+    )
+
+
 def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
     """Pure over the rpm result plus file existence in the private directories."""
     out: list[Finding] = []
+    if osapi.MACOS_APP is not None:
+        held = app_quarantine_finding(osapi.MACOS_APP)
+        if held is not None:
+            out.append(held)
     if not db.available:
         rife_file = installed_plugin(paths, RIFE_SO) is not None
         mv_file = installed_plugin(paths, MVTOOLS_SO) is not None
@@ -857,11 +903,14 @@ def macos_ffms2_globs() -> tuple[str, ...]:
     point of the search path is that one module knows where plugins can be.
 
     The prefix is derived, so these are built per call rather than frozen at
-    import: a test can point ``HOMEBREW_PREFIX`` somewhere else."""
-    return (
-        *(f"{d}/*ffms2*" for d in macos_plugin_dirs()),
-        f"{brew.prefix()}/lib/libffms2*.dylib",
-    )
+    import: a test can point ``HOMEBREW_PREFIX`` somewhere else.
+
+    ButterEye.app: its own plugin directory only - a Homebrew ffms2 on the same
+    Mac is not one the app would load."""
+    plugins = tuple(f"{d}/*ffms2*" for d in macos_plugin_dirs())
+    if osapi.MACOS_APP is not None:
+        return plugins
+    return (*plugins, f"{brew.prefix()}/lib/libffms2*.dylib")
 
 
 def ffms2_present(db: RpmDb, globs: Sequence[str] | None = None) -> bool:
@@ -1073,6 +1122,9 @@ __all__ = [
     "vcruntime_finding",
     "COPR_PROJECT",
     "INSTALL_MANIFEST",
+    "APP_CARRIES",
+    "app_quarantine_finding",
+    "APP_REPAIR",
     "REPAIR",
     "WINGET",
     "BREW_FORMULAE",

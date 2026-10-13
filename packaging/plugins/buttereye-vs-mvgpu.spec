@@ -6,7 +6,7 @@
 
 Name:           buttereye-vs-mvgpu
 Version:        0.0.1
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        GPU block motion-vector frame interpolation for VapourSynth (Vulkan)
 License:        AGPL-3.0-or-later
 URL:            https://github.com/MiguelCarino/ButterEye
@@ -62,5 +62,11 @@ if [ -n "$unexpected" ]; then echo "unexpected libraries: $unexpected"; exit 1; 
 %{_libdir}/buttereye/vapoursynth/libmvgpu.so
 
 %changelog
+* Tue Oct 13 2026 The ButterEye contributors - 0.0.1-2
+- Retry vkCreateInstance with VK_KHR_portability_enumeration only when the
+  loader refuses with VK_ERROR_INCOMPATIBLE_DRIVER (a portability driver such
+  as MoltenVK); a native driver answers the first call, so Linux behaviour is
+  unchanged. meson.build now states meson_version '>=1.1'.
+
 * Sat Oct 10 2026 The ButterEye contributors - 0.0.1-1
 - First package: mvgpu.Interpolate as a live engine for ButterEye

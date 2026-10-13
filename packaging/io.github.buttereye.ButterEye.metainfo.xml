@@ -32,6 +32,12 @@
     <binary>buttereye-gui</binary>
   </provides>
   <releases>
+    <release version="0.0.3" date="2026-10-13" type="stable">
+      <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.3</url>
+      <description>
+        <p>A speed test that recommended GPU motion vectors is no longer thrown away, Storage works again on Fedora 45, and RIFE no longer crashes on a long model path. First macOS build.</p>
+      </description>
+    </release>
     <release version="0.0.2" date="2026-10-11" type="stable">
       <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.2</url>
       <description>

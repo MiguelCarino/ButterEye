@@ -7,11 +7,11 @@
 # buttereye-vs-rife-ncnn, buttereye-rife-ncnn-models).
 
 %global pypi_name buttereye
-%global pypi_version 0.0.2
+%global pypi_version 0.0.3
 %global app_id io.github.buttereye.ButterEye
 
 Name:           buttereye
-Version:        0.0.2
+Version:        0.0.3
 Release:        1%{?dist}
 Summary:        Smoother motion for the videos you play in mpv
 # ButterEye: AGPL-3.0-or-later (generated scripts and configs carry the §7
@@ -111,6 +111,8 @@ EOF
 %{_datadir}/icons/hicolor/scalable/apps/%{app_id}.svg
 
 %changelog
+* Tue Oct 13 2026 The ButterEye contributors - 0.0.3-1
+- 0.0.3 (see CHANGELOG.md): a speed test recommending mvgpu is no longer discarded; first macOS build
 * Sun Oct 11 2026 The ButterEye contributors - 0.0.2-1
 - 0.0.2 (see CHANGELOG.md): honest 4K speed estimates, live correction of
   an engine that can't keep up; the Windows port (Windows-only code)

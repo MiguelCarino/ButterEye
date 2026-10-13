@@ -5,8 +5,11 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -365,3 +368,34 @@ def test_debug_mode_refuses_qobject_payload(make_bridge: Any, qtbot: Any) -> Non
     bridge.call(leak, owner=owner, ok=lambda v: None, err=errors.append)
     qtbot.waitUntil(lambda: bool(errors), timeout=3000)
     assert errors[0].code is ErrorCode.INTERNAL
+
+
+@pytest.mark.parametrize(
+    "first", ["buttereye.gui.bridge", "shiboken6"], ids=["gui-first", "shiboken-first"]
+)
+def test_the_core_loop_runs_threads_with_pyside_imported(first: str) -> None:
+    """``asyncio.to_thread`` on the GUI's core loop, in a fresh interpreter that has
+    imported shiboken6 as ``buttereye-gui`` always has, in either order. On Python
+    3.15 the default executor's class is a lazy binding shiboken6 stops resolving,
+    so the Storage page failed with BE-9999 on Fedora 45 until
+    ``buttereye.gui._resolve_lazy_executors``. A subprocess, because
+    tests/conftest.py repairs the binding for the suite's own loops and would hide
+    a regression here."""
+    code = (
+        f"import asyncio, importlib; importlib.import_module({first!r})\n"
+        "import shiboken6\n"
+        "from buttereye.gui.bridge import CoreThread\n"
+        "t = CoreThread()\n"
+        "t.start()\n"
+        "try:\n"
+        "    print(t.submit(asyncio.to_thread(sum, [1, 2])).result(30))\n"
+        "finally:\n"
+        "    t.stop()\n"
+        "    t.join(30)\n"
+    )
+    root = Path(__file__).resolve().parents[2]
+    res = subprocess.run(
+        [sys.executable, "-c", code], cwd=root, capture_output=True, text=True, timeout=120
+    )
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == "3"

@@ -38,6 +38,16 @@ USER_DATA_VERSION = 1
 #: and less steady, so it is not tied to concurrent-frames. buffered-frames 4.
 RIFE_CONCURRENT_FRAMES_DEFAULT = 8
 RIFE_GPU_THREAD_DEFAULT = 4
+#: macOS: 1. MoltenVK exposes one compute queue on Apple Silicon (``queueC=0[1]``),
+#: and ncnn refuses more with "gpu_thread is recommended to be between 1 and 1";
+#: measured on an M2 at 1280x720 (packaging/macos/RIFE-SPIKE.md, "Throughput"):
+#: gt=1 18.81 fps, gt=2 19.66, gt=4 17.62 - nothing gained, a warning per load.
+RIFE_GPU_THREAD_MACOS = 1
+
+
+def rife_gpu_thread() -> int:
+    """RIFE-ncnn's ``gpu_thread`` on this platform, read at call time."""
+    return RIFE_GPU_THREAD_MACOS if osapi.IS_MACOS else RIFE_GPU_THREAD_DEFAULT
 BUFFERED_FRAMES_DEFAULT = 4
 #: MVTools in mpv: concurrent-frames up to 16, never above the CPU count. On the
 #: dev box (Ryzen 9 5900X, 24 threads) 8 / 16 / 24 give 128 / 148 / 137 fps at
@@ -101,8 +111,12 @@ def _macos_ffms2() -> Path:
     always makes, which is the name worth reporting as missing when there is no
     Homebrew ffms2 at all.
     """
-    lib = homebrew_prefix() / "lib"
     name = osapi.plugin_file("libffms2.so")
+    if osapi.MACOS_APP is not None:
+        # ButterEye.app carries ffms2 with its other plugins, as the Windows
+        # installer does, and asks nowhere else
+        return _default_plugin_dir() / name
+    lib = homebrew_prefix() / "lib"
     candidates = (
         _default_plugin_dir() / name,
         lib / "libffms2.5.dylib",
@@ -203,7 +217,7 @@ def user_data(params: FilterParams) -> str:
     if params.backend is BackendId.RIFE_NCNN:
         data["model_path"] = os.fspath(params.model_path) if params.model_path else None
         data["gpu_id"] = params.gpu_id
-        data["gpu_thread"] = params.gpu_thread or RIFE_GPU_THREAD_DEFAULT
+        data["gpu_thread"] = params.gpu_thread or rife_gpu_thread()
         data["uhd"] = params.uhd
         if params.dither is not None:
             data["dither"] = params.dither
@@ -292,6 +306,8 @@ __all__ = [
     "USER_DATA_VERSION",
     "RIFE_CONCURRENT_FRAMES_DEFAULT",
     "RIFE_GPU_THREAD_DEFAULT",
+    "RIFE_GPU_THREAD_MACOS",
+    "rife_gpu_thread",
     "BUFFERED_FRAMES_DEFAULT",
     "MVGPU_CONCURRENT_FRAMES_DEFAULT",
     "ScriptConstants",

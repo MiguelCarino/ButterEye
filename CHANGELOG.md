@@ -5,6 +5,53 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
+## 0.0.3 — 2026-10-13
+
+ButterEye now runs on **macOS** (Apple silicon, experimental), and Automatic no longer
+throws away a speed test that recommended GPU motion vectors.
+
+### New: ButterEye for macOS (experimental)
+
+- **One disk image.** `ButterEye-0.0.3-macos-arm64.dmg` holds a self-contained
+  `ButterEye.app`: its own Python, Qt and VapourSynth, mpv with the VapourSynth filter,
+  FFmpeg, the smoothing plugins (MVTools, GPU motion vectors and RIFE through MoltenVK)
+  and the RIFE models. No Homebrew needed. Drag it to Applications. The command line is
+  `/Applications/ButterEye.app/Contents/MacOS/buttereye`.
+- **Not notarised.** The app is signed ad hoc, not by an Apple Developer ID, so macOS
+  refuses to open a downloaded copy until you clear the download mark once:
+  `xattr -dr com.apple.quarantine /Applications/ButterEye.app`. ButterEye's system
+  checks say so, with that command, if any part of the app is still marked.
+- **Needs macOS 27 and an Apple silicon Mac** (M1 or newer). Intel Macs are not
+  supported.
+- **What smooths live.** MVTools and GPU motion vectors smooth 1080p live on an M2.
+  **RIFE is for smooth copies only on a Mac**: it runs at 6–10 fps at 1080p, far below
+  live speed, so ButterEye never picks it for live playback unless a speed test on that
+  Mac shows it keeps up, or you choose it yourself. At 1440p the CPU and GPU engines are
+  right at the edge of real time, and at 4K nothing keeps up yet.
+- **What is tested.** Everything was measured on one Mac (M2, macOS 27): the system
+  checks, live smoothing, smooth copies, a speed test of every engine and the window.
+  Other Macs, other macOS versions and System Settings ▸ Privacy & Security ▸ *Open
+  Anyway* have not been tried. TensorRT does not exist on macOS.
+- The app writes one line to `~/.config/vapoursynth/vapoursynth.toml` so VapourSynth
+  finds the app's Python; it keeps every other line.
+- The source code of everything built into the app is published with it
+  (`ButterEye-0.0.3-macos-sources.tar`).
+
+### Fixed
+
+- **A speed test that recommended GPU motion vectors is no longer thrown away.**
+  Setup and the speed test's top candidates ignored such a run and fell back to the
+  first engine in quality order, without a measurement. They now take the best engine
+  from the same run that kept up in real time.
+- **Storage and Clean work again on Fedora 45.** With Python 3.15 and PySide6 6.11,
+  the window's Storage page showed an error instead of the sizes, and Clean and the
+  model list failed with BE-9999. ButterEye now works around the Python/PySide6 fault.
+- **RIFE no longer crashes on a long model path** (Fedora). A model folder path of 242
+  characters or more aborted `vspipe` or mpv with "buffer overflow detected"; fixed in
+  `buttereye-vs-rife-ncnn` 9.33-2.
+- **GPU motion vectors find MoltenVK-style portability drivers** (`buttereye-vs-mvgpu`
+  0.0.1-2). Nothing changes on Fedora or Windows.
+
 ## 0.0.2 — 2026-10-11
 
 ButterEye now runs on **Windows** as well as Fedora 44 and 45, and live playback no

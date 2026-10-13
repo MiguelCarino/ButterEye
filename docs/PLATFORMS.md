@@ -9,10 +9,11 @@ Assessed against the 0.0.1 tree on 2026-10-10. The Windows port's four phases
 landed on 2026-10-11 and are described below: there is now a Windows installer,
 tested under Wine on the Linux dev box and, in CI, installed and tested on GitHub's
 Windows Server 2025 machines (no GPU there). It has **not yet been used on a real
-Windows desktop PC with a GPU**, so it is not released. macOS is not released
-either, and there will be no macOS application bundle at all — the distribution
-written in phase 4 is a Homebrew tap, for the reason under "Why a tap and not an
-`.app`" below. macOS phases 0 and 1 (both
+Windows desktop PC with a GPU**; it shipped as an experimental download in 0.0.2.
+macOS ships in 0.0.3 as an experimental, ad-hoc-signed disk image with a
+self-contained `ButterEye.app` (see "The .app"), which supersedes phase 4's
+decision for a Homebrew tap; the tap's formulae stay in `packaging/macos/homebrew/`
+as an alternative that has never been installed. macOS phases 0 and 1 (both
 2026-10-12) make the three-platform type check
 and ButterEye's own macOS tests run and pass on an Apple Silicon Mac, and give the
 platform layer a third value — the core's hot paths (process liveness, the private
@@ -61,7 +62,7 @@ ships is the owner's decision rather than a phase's (SCOPE §2, §13).
 | `buttereye-vs-mvgpu` (Vulkan compute) | COPR RPM | `libmvgpu.dll`, cross-built (phase 3) | **built, loadable and dispatching on arm64** (phase 3): compiling it needed no source change at all — Apple clang 21, meson, ninja and Homebrew's `glslang` turn all seven shaders into SPIR-V and link `libmvgpu.dylib` against nothing but `libvulkan.1.dylib`, `libc++` and `libSystem`; it exports `_VapourSynthPluginInit2` and VapourSynth loads it. Reaching the GPU took a guarded retry in `Gpu::init` (`mvgpu/src/mvgpu.cpp`): the plain `vkCreateInstance` — API 1.1, no instance extensions, `flags` 0 — came back `VK_ERROR_INCOMPATIBLE_DRIVER` (-9), because MoltenVK's ICD says `"is_portability_driver": true` and the loader hides such a driver until the application enables `VK_KHR_portability_enumeration` and sets `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR`; that refusal, and only that refusal, is what makes it ask for the two and call again, so Linux and Windows are still handed the struct they always were (phase 3, below). With the retry in, on MoltenVK 1.4.2 (M2): all eight pipelines are created and the in-between frame is **bit-exact** against the square drawn at the half-way position (mean and maximum absolute error 0.0, against 8.43 for a blend of the two sources), and a full render under `MVK_CONFIG_DEBUG=1 MVK_CONFIG_LOG_LEVEL=4` logs 8 SPIR-V → MSL conversions and 10 Metal shader compilations and not one `[mvk-warn]` or `[mvk-error]` line. The limits are far from tight: `maxComputeWorkGroupInvocations` 1024 against the 512 needed, `maxStorageBufferRange` 4294967295 against the 127 MiB the vector field wants at 4K. `vulkaninfo` agrees the device is real: `deviceName` "Apple M2", `driverName` MoltenVK (`driverID` `DRIVER_ID_MOLTENVK`, `driverInfo` 1.4.2) at `apiVersion` 1.4.357 — not the mock ICD. Its `deviceType` is `PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU`, which is a phase-2 problem on its own (below) |
 | ffms2 (render's source filter) | Fedora package | `ffms2.dll`, built from source in the same chroot (phase 4) | a Homebrew bottle (`ffms2` 5.0), so the Windows source-offer problem does not arise; installed here as `libffms2.dylib` in VapourSynth's autoload directory, and it has now decoded: a ButterEye-generated `.vpy` read a real `.mkv` through it and MVTools turned 72 frames at 24 fps into 144 at 48, through the real `vspipe`, at 1432 fps (phase 3). Nothing is built here, so phase 3's build script does not produce it |
 | TensorRT (experimental) | user-built `vstrt` | not yet (vs-mlrt is Windows-first upstream, so it is possible) | **permanently** not possible: there is no CUDA or TensorRT for macOS, and no Apple Silicon Mac has an NVIDIA GPU. The seam says so as of phase 1 (`osapi.HAS_VSTRT` is False), and the generated script refuses the TensorRT branch before it looks for an engine |
-| Packaging / installs | RPM + COPR | per-user installer with its own Python, Qt and VapourSynth (phase 4) | a **Homebrew tap**, written in phase 4 and not published: `packaging/macos/homebrew/` holds four formulae (`buttereye.rb` and one per engine component), and once there is a release to point them at, `brew install <owner>/buttereye/buttereye` is meant to be the whole install. No `.app` bundle, ever — that is a decision about money, not an unwritten feature (below). Nothing is signed or notarised and nothing needs to be, because `brew` fetches over curl and marks nothing with `com.apple.quarantine` (measured). No formula has been installed: each one's `url` names a `v0.0.3` release that does not exist (the newest tag here is `v0.0.2`, which predates the whole macOS port) and each `sha256` is 64 zeros, a placeholder that stops a download rather than passing one. Tagging a release, filling those in and installing the result is still to be done: phase 5 deliberately did **not** do it, because an install writes into the Homebrew prefix and that is the owner's machine to change. The exact commands it would take are under phase 5 below, and `docs/macos-release-bar.md` item 6 is the same question as a verdict |
+| Packaging / installs | RPM + COPR | per-user installer with its own Python, Qt and VapourSynth (phase 4) | a **Homebrew tap**, written in phase 4 and not published: `packaging/macos/homebrew/` holds four formulae (`buttereye.rb` and one per engine component), and once there is a release to point them at, `brew install <owner>/buttereye/buttereye` is meant to be the whole install. No `.app` bundle, ever — that is a decision about money, not an unwritten feature (below). Nothing is signed or notarised and nothing needs to be, because `brew` fetches over curl and marks nothing with `com.apple.quarantine` (measured). No formula has been installed: each one's `url` names a `v0.0.3` release that does not exist (the newest tag here is `v0.0.2`, which predates the whole macOS port) and each `sha256` is 64 zeros, a placeholder that stops a download rather than passing one. Tagging a release, filling those in and installing the result is still to be done: phase 5 deliberately did **not** do it, because an install writes into the Homebrew prefix and that is the owner's machine to change. The exact commands it would take are under phase 5 below, and `docs/macos-release-bar.md` item 6 is the same question as a verdict. **0.0.3 adds an experimental, ad-hoc-signed `ButterEye.app` on a disk image** (`packaging/macos/build-app.sh`): its own Python, Qt, VapourSynth, mpv, FFmpeg, plugins and MoltenVK, no Homebrew needed, measured from the image on this one Mac — see "The .app" below, Gatekeeper included |
 | `doctor` checks | `rpm -q`, `dnf` lines, `journalctl -k`, sysfs | done: install record, `winget` lines, Vulkan devices (phase 2) | done (phase 2): Homebrew's Cellar read as files, `brew` lines, IOKit GPUs, the loader and MoltenVK under the Homebrew prefix, `kern.bootsessionuuid` for the boot id — and the things a Mac genuinely cannot answer say so rather than naming a Fedora package (GPU fault history is not read yet, TensorRT is permanent). Its one blocking finding, the in-mpv probe (BE-1005), stopped blocking in phase 4, with nothing exported by hand: measured here, a full run goes from `11 ok, 4 info, 1 degraded, 1 blocking` to `13 ok, 5 info, 1 degraded, 0 blocking` and exit code 0, the one degraded row being RIFE not installed. Before it, a full run answered with `sudo dnf copr enable`, `libvulkan.so.1` and `usermod -aG systemd-journal`, and reported ffms2 and the Vulkan loader missing while both were installed |
 
 Short version: **the architecture ports, and on Windows the core's plumbing now does too** (phase 1, below). The core is
@@ -156,7 +157,62 @@ repository root.
   applies it by number (`Patch2`, `%patch -P2 -p1`). So this is the one thing
   phase 4 changes about the Linux build, deliberately: it turns a crash into a
   path that works. `packaging/macos/build-rife.sh` applies the same three
-  patches in the same order.
+  patches in the same order. Verified on Fedora since (2026-10-13,
+  `docs/macos-release-bar.md` item 15): built for fc44 and fc45 as
+  `buttereye-vs-rife-ncnn-9.33-2` with `packaging/build-in-container.sh`, v0.0.2's
+  9.33-1 aborts at a 242-character `model_path` on both (glibc's
+  `*** buffer overflow detected ***`, `SIGABRT`) and 9.33-2 renders at every
+  length up to 300.
+
+### Python 3.15 and PySide6 (Fedora 45)
+
+Fedora 45 ships Python 3.15 (`python3-3.15.0-1.fc45`), which binds some stdlib
+names with PEP 810 lazy imports; `concurrent/futures/__init__.py` has
+`lazy from .thread import ThreadPoolExecutor` (and the same for
+`ProcessPoolExecutor`). **Once shiboken6 is imported (`python3-shiboken6-6.11.2-2.fc45`),
+a lazy `from .submodule import name` in a package is no longer resolved on
+attribute access**: `concurrent.futures.ThreadPoolExecutor` stays the
+`lazy_import` proxy. A lazy import of an absolute module (`lazy from os.path import join`)
+still resolves; a binding already resolved before shiboken6 was imported stays
+resolved. Reading the attribute through the original
+`types.ModuleType.__getattribute__` slot does resolve it, so the lookup that
+normally resolves it is being bypassed rather than broken. That points at shiboken6
+replacing the module type's C-level attribute lookup. This was not traced into
+shiboken6's source. Either way it is a Fedora 45 / PySide6 6.11 interaction,
+not ButterEye code. Minimal reproduction, measured in a fresh `fedora:45` amd64
+container:
+
+```sh
+python3 -c 'import shiboken6, concurrent.futures as cf; print(type(cf.ThreadPoolExecutor).__name__)'
+# lazy_import            (without the shiboken6 import: type)
+```
+
+asyncio creates every loop's default executor from that attribute, so in a
+process that has imported PySide6 every `asyncio.to_thread` and
+`loop.run_in_executor(None, …)` raises
+`TypeError: 'lazy_import' object is not callable`. In `buttereye-gui` that was
+three features, and **it ships in v0.0.2**. The published
+`buttereye-0.0.2-1.fc45.noarch.rpm`, checked against the release's `SHA256SUMS`,
+answers `storage.entries` normally without PySide6 and with this TypeError
+once `PySide6.QtCore` is imported. The bridge turns a non-ButterEye exception
+into BE-9999, so a Fedora 45 user sees:
+
+- **Storage** shows an error panel with Retry instead of the sizes, and Retry fails the same way.
+- **Clean** reports "Cleaning failed: … (BE-9999)".
+- **The model list** shows the same error panel.
+
+The CLI never imports PySide6 and is not affected (measured, same RPM).
+
+Fixed in 0.0.3 by `buttereye.gui._resolve_lazy_executors`, which runs when the
+`buttereye.gui` package is imported, before any of its modules imports PySide6.
+A plain attribute read there resolves both names the normal way. If shiboken6
+was imported first (pytest-qt does this), it stores the very class the lazy
+import names, which is all resolution would have done. `tests/gui/test_bridge.py`
+checks `asyncio.to_thread` on the GUI's core loop in a fresh interpreter, in both
+import orders. Without the fix both cases fail on fc45; with it they pass, and
+on 3.14 nothing changes. The suite's core tests run on pytest-asyncio's loops
+under pytest-qt, so `tests/conftest.py` applies the same repair at
+`pytest_configure`. Worth reporting to PySide6 and Fedora.
 
 ## Windows: the port, phase by phase
 
@@ -1691,6 +1747,10 @@ trusted-directory cases of the bullet above — live in
 
 #### Why a tap and not an `.app`
 
+*Superseded for 0.0.3: the owner chose to ship an unsigned `.app` after all; see
+"The .app" below, which also measures what Gatekeeper does with it. This section is
+kept as the record of the phase-4 reasoning.*
+
 It is a decision about money, not an engineering gap, and this page should not
 imply the bundle is merely unwritten. Notarising an application needs a paid
 Apple Developer ID (99 USD a year). Without one, an unsigned or ad-hoc-signed
@@ -1900,7 +1960,8 @@ that the two are not the same product, 21.3 % of output samples differing and
 **Offline only, and no user-facing string may say otherwise.** 8.5–9.8 fps at
 1080p on an M2 against the ≈48 fps a live 2× 24p needs, before SCOPE F2's 1.15×
 headroom: about five times too slow. `buttereye render` uses it; live playback
-should not. `gpu_thread` must be 1, where ButterEye's default is 4. The RIFE
+should not. `gpu_thread` must be 1, where ButterEye's default is 4 — and since
+2026-10-13 ButterEye passes 1 on macOS (`scriptgen.rife_gpu_thread`). The RIFE
 formula's `caveats` says both of those and the ncnn difference, in those words.
 
 `-DVulkan_LIBRARY` is deliberately **not** passed, against what this page said
@@ -2052,20 +2113,49 @@ what it proved or failed to.
   `libmvgpu.dylib` and `librife.dylib` phases 3 and 4 built sit in a build
   directory under `~/.cache` that ButterEye never searches. So **a plain Homebrew
   install still measures one engine**, and the fix for that is a release to point
-  the tap at, not more code: item 1 of the release bar's shortest honest path.
-  What the measurement does not settle is the chooser. `select._from_bench` reads
+  the tap at, not more code: step 2 of the release bar's shortest honest path.
+  What the measurement did not settle was the chooser. `select._from_bench` read
   only `res.recommended`, and mvgpu is deliberately absent from `ranked`, so a
-  result that recommends mvgpu — the normal case at 720p and 1080p on a Mac, and
-  at 1440p too on a quiet machine — is discarded whole and the user is told no
-  measurement exists (`from_benchmark` False, "MVTools on the CPU: RIFE can't run
-  here", reproduced here). On this Mac the pick is still `mvtools`, the right
-  engine for a wrong reason, only because RIFE is not installed and so not in
-  `ranked`. Fed the same 720p and 1080p rows with RIFE available, `select.select`
-  returns **live `rife-ncnn`** — measured 2026-10-13 against
+  result that recommended mvgpu — the normal case at 720p and 1080p on a Mac, and
+  at 1440p too on a quiet machine — was discarded whole and the user was told no
+  measurement existed (`from_benchmark` False, "MVTools on the CPU: RIFE can't
+  run here"). On this Mac the pick was still `mvtools`, the right engine for a
+  wrong reason, only because RIFE is not installed and so not in `ranked`. Fed
+  the same 720p and 1080p rows with RIFE available, `select.select` returned
+  **`rife-ncnn`** — measured 2026-10-13 against
   `tests/core/test_macos_doctor_pure._ready_mac` — in a run whose own RIFE rows
   were 20.07 and 8.33 fps with `realtime` False. That is why
-  `docs/macos-release-bar.md` moves this fix ahead of installing the tap: the
-  install is what makes the wrong reason into a wrong engine.
+  `docs/macos-release-bar.md` put this fix ahead of installing the tap.
+  **Fixed the same day** (release bar step 1): a recommendation the chooser cannot
+  rank no longer throws the run away; the same run is asked again among the
+  rankable engines with `bench.runner.recommend`'s own rule (quality order,
+  repeatable first, real time in mpv, no GPU fault), so an engine the run
+  measured too slow is never chosen while another rankable engine in that run
+  held real time. Every complete m0s run that recommended mvgpu — 720p `a`, `b`,
+  1080p `a`, `b`, `c`, 1440p `f`, `h` — now gives `mvtools` with
+  `from_benchmark` True on the same fixture, and
+  `test_a_benchmark_that_recommends_mvgpu_keeps_rife_off_live_playback` reads
+  those rows from `m0s-results.json` and fails against the old code. Setup's
+  proposal is made with no benchmark history at all, and a history where nothing
+  rankable keeps up (both 4K runs) is no evidence; both give the unmeasured
+  default, which on a Mac is now MVTools rather than RIFE (next bullet).
+- **Live RIFE on a fresh install, which the fix above did not reach.** The
+  shipped Quality, Balanced and Fast profiles are pinned to RIFE-ncnn and a
+  pinned engine with no benchmark ran uncapped, so a fresh install with no
+  benchmark played a 24p 1080p film with RIFE v4.26 — measured from the `.app`
+  at 6–8 % of real time ("The .app", below; release bar item 18). Fixed on
+  2026-10-13 with one macOS-only rule, `decide.rife_live_needs_proof()`: on a Mac
+  RIFE-ncnn runs live only on a benchmark that measured it or by the user's own
+  choice. A shipped profile's unchosen RIFE becomes Automatic
+  (`session.wanted_backend`); Automatic skips an unmeasured RIFE for the next
+  engine or gives "too demanding" when it is the only one (`decide.pick_engine`);
+  Setup proposes and smoke-tests MVTools (`select.select`'s fallback); and
+  `gpu_thread` is 1 on macOS everywhere a RIFE script is written
+  (`scriptgen.rife_gpu_thread`). Linux and Windows are untouched — the rule is
+  False there. The release bar's item 18 has the tests, the reasoning for
+  MVTools over mvgpu as the unmeasured default, and a re-measurement from a
+  rebuilt image that shows the right engine but, on a loaded machine, not real
+  time.
 - **A plugin-search fix that had landed in the doctor only, and now has not.**
   Phase 4 made the plugin search a path because asking one directory shipped a
   false BLOCKING doctor row, and this page said so under "The tap" above — but
@@ -2094,6 +2184,19 @@ what it proved or failed to.
   no longer name different copies of the same plugin. Held by
   `tests/core/test_macos_doctor_pure.py::test_the_engine_chooser_asks_every_plugin_directory_a_mac_has`,
   which asserts the pre-fix answer before the post-fix one, so a revert fails it.
+  **One call site was missed and has since been fixed:** offline render.
+  `render/jobs.py` still passed `paths.rpm_plugin_dir` to
+  `decide.installed_backends` and named it as the render script's `PLUGIN_DIR`,
+  so on the same prefix `buttereye render` saw `[mvgpu, rife-ncnn]` and lost
+  MVTools. It now passes `paths.plugin_dirs` and names
+  `paths.plugin_dir_for(…, the engine's plugin)`, the same answers live play
+  uses; re-run on a scratch prefix of that shape it sees
+  `[mvgpu, mvtools, rife-ncnn]` and points an MVTools render at the autoload
+  directory. Held by
+  `…::test_offline_render_asks_every_plugin_directory_a_mac_has` (which fails
+  against the old `jobs.py`) and `…::test_offline_render_keeps_its_one_directory_off_macos`
+  for the Linux answer. No real render has been run through it on a tap
+  install; that is the release bar's item 6.
 - **A code-execution hole in phase 4's VSScript search, found and closed.**
   `vsscript_library()` read `sys.path`, whose first entry under `python -m` is the
   current directory, and what it returns is handed to mpv as `VSSCRIPT_PATH` and
@@ -2237,6 +2340,289 @@ non-goals, no dates". Nothing in phase 5 edits any of that. What phase 5 produce
 instead is the evidence, so that a decision — to release something for macOS, to
 keep it as a measured port in the tree, or to stop — starts from numbers with
 machines attached rather than from a mood.
+
+### The .app: ButterEye.app on a disk image (0.0.3, experimental)
+
+**The owner reversed the phase-4 decision below ("Why a tap and not an `.app`")**:
+macOS ships in 0.0.3 as a downloadable, **unsigned** (ad-hoc signed) disk image
+holding a self-contained `ButterEye.app`, for Apple Silicon, experimental as the
+Windows installer is. No Apple Developer ID was bought, so nothing is notarised, and
+what that costs a user was measured rather than assumed (Gatekeeper, below). The tap
+files stay as the alternative route; nothing in them changed.
+
+`packaging/macos/build-app.sh` builds it, the peer of
+`packaging/windows/build-installer.sh`, writing to `$XDG_CACHE_HOME/buttereye/macos`
+(never the repository): `ButterEye-<version>-macos-arm64.dmg`,
+`ButterEye-<version>-macos-sources.tar` and `SHA256SUMS`. Measured for 0.0.3 on the
+dev Mac (macOS 27.0.1, Apple M2): **the image is 109 093 047 bytes** (ULFO, an
+`/Applications` link beside the app), the app 240 MiB in 1 739 files, the sources tar
+170 576 384 bytes; a full build takes about three minutes once the downloads are
+cached. The SHA-256 of a build is in its `SHA256SUMS`; the image is not
+byte-reproducible (`hdiutil` writes its own timestamps), the stage and the tar are
+pinned to the last commit's time.
+
+#### What is inside, and where each part came from
+
+| Part | From | Why that one |
+|---|---|---|
+| Python 3.14.8 | python-build-standalone 20261009, `install_only_stripped`, pinned by SHA-256 (`packaging/macos/pins.sh`) | relocatable by design; its `python3.14` is static and its `libpython3.14.dylib` is what the launcher embeds and VSScript loads. Tcl/Tk, IDLE, pip, the test suite and the headers are removed |
+| PySide6-Essentials, Shiboken6 6.11.2 | the PyPI macOS wheels (universal2), thinned to arm64, trimmed to Core, Gui, Widgets, Svg, SvgWidgets and D-Bus (QtGui links D-Bus on macOS, measured) and the `cocoa`/`offscreen`/`minimal`, `macstyle`, SVG plugins | SCOPE F17: Essentials only. 129 MiB of Qt removed |
+| VapourSynth R81 | VapourSynth's own macOS arm64 wheel from PyPI | linked by `@loader_path` and to nothing outside macOS (`otool -L`), with `vspipe` beside `libvsscript.dylib`. Homebrew's R81 lives inside a virtualenv of Homebrew's framework Python and would have dragged that Python in |
+| mpv 0.41.0, FFmpeg 9.0.2 (`ffmpeg`, `ffprobe`), ffms2 5.0, MVTools 29, MoltenVK 1.4.2, the Vulkan loader and `vulkaninfo` 1.4.363.0 | Homebrew's bottles on the build Mac, copied with every library they load: 63 files from 50 kegs, 84 MiB | no mpv for macOS outside Homebrew has the `vapoursynth` filter. Relocated, not rebuilt (below) |
+| `libmvgpu.dylib`, `librife.dylib`, the three RIFE models | `packaging/macos/build-plugins.sh`, as before; `librife.dylib` links Homebrew's ncnn, libomp, glslang and SPIRV-Tools, which come along | |
+| `Contents/MacOS/ButterEye` | `packaging/macos/launcher.c`, compiled by the build | see "The launcher" |
+
+Layout: `Contents/MacOS/ButterEye`; `Contents/Resources/` with `python/` (CPython and
+its `site-packages`: PySide6, Shiboken6, VapourSynth, ButterEye), `bin/` (mpv,
+ffmpeg, ffprobe, vulkaninfo), `lib/` (every library they and the plugins load,
+MoltenVK and the loader among them), `vapoursynth/` (mvtools, ffms2, mvgpu, rife),
+`share/rife-ncnn-models/`, `share/vulkan/icd.d/MoltenVK_icd.json` (its
+`library_path` relative, `../../../lib/libMoltenVK.dylib`), `licenses/`,
+`buttereye-install.json` and `ButterEye.icns` (drawn from
+`buttereye/gui/icons/buttereye.svg` by the bundled QtSvg, then `iconutil`).
+
+#### Relocation, and the check that holds it
+
+`appstage.py collect` walks every load command from the roots above, resolving
+`@rpath` and `@loader_path` the way dyld does, refuses anything that is neither
+macOS's own (`/usr/lib`, `/System`) nor under Homebrew's prefix, and copies each
+library under its own install name. `appstage.py relocate` then rewrites each file
+with `install_name_tool`: its id becomes `@rpath/<name>`, every dependency
+`@rpath/<name>`, every `LC_RPATH` that names the build machine is deleted (Homebrew's
+prefix, and the Xcode toolchain path mpv was linked with; `/usr/lib/swift` stays), and
+one is added per folder — `@executable_path/../lib` for `bin/`, `@loader_path` for
+`lib/`, `@loader_path/../lib` for `vapoursynth/`. A program gets its rpath even when
+it links nothing of the bundle's: measured, `vulkaninfo` `dlopen`s
+`libvulkan.1.dylib` by leaf name, and with Homebrew's rpath deleted it found no
+loader at all ("Vulkan loader is not installed") until it had one.
+
+`appstage.py check` is the gate, and the build stops when it fails: every Mach-O in
+the bundle (92) is arm64 alone, has no absolute dependency, id or rpath outside
+`/usr/lib` and `/System`, and every `@rpath`/`@loader_path` dependency resolves inside
+the bundle. It also prints the newest `LC_BUILD_VERSION` minos of them all, which the
+build writes as `LSMinimumSystemVersion`: **27.0**, because Homebrew bottles carry the
+macOS they were built on (mpv, FFmpeg, mvtools: minos 27.0; Qt and VapourSynth 13.x;
+Python 11.0). That is not a choice, it is what dyld enforces; older Macs would need
+bottles built for them (`brew fetch --bottle-tag`), which nobody has tried.
+`check-dylibs.sh` is unchanged — it judges a plugin directory that is meant to link
+Homebrew, which is the opposite question.
+
+Then every Mach-O is signed ad hoc on its own (`install_name_tool` and `lipo`
+invalidate the signatures they had), the bundle last, whose seal covers every file
+under `Resources`; `codesign --verify --deep --strict` passes on the build and on a
+copy taken out of the mounted image. `appstage.py scan` refuses the app and the
+sources tar if any file names the builder's home folder, user name or host name
+(two leaks it caught on the way: a comment of its own, and `build-rife.sh` writing its
+output folder's absolute path into the RIFE sources, now fixed).
+
+Strings are another matter and are not rewritten: some bottles carry Homebrew paths as
+data (fontconfig's configuration folder, OpenSSL's certificate folder, LuaJIT's module
+path). Each is a file that is simply absent on a Mac without Homebrew; none is loaded
+code, which is what the runtime measurement below checks.
+
+#### The runtime: how ButterEye knows it is in the app
+
+`osapi.MACOS_APP` is `Contents/Resources` when this process runs from the app, else
+None, decided once at import by `osapi.app_resources(sys.executable, __file__)`: the
+interpreter must be `<x>.app/Contents/Resources/python/bin/<file>` (resolved), this
+module must be inside that same `Resources/python`, and the install record and
+`Info.plist` must be there. No environment variable can make a process think it is the
+app. With it set:
+
+- programs: `osapi.executable` answers mpv, ffmpeg, ffprobe and vulkaninfo with the
+  app's own by full path, and never from `PATH` — a program the app should carry and
+  does not is missing, not Homebrew's; `osapi.bundled_vspipe` is the wheel's `vspipe`.
+- plugins and models: `types.macos_plugin_dir(s)` is the app's `vapoursynth/` alone,
+  and `rpm_data_dir` its `share/`, so the generated scripts, the engine chooser and the
+  doctor ask the same place; ffms2 is the app's (`scriptgen.generator._macos_ffms2`).
+- the doctor reads the app's install record (`checks_pkgs.manifest_db`, as on
+  Windows) instead of Homebrew's Cellar, its Vulkan rows look at the app's loader and
+  manifest, its fixes for anything the app carries say "download ButterEye again"
+  (`checks_pkgs.APP_REPAIR`) instead of a `brew` line, and the Licences tab lists the
+  app's components as conveyed (`licences._macos_app_rows`) with
+  `licenses/SOURCES.txt` as the source link. Outside the app all of it is unchanged:
+  every test that fakes the app also asserts the Homebrew answer with `MACOS_APP` None.
+- children: `osapi.point_at_app` puts `Resources/bin` first on `PATH`, sets
+  `VSSCRIPT_PATH` to the app's `libvsscript.dylib` and `VK_DRIVER_FILES` to the app's
+  MoltenVK manifest (without it the loader also searches `/opt/homebrew` and
+  `/usr/local` for drivers), sets `PYTHONNOUSERSITE=1`, and removes `PYTHONHOME`,
+  `PYTHONPATH`, `VAPOURSYNTH_EXTRA_PLUGIN_PATH`, `DYLD_LIBRARY_PATH`,
+  `DYLD_FRAMEWORK_PATH` and `DYLD_INSERT_LIBRARIES`; the docstring has the reason for
+  each. **The app sets no `DYLD_*` variable at all**: the Homebrew route's
+  `DYLD_FALLBACK_LIBRARY_PATH` existed for an mpv that ignores `VSSCRIPT_PATH`, and the
+  app's mpv reads it.
+
+**The trust decision for `/Applications`.** `_darwin._trustworthy_dir` refuses a
+directory another user can write before handing anything in it to mpv, because the
+Homebrew search reads `sys.path` and Homebrew's prefix. Inside the app that test is
+not applied, deliberately: what the app hands mpv is a file of the same bundle whose
+Python is already running ButterEye's code, so whoever can write it can already
+replace ButterEye itself, and refusing it would add no protection — while an app an
+administrator copied into `/Applications` is owned by them, so the ownership half of
+the test would refuse every other user's copy. What keeps the decision sound is that
+the bundle is found from the running interpreter and never from the environment or
+the working directory, and that nothing outside it is asked at all.
+
+**VSScript needs one line in the user's configuration.** VapourSynth R81's VSScript
+(the wheel's and Homebrew's alike) learns which Python to start from
+`$XDG_CONFIG_HOME/vapoursynth/vapoursynth.toml` (else `~/.config/...`): an entry keyed
+by the `libvsscript.dylib` path it was loaded from, naming the interpreter, its
+library and the interpreter's mtime. Without one it runs `vapoursynth config` through
+the shell and, finding none, fails (`src/vsscript/vsscript.cpp`, `readEnvConfig`). The
+Homebrew route only works because that command once wrote Homebrew's line on this
+Mac. `osapi.register_vsscript` writes the app's line at every start when it is not
+already there, exactly as `vapoursynth config` would, atomically, keeping every other
+line and dropping lines for app copies that no longer exist (a moved or translocated
+copy). It is the only file the app writes outside its own folders, and the README says
+so. If it cannot be written, the doctor's probe row says which file
+(`probe._app_vsscript_finding`).
+
+#### The launcher
+
+`Contents/MacOS/ButterEye` is `launcher.c`: it embeds the bundled
+`libpython3.14.dylib` with an isolated configuration (no `PYTHON*` variables, no user
+site-packages, no current directory on `sys.path`, `sys.executable` the bundled
+interpreter) and runs `buttereye.gui`, or `buttereye.cli` when it is given arguments
+or started as `buttereye`. It writes no bytecode — a `__pycache__` written into a
+signed bundle would break its seal, and `/Applications` may not be writable — so the
+build ships unchecked-hash `.pyc` files compiled with relative paths. A compiled main
+executable and not a script, because macOS takes the app's name, icon and bundle from
+the main executable's path: a script `exec`-ing `Resources/python/bin/python3.14`
+would show up as "python3.14". Measured: `lsappinfo` reports the running app as
+"ButterEye", `io.github.buttereye.ButterEye`, executable
+`Contents/MacOS/ButterEye`. The command line is
+`/Applications/ButterEye.app/Contents/MacOS/buttereye doctor`: APFS and HFS+ ignore
+case by default, so `buttereye` there *is* `ButterEye` (a separate file of that name
+could not exist beside it).
+
+#### Measured from the image (2026-10-13, this M2 only)
+
+Every run below used a copy taken out of the mounted 0.0.3 image (not the build
+stage), with `env -i` and only `HOME` (a fresh empty folder) and the system `PATH`, the
+way Finder starts an app — no Homebrew on `PATH`, no configuration, no benchmark.
+
+- **doctor**: `15 ok, 3 info, 1 degraded, 0 blocking`. The degraded row is mkvmerge,
+  which the app does not carry (optional; ffmpeg remuxes). mpv is the app's, the
+  in-mpv probe reports "VapourSynth R81 with Python 3.14.8" from the app's interpreter,
+  RIFE and MVTools load inside mpv from `Resources/vapoursynth`, mvgpu and the three
+  models are found, Vulkan reports the Apple M2 through the app's loader and MoltenVK.
+- **Nothing from Homebrew is loaded**: with `DYLD_PRINT_LIBRARIES`, ffmpeg,
+  vulkaninfo, vspipe and mpv running a VapourSynth filter load no file under
+  `/opt/homebrew` or `/usr/local` — on a Mac that *has* Homebrew, which is the hard
+  case. `lsof` on a live, smoothing mpv agrees: 90-93 mapped files, none outside the
+  app and the system.
+- **Live smoothing** through the app's mpv: the MVTools profile on a 1080p 23.976 fps
+  clip with audio, `23.976 → 47.952 fps with mvtools (active, ok)`, 15.08 s of video in
+  15 s of wall time, 1 dropped frame. After a benchmark, Automatic picked mvgpu:
+  `23.976 → 47.952 fps with mvgpu (active, ok)`, real time, 0 dropped.
+- **Offline render**: 4 s of 1080p into 196 frames of 47.952 fps HEVC (libx265),
+  with RIFE v4.26 (7.4 fps) and with MVTools (22.8 fps).
+- **Every engine** ran from the app (`buttereye bench`, 1080p, fps in vspipe / in mpv):
+  RIFE v4.26 6.6/6.9, v4.18 5.6/5.5, v4.22-lite 8.1/8.1, mvgpu 75.3/83.2, MVTools
+  85.7/90.2; recommended mvgpu. The first-run setup's smoke test ran RIFE in the app's
+  vspipe at 19.1 fps (720p).
+- **The window**: started with `open`, the first-run setup ran, and
+  `tools/screenshots.py` run by the app's own Python drew every view of the simple
+  window through the real `cocoa` platform plugin and the app's Qt (the Details ▸
+  System tab: "0 problems, 1 warning, 15 checks passed").
+
+**Measured against the coordinator's question about a fresh install**: with no
+benchmark on file, Automatic live play in the app picks **RIFE** (setup's plan is
+"RIFE (Vulkan)", model v4.26) and RIFE does not hold real time on this M2: at 1080p
+without audio mpv slowed to 6-8 % of real time (1.2 s of video in 15 s); with audio,
+ButterEye saw the stall, fell back to MVTools at the 60 Hz display target, stalled
+again and rolled back to unsmoothed playback (145 frames dropped). 1440p: RIFE, 4.8 %
+of real time. 4K: RIFE, stalled, fell back to CPU smoothing, then bypassed. MVTools
+2× and mvgpu are real time at 1080p. That is the engine chooser's question, not the
+app's, and is reported rather than changed here.
+
+**Since fixed in the chooser** (release bar item 18, 2026-10-13): on a Mac RIFE runs
+live only on a benchmark that measured it or by the user's choice, and `gpu_thread`
+is 1. Re-measured from a rebuilt image the same way — fresh copy, `env -i`, empty
+`HOME`, no benchmark — but on a loaded machine (a virtual machine on about four of
+the eight cores, 1-minute load average 15.3–18.6): setup says "Set up with mvtools."
+and smoke-tests MVTools (160.26 fps, 720p); Automatic plays 1080p and 4K with
+**MVTools at the 60 Hz display rate**, not RIFE. Neither held real time under that
+load — 1080p dropped 47–81 % of frames over 10 s and rolled back to unsmoothed
+playback, 4K stalled and rolled back, and even MVTools' plain 2× dropped 150 frames
+in 10 s — so this run shows the engine choice, not live smoothing at speed. An idle
+re-run is still owed.
+
+#### Gatekeeper, measured on macOS 27.0.1
+
+A copy of the image was given the attribute a browser sets
+(`com.apple.quarantine` = `0083;<time>;Safari;`):
+
+- `spctl --assess -vv --type open --context context:primary-signature` on the image:
+  `rejected`, `source=no usable signature` (exit 3). The image itself is unsigned.
+- mounted, the volume carries the `quarantine` mount flag, and copying the app out of it
+  (what a Finder drag does; measured with `cp -R` and `ditto`) puts the attribute on
+  **every one of its 1 739 files**.
+- `spctl --assess -vv --type execute` on that copy: `rejected` (exit 3).
+  `syspolicy_check distribution`: "App has failed one or more pre-distribution
+  checks" — "Adhoc Signed App" (warning) and "Notary Ticket Missing" (fatal).
+- `open` on it: the app does not start; syspolicyd logs "rejecting due to lack of
+  matching active rule" and "Prompt shown (6, 0), waiting for response" for
+  `io.github.buttereye.ButterEye`. The dialog's wording could not be read here (no
+  screen-recording or accessibility permission for the tools).
+- running one of its programs directly from Terminal (`.../bin/mpv --version`,
+  `.../MacOS/buttereye --version`) **blocks**: Gatekeeper holds the `exec` waiting for
+  an answer to a prompt (killed after 20 s). The programs inside the app are judged
+  one by one, which is what makes the next point matter.
+- `xattr -dr com.apple.quarantine <copy>/ButterEye.app` removes it from all 1 739
+  files, `codesign --verify --deep --strict` still passes (the attribute is not part of
+  the seal), and then everything runs: the CLI, the doctor (0 blocking), and `open`
+  starts the window. `spctl --assess` still answers `rejected` afterwards — the
+  assessment does not change, only its enforcement, which applies to quarantined files.
+
+**The user steps, as measured**: drag the app to Applications, run
+`xattr -dr com.apple.quarantine /Applications/ButterEye.app` once in Terminal, open
+it. **Not measured**: the System Settings ▸ Privacy & Security ▸ **Open Anyway**
+route — it needs a person to click, and no tool here could — and in particular
+whether that approval of the app also covers mpv, vspipe and ffmpeg, each of which
+still carries the attribute and is started by ButterEye later. So the README
+documents the Terminal route, and the doctor names any of the app's programs still
+quarantined (`packages.app_quarantine`, BLOCKING, with that command;
+`osapi.app_quarantined` reads the attribute with `getxattr`).
+
+#### Licences and the Corresponding Source
+
+Everything in the app is conveyed by ButterEye, so the source duty is ButterEye's —
+the opposite of the tap, where Homebrew conveyed the bottles.
+`ButterEye-<version>-macos-sources.tar` carries: this source tree (with
+`packaging/`, so the app can be rebuilt); ButterEye's plugin sources and patches;
+for each of the 50 Homebrew formulae its recipe exactly as the bottle was built
+from it (`<keg>/.brew/<formula>.rb`, checked identical to the recipe `brew` would
+build from today, or the build stops), and for each whose keg declares a GPL, LGPL or
+MPL licence (21 of them: mpv, FFmpeg, x264, x265, ffms2, MVTools, fftw, GLib, libintl,
+libplacebo, rubberband and the rest) the source archive and patches `brew fetch
+--build-from-source` verifies against the recipe — plus patches that live in
+homebrew-core itself (GLib's), taken from homebrew-core at the recipe's commit, and
+x264's git checkout, archived; VapourSynth's sdist; and Qt's qtbase and qtsvg and
+PySide6's pyside-setup sources. `licenses/<component>/` holds every licence text
+(Homebrew's per keg, Python's and everything statically in it from the matching
+python-build-standalone "full" archive, Qt's own and its third-party notices),
+`buttereye-install.json` lists 59 components with version and SPDX expression (the
+Homebrew ones read from each keg's SBOM), and `licenses/SOURCES.txt` is the written
+offer, as on Windows. Each Homebrew binary is the bottle's with only its load commands
+rewritten and its signature redone, and SOURCES.txt says how to put a rebuilt library
+in its place.
+
+#### What is not verified, and could not be here
+
+- **One machine**: one M2, one macOS (27.0.1), one account that *has* Homebrew
+  installed (the measurements prove nothing from it is loaded, not that a Mac without
+  it behaves identically — a second Mac is still item 20 of the release bar).
+- **Open Anyway** (above), and what the Gatekeeper dialog says.
+- **macOS older than 27**: refused by `LSMinimumSystemVersion` and by dyld; untried.
+- **`/Applications` itself**: every run used a copy in a temporary folder, not
+  `/Applications` (the owner's machine; not touched), and no run was translocated —
+  App Translocation applies to a quarantined app opened in place, which the steps
+  above avoid; ButterEye finds everything relative to its own executable, so a
+  translocated path should not matter, but that is reasoning, not a measurement.
+- **A second user account** opening a copy another account installed.
+- **CI**: `.github/workflows/macos.yml` does not build the app (it installs no
+  Homebrew bottles, which the build needs).
 
 ## What would not change
 

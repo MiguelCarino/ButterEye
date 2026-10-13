@@ -30,6 +30,21 @@ Needs `mock` (and membership of the `mock` group), `rpm-build`, `rpmdevtools` (`
 and `python3 -m build`. Uploading to the COPR (`copr-cli build <owner>/buttereye *.src.rpm`
 in a project created with `--enable-net off`) is the owner's step.
 
+From a host that is not Fedora x86_64 (an Apple Silicon Mac, say), the same script runs
+unchanged inside a pinned `fedora:44` amd64 container (podman, `--privileged`, mock with
+`isolation=simple`), with the same arguments and `SPECS`/`JOBS`, into the same results
+directory:
+
+```sh
+packaging/build-in-container.sh                          # all five, fedora-44 and fedora-45
+SPECS="buttereye" packaging/build-in-container.sh        # the application only
+```
+
+On Apple Silicon the container runs under qemu-user in the podman machine. Rosetta is
+**not** usable for this: on the machine's 6.19 kernel GNU tar 1.35 fails every file with
+`Cannot stat: Function not implemented` under it (measured), so leave the machine's
+Rosetta off. Give the machine 6 CPUs and 8 GiB (`podman machine set --cpus 6 --memory 8192`).
+
 ## Windows plugins (docs/PLATFORMS.md, phases 3 and 4)
 
 ```sh
@@ -302,6 +317,27 @@ refused outright (measured: an ad-hoc-signed binary with that attribute set is
 `rejected` by `spctl -a -t exec`). A signed and notarised bundle needs a paid
 Apple Developer ID, which is an owner decision about money and not a
 prerequisite for anything in this directory.
+
+## macOS app and disk image (docs/PLATFORMS.md, "The .app"; 0.0.3, experimental)
+
+```sh
+packaging/macos/build-app.sh                  # runs build-plugins.sh first if needed
+BUTTEREYE_TEST_APP=~/.cache/buttereye/macos-app/stage/ButterEye.app \
+    python -m pytest tests/macos/test_app_bundle.py   # the opt-in gate, from outside
+```
+
+On an Apple Silicon Mac with the Xcode command-line tools and, as build inputs,
+Homebrew's `mpv ffmpeg ffms2 vapoursynth-mvtools molten-vk vulkan-loader vulkan-tools`
+(plus what `build-plugins.sh` needs). Downloads are pinned in `macos/pins.sh`;
+`macos/appstage.py` does the copying, relocation (`install_name_tool`), checking and
+licence work, `macos/launcher.c` is the app's main executable, and
+`macos/appstage-icon.py` draws the icon with the bundled Qt. Output in
+`~/.cache/buttereye/macos/` (`$XDG_CACHE_HOME` if set):
+`ButterEye-<version>-macos-arm64.dmg`, `ButterEye-<version>-macos-sources.tar`
+(Corresponding Source of every GPL/LGPL/MPL part and every Homebrew recipe; needs
+network for `brew fetch --build-from-source`) and `SHA256SUMS`; `--no-sources` skips
+the tar for a quick local build, never for a release. Ad-hoc signed only: the README's
+macOS section has the one Terminal command a user runs after downloading it.
 
 ## macOS: the Homebrew tap (docs/PLATFORMS.md, the macOS phase table, phase 4)
 

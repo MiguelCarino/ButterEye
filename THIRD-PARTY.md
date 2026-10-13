@@ -62,6 +62,36 @@ installer offers to download it from Microsoft when you agree; `buttereye doctor
 checks it). Qt's image-format plugins other than SVG (JPEG, TIFF, WebP, GIF, ...) are
 not shipped either: ButterEye draws only SVG icons.
 
+## Shipped by the macOS app (experimental, not released yet)
+
+`ButterEye.app` (`docs/PLATFORMS.md`, "The .app"; built by
+`packaging/macos/build-app.sh`) conveys, besides ButterEye, the plugins and the
+models above (built for arm64 macOS), everything it runs. Its licence texts are in
+`ButterEye.app/Contents/Resources/licenses/<component>/`, `buttereye-install.json` next
+to them lists every component with its version and licence (the Licences tab reads
+it), and `licenses/SOURCES.txt` is the source offer. The
+`ButterEye-<version>-macos-sources.tar` published beside the disk image carries the
+Corresponding Source of every GPL, LGPL and MPL component, and the build recipe of
+every Homebrew bottle.
+
+| Component | Version | Licence | How ButterEye uses it |
+|---|---|---|---|
+| Python (python-build-standalone, unmodified) | 3.14.8 (build 20261009) | PSF-2.0 AND 0BSD AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND MIT AND OpenSSL AND Zlib AND bzip2-1.0.6 AND blessing (CPython and what it links statically: OpenSSL 3, SQLite, libffi, xz, bzip2, zlib, expat, mpdecimal, libedit, ncurses) | runs ButterEye; VSScript starts it inside mpv and vspipe |
+| PySide6 / Qt 6 (Core, Gui, Widgets, Svg, SvgWidgets, D-Bus; the plugins `qcocoa`, `qoffscreen`, `qminimal`, `qmacstyle`, `qsvgicon`, `qsvg`; the macOS wheel thinned to arm64, otherwise unmodified) | 6.11.2 | LGPL-3.0-only (conveyed under it), with the third-party notices in `licenses/pyside6/third-party/` | the window, in-process |
+| Shiboken6 | 6.11.2 | LGPL-3.0-only | PySide6's binding runtime, in-process |
+| VapourSynth (official macOS arm64 wheel, unmodified) | R81 | LGPL-2.1-or-later | `vspipe` and mpv's filter |
+| mpv (Homebrew bottle) | 0.41.0 | GPL-2.0-or-later AND LGPL-2.1-or-later | separate program, driven over JSON IPC |
+| FFmpeg (Homebrew bottle: `ffmpeg`, `ffprobe` and its libraries, which mpv also links) | 9.0.2 | GPL-3.0-or-later | separate program; libraries of mpv and ffms2 |
+| ffms2 (Homebrew bottle) | 5.0 | GPL-2.0-or-later (links GPL FFmpeg) | loaded by vspipe (smooth copies) |
+| MVTools (Homebrew `vapoursynth-mvtools`) and fftw | 29; 3.3.11 | GPL-2.0-or-later; GPL-2.0-or-later AND BSD-2-Clause | loaded by mpv and vspipe |
+| ncnn, libomp, glslang, SPIRV-Tools (Homebrew bottles) | as recorded | BSD-3-Clause; MIT; BSD-3-Clause AND GPL-3.0-or-later AND MIT AND Apache-2.0; Apache-2.0 | shared libraries the RIFE plugin links |
+| MoltenVK, Vulkan loader, Vulkan-Tools `vulkaninfo` (Homebrew bottles) | 1.4.2; 1.4.363.0; 1.4.363.0 | Apache-2.0 | the Vulkan driver, the loader, the GPU list |
+| The other libraries mpv and FFmpeg link (libplacebo, libass, HarfBuzz, FreeType, fontconfig, FriBidi, GLib, gettext's libintl, LuaJIT, x264, x265, SVT-AV1, dav1d, libvpx, Opus, LAME, mpg123, rubberband, libbluray, OpenSSL and more: 50 Homebrew bottles in all, each listed in `buttereye-install.json`) | as recorded | each its own (the bottle's SPDX expression, in the record) | shared libraries |
+
+Every Homebrew binary is the bottle's own, changed in exactly two ways by
+`build-app.sh`: its load commands point inside the app (`install_name_tool`), and it
+is signed again ad hoc because that change invalidates the old signature.
+
 ## Used from your system, not shipped
 
 These come from Fedora (or, for NVIDIA software, from NVIDIA) under their own licences.

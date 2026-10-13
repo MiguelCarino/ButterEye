@@ -418,6 +418,43 @@ def _vsscript_evidence(text: str, lib: Path | None = None) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _app_vsscript_finding(resources: Path, text: str) -> Finding:
+    """ButterEye.app's mpv could not start the app's VapourSynth.
+
+    Nothing is missing that a package manager could supply: the app carries the
+    library and hands it to mpv by full path (``osapi.point_at_app``). What can
+    still go wrong is VSScript's own configuration line, which tells it which
+    Python to start and which ButterEye writes when it opens
+    (``osapi.register_vsscript``): a configuration folder that cannot be written,
+    or a line that names another copy of the app. Failing that, the app itself is
+    damaged."""
+    config = osapi.vsscript_config(os.environ)
+    lib = osapi.app_runtime(resources)["vsscript"]
+    return _f(
+        "probe.run",
+        Severity.BLOCKING,
+        M("mpv can't start ButterEye.app's VapourSynth"),
+        code=ErrorCode.PROBE_FAILED,
+        cause=M(
+            "VapourSynth learns which Python to start from {config}, and ButterEye "
+            "writes the line for its own copy there when it starts. The line is "
+            "missing, could not be written, or names another copy of the app.",
+            {"config": str(config) if config is not None else VSSCRIPT_CONFIG_TEXT},
+        ),
+        fix=M(
+            "Make sure that file and its folder belong to you and can be written, start "
+            "ButterEye again, and run the checks. If it still fails, download ButterEye "
+            "again and replace ButterEye.app."
+        ),
+        commands=(),
+        evidence=_vsscript_evidence(text, lib),
+    )
+
+
+#: VSScript's configuration, for a message when no folder can be named
+VSSCRIPT_CONFIG_TEXT = "~/.config/vapoursynth/vapoursynth.toml"
+
+
 def _vsscript_finding(outcome: ProbeOutcome) -> Finding:
     """BE-1005 on macOS, where the probe fails for one measured reason that is not
     a missing package: mpv looks for VSScript by two bare leaf names, and the file
@@ -437,6 +474,8 @@ def _vsscript_finding(outcome: ProbeOutcome) -> Finding:
     """
     res = outcome.cmd
     text = f"{res.stderr}\n{res.stdout}" if res is not None else ""
+    if osapi.MACOS_APP is not None:
+        return _app_vsscript_finding(osapi.MACOS_APP, text)
     lib = vsscript_library()
     if lib is None:
         return _f(

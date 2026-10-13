@@ -23,6 +23,21 @@ is nothing of the sort to publish.
 What the tap does convey is **ButterEye's own code and ButterEye's own builds of
 two components**, and that is what the table below is about.
 
+## The app (0.0.3) is the other way round
+
+Everything on this page is about the **Homebrew tap**. The experimental
+`ButterEye.app` disk image that 0.0.3 adds (`build-app.sh`, `docs/PLATFORMS.md` "The
+.app") is the opposite case: it carries mpv, FFmpeg, ffms2, MVTools, MoltenVK, the
+Vulkan loader, every library they link, Python, Qt and VapourSynth inside itself, so
+**ButterEye conveys all of them and owes their source**. Its offer is the app's own
+`Contents/Resources/licenses/SOURCES.txt`, and `ButterEye-<version>-macos-sources.tar`,
+published beside the image, is the Corresponding Source: the recipe of every Homebrew
+bottle in the app exactly as it was built, the source archives and patches of every one
+under a GPL, LGPL or MPL licence, VapourSynth's, Qt's and PySide6's sources, and this
+repository with the scripts that built the app. It is ad-hoc signed and not notarised,
+so the "nothing needs to be signed" reasoning below does not apply to it; what
+Gatekeeper does with it is measured in `docs/PLATFORMS.md`.
+
 ## Nothing is signed or notarised, and nothing needs to be
 
 `brew` fetches over curl and sets no `com.apple.quarantine` attribute on what it

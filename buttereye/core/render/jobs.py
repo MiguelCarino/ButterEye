@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from buttereye.core import capabilities, filelog, osapi
+from buttereye.core import paths as _paths
 from buttereye.core.backends import trt
 from buttereye.core.capabilities import ProviderRef
 from buttereye.core.commands import install_command
@@ -51,9 +52,9 @@ from buttereye.core.render import probe as rprobe
 from buttereye.core.scriptgen.generator import (
     MVGPU_CONCURRENT_FRAMES_DEFAULT,
     RIFE_CONCURRENT_FRAMES_DEFAULT,
-    RIFE_GPU_THREAD_DEFAULT,
     FilterParams,
     ScriptConstants,
+    rife_gpu_thread,
     user_data,
     write_atomic,
     write_script,
@@ -347,8 +348,19 @@ def _ffms2_lib() -> Path:
     return ScriptConstants().ffms2_lib
 
 
-def _constants(ctx: ProviderContext) -> ScriptConstants:
-    return ScriptConstants(ctx.paths.rpm_plugin_dir, _ffms2_lib())
+def _constants(ctx: ProviderContext, engine: BackendId | None = None) -> ScriptConstants:
+    """The script's ``PLUGIN_DIR``: the one directory that really holds ``engine``'s
+    plugin (``paths.plugin_dir_for``), as live play and the benchmark resolve it.
+
+    A ``.vpy`` names a single directory, so this cannot be the search path, and on
+    a Mac with the tap it must not be ``paths.rpm_plugin_dir`` either: that is
+    ButterEye's own directory there, and Homebrew's ``mvtools.dylib`` is in
+    VapourSynth's autoload one - measured in docs/macos-release-bar.md, item 6.
+    Off macOS the search path is that one directory, so nothing changes there.
+    ``engine`` None or TensorRT: no plugin to resolve, the packaged directory.
+    """
+    name = decide.BACKEND_PLUGIN.get(engine) if engine is not None else None
+    return ScriptConstants(_paths.plugin_dir_for(ctx.paths, name), _ffms2_lib())
 
 
 # ---------------------------------------------------------------- profile, engine, estimates
@@ -378,7 +390,7 @@ def vspipe_requests(engine: BackendId) -> int | None:
     if engine is BackendId.MVGPU:
         return MVGPU_CONCURRENT_FRAMES_DEFAULT
     if engine is BackendId.RIFE_NCNN:
-        return max(RIFE_CONCURRENT_FRAMES_DEFAULT, RIFE_GPU_THREAD_DEFAULT + 2)
+        return max(RIFE_CONCURRENT_FRAMES_DEFAULT, rife_gpu_thread() + 2)
     if engine is BackendId.RIFE_TRT:
         return RIFE_CONCURRENT_FRAMES_DEFAULT  # a few frames per CUDA stream
     return None
@@ -409,8 +421,10 @@ def _trt(ctx: ProviderContext, profile: Profile | None) -> tuple[trt.TrtInstall,
 
 def _installed(ctx: ProviderContext, profile: Profile | None = None) -> frozenset[BackendId]:
     p = ctx.paths
+    # every plugin directory, not one: on a Mac with the tap the one would be
+    # ButterEye's own and MVTools would vanish from the render (paths.plugin_dirs)
     return decide.installed_backends(
-        p.rpm_plugin_dir,
+        _paths.plugin_dirs(p),
         p.rpm_data_dir / MODEL_SUBDIR,
         (p.data_dir / USER_MODEL_SUBDIR,),
         trt=_trt(ctx, profile) is not None,
@@ -844,7 +858,7 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
         job.phase = RenderPhase.RENDER
         _emit(ctx, job)
         script.parent.mkdir(parents=True, exist_ok=True)
-        write_script(script, _constants(ctx))
+        write_script(script, _constants(ctx, engine))
         trt_settings: dict[str, Any] | None = None
         if engine is BackendId.RIFE_TRT and mc is not None and mc.name is not None:
             trt_settings = await _trt_engine(ctx, profile, mc.name, (w, h), script)
@@ -859,7 +873,7 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
             range=rprobe.vs_range(info),
             model_path=mc.path if mc is not None else None,
             gpu_id=_gpu_index(ctx) if engine in (BackendId.RIFE_NCNN, BackendId.MVGPU) else None,
-            gpu_thread=RIFE_GPU_THREAD_DEFAULT if engine is BackendId.RIFE_NCNN else None,
+            gpu_thread=rife_gpu_thread() if engine is BackendId.RIFE_NCNN else None,
             uhd=decide.uhd_mode(w, h),
             sc_threshold=(profile.sc_threshold if profile is not None else 0.12)
             if engine in decide.GPU_BACKENDS

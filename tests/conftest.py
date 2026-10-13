@@ -39,7 +39,38 @@ TEST_MEM_MAX_MIB = 8192
 _WATCHDOG = pytest.StashKey[memguard.Watchdog]()
 
 
+def _resolve_lazy_executors() -> None:
+    """Python 3.15 binds ``concurrent.futures.ThreadPoolExecutor`` (and
+    ``ProcessPoolExecutor``) with ``lazy from .thread import ...``, and once
+    shiboken6 is imported that binding is never resolved: the attribute stays the
+    ``lazy_import`` proxy, and asyncio's default executor -- every
+    ``asyncio.to_thread`` -- fails with ``TypeError: 'lazy_import' object is not
+    callable`` (measured on Fedora 45: python3 3.15.0, python3-shiboken6 6.11.2).
+    pytest-qt imports shiboken6 before this file is read, so every core test that
+    awaits a thread on pytest-asyncio's loop hits it.
+
+    The product resolves it when ``buttereye.gui`` is imported
+    (``buttereye.gui._resolve_lazy_executors``; ``tests/gui/test_bridge.py`` checks
+    that in a fresh interpreter, where this function has not run). Core tests never
+    import the GUI, so the suite does the same here: the binding is set to exactly
+    the class the lazy import names. A no-op on 3.14 and wherever the binding is
+    already resolved.
+    """
+    import concurrent.futures as cf
+    from concurrent.futures.process import ProcessPoolExecutor
+    from concurrent.futures.thread import ThreadPoolExecutor
+
+    resolved: tuple[tuple[str, type], ...] = (
+        ("ThreadPoolExecutor", ThreadPoolExecutor),
+        ("ProcessPoolExecutor", ProcessPoolExecutor),
+    )
+    for name, cls in resolved:
+        if type(vars(cf).get(name)).__name__ == "lazy_import":
+            setattr(cf, name, cls)
+
+
 def pytest_configure(config: pytest.Config) -> None:
+    _resolve_lazy_executors()
     reason = memguard.preflight()
     if reason is not None:
         pytest.exit(f"memory failsafe: {reason}", returncode=3)

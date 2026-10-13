@@ -55,6 +55,7 @@ from buttereye.core.scriptgen.generator import (
     RIFE_GPU_THREAD_DEFAULT,
     FilterParams,
     ScriptConstants,
+    rife_gpu_thread,
     write_script,
 )
 from buttereye.core.scriptgen.generator import user_data as generator_user_data
@@ -88,6 +89,7 @@ MVGPU_PLUGIN = osapi.plugin_file("libmvgpu.so")
 # §4.4 / M0(f), RTX 4090, 1080p 2x: plugin gpu_thread 2 gives ~52 fps and 4 gives ~72
 # fps in vspipe. Inside mpv, concurrent-frames 4 reaches ~46 fps and 8 ~56-58 fps
 # (owner decision 2026-10-07: 8). The two are set independently; see scriptgen.
+# (1 on macOS, read per run: scriptgen.rife_gpu_thread)
 RIFE_GPU_THREAD = RIFE_GPU_THREAD_DEFAULT
 RIFE_CONCURRENT_FRAMES = RIFE_CONCURRENT_FRAMES_DEFAULT
 BUFFERED_FRAMES = 4  # §4.4
@@ -114,10 +116,17 @@ INSTALL_VSPIPE = "sudo dnf install vapoursynth-tools"
 REPAIR = Msg("Run the ButterEye installer again and choose Repair.")
 
 
+#: ButterEye.app: the plugins and VapourSynth came inside the app
+APP_REPAIR = Msg("Download ButterEye again and replace ButterEye.app with the new copy.")
+
+
 def _install_fix(fix: Msg, command: str) -> tuple[Msg, tuple[str, ...]]:
-    """(fix, commands): the dnf line on Linux; on Windows the installer's Repair."""
+    """(fix, commands): the dnf line on Linux; on Windows the installer's Repair;
+    in ButterEye.app a fresh copy of the app."""
     if osapi.IS_WINDOWS:
         return REPAIR, ()
+    if osapi.MACOS_APP is not None:
+        return APP_REPAIR, ()
     return fix, (command,)
 
 
@@ -373,7 +382,7 @@ def user_data(
         "backend": _SCRIPT_BACKEND[c.backend],
         "plugin_dir": os.fspath(candidate_plugin_dir(tools, c.backend)),
         "model_path": os.fspath(c.model_path) if c.model_path is not None else None,
-        "gpu_thread": RIFE_GPU_THREAD,
+        "gpu_thread": rife_gpu_thread(),
         "gpu_id": gpu_id,
         # §5.3: RIFE-ncnn's uhd flag at 4K; only v1-v3 models read it (v4.x ignore it)
         "uhd": width > 2560 or height > 1440,

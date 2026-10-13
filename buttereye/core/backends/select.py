@@ -12,8 +12,14 @@
    RIFE-ncnn, MVTools. Without the opt-in TensorRT is never ranked. mvgpu (the
    optional GPU motion-vector engine) has a status for the Profiles editor but
    is never ranked or offered by Setup: live play picks it per file (§5.3).
-4. A benchmark recommendation (no GPU faults, real time) wins; otherwise the
-   §5.3 conservative defaults: RIFE v4.26 on a discrete GPU with >= 16 GiB,
+4. A benchmark recommendation (no GPU faults, real time) wins. When it names an
+   engine that is not ranked (mvgpu always; TensorRT once switched off), the
+   same run's best real-time rankable measurement stands in for it, so an
+   engine that run measured too slow for live play is not picked over one it
+   measured fast enough (:func:`_from_bench`). Otherwise the
+   §5.3 conservative defaults - except on macOS, where an unbenchmarked RIFE
+   is never the live default and MVTools is proposed instead
+   (``decide.rife_live_needs_proof``): RIFE v4.26 on a discrete GPU with >= 16 GiB,
    else v4.22-lite (the packaged models in the report decide what exists).
    Quality above that default comes from the benchmark, not from the device
    list: see :func:`_high_end_gpu` for why an integrated GPU's heap size is no
@@ -28,13 +34,16 @@ from collections.abc import Sequence
 from buttereye.core import osapi
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
+from buttereye.core.mpvctl import decide
 from buttereye.core.types import (
     BackendId,
     BackendStatus,
+    BenchMeasurement,
     BenchResult,
     Config,
     DoctorReport,
     Finding,
+    Msg,
     Section,
     Selection,
     Severity,
@@ -336,18 +345,64 @@ def _default_model(report: DoctorReport) -> str | None:
     return models[0] if models else None
 
 
+def _usable(m: BenchMeasurement, ranked: Sequence[BackendId]) -> bool:
+    """A measurement the chooser may act on: an engine it can rank, held real time
+    in mpv, and no GPU fault (None = the fault log was not read, as on a Mac)."""
+    return m.backend in ranked and m.realtime and m.vspipe_fps > 0 and (m.gpu_faults or 0) == 0
+
+
 def _from_bench(
     bench: Sequence[BenchResult], ranked: Sequence[BackendId], gpu: str | None
-) -> tuple[BackendId, str | None, str] | None:
+) -> tuple[BenchMeasurement, BenchMeasurement | None] | None:
+    """The measurement to act on from the newest benchmark on this GPU, and the
+    recommendation it stands in for (None when it *is* the recommendation).
+
+    The recommendation wins when the chooser can rank it. When it cannot, the
+    same run is still evidence, and throwing it away whole was measured to be
+    wrong (docs/macos-release-bar.md, items 4 and 18): ``bench.runner.recommend``
+    names mvgpu whenever mvgpu holds real time, which on an Apple M2 is every
+    720p and 1080p run, and mvgpu is never ranked here (module docstring, step 3).
+    Discarding that run fell through to ``ranked[0]`` - so a Mac with RIFE
+    installed was handed live ``rife-ncnn`` on the strength of a run that had just
+    measured RIFE at 20.07 fps in mpv at 720p and 8.33 at 1080p, against a
+    55.14 fps bar. So the run is asked again, restricted to what can be ranked,
+    with ``recommend``'s own rule: quality order, a repeatable measurement first.
+    An engine the run measured below real time is therefore never the answer
+    while another rankable engine in the same run held it.
+
+    Nothing rankable held real time (a 4K run, where nothing does on a Mac): the
+    run says nothing about which engine to prefer, and the next older one is
+    asked, as before. ``recommended`` None is respected rather than re-derived:
+    the runner may have skipped a model for repeated GPU faults
+    (``runner.repeat_faulters``), which the stored result does not record.
+    """
     for res in sorted(bench, key=lambda r: r.when, reverse=True):
         if res.recommended is None or (gpu and res.gpu_uuid and res.gpu_uuid != gpu):
             continue
-        m = next((m for m in res.measurements if m.label == res.recommended), None)
-        if m is None or not m.realtime or (m.gpu_faults or 0) > 0:
-            continue
-        if m.backend in ranked:
-            return m.backend, m.model, m.label
+        rec = next((m for m in res.measurements if m.label == res.recommended), None)
+        if rec is not None and _usable(rec, ranked):
+            return rec, None
+        usable = [m for m in res.measurements if _usable(m, ranked)]
+        if usable:
+            best = next((m for m in usable if m.repeatable), usable[0])
+            return best, rec
     return None
+
+
+def _bench_reason(m: BenchMeasurement, instead_of: BenchMeasurement | None) -> Msg:
+    if instead_of is None:
+        return M("Fastest real-time configuration in your benchmark ({label}).", {"label": m.label})
+    if instead_of.backend is BackendId.MVGPU:
+        return M(
+            "{label} keeps up in real time in your benchmark. Its first choice, GPU "
+            "motion vectors, is never a default: playback picks it per video.",
+            {"label": m.label},
+        )
+    return M(
+        "{label} keeps up in real time in your benchmark; its first choice "
+        "({recommended}) isn't available.",
+        {"label": m.label, "recommended": instead_of.label},
+    )
 
 
 def select(report: DoctorReport, cfg: Config, bench: tuple[BenchResult, ...]) -> Selection:
@@ -388,17 +443,38 @@ def select(report: DoctorReport, cfg: Config, bench: tuple[BenchResult, ...]) ->
 
     picked = _from_bench(bench, ranked, report.hardware.interpolation_device)
     if picked is not None:
-        backend, model, label = picked
+        m, instead_of = picked
         return Selection(
-            backend,
-            model,
-            _profile_for(cfg, backend, model),
-            M("Fastest real-time configuration in your benchmark ({label}).", {"label": label}),
+            m.backend,
+            m.model,
+            _profile_for(cfg, m.backend, m.model),
+            _bench_reason(m, instead_of),
             True,
             ranked,
         )
 
     first = ranked[0]
+    if (
+        first is BackendId.RIFE_NCNN
+        and BackendId.MVTOOLS in ranked
+        and decide.rife_live_needs_proof()
+    ):
+        # macOS: no benchmark here showed RIFE holding real time, and RIFE on an
+        # M2 was measured offline-only at every size (decide.rife_live_needs_proof).
+        # MVTools is the measured live default there - real time at 720p, 1080p
+        # and 1440p in docs/spikes/m0s.md, level with mvgpu, which is never ranked.
+        # RIFE stays ranked: offline render and an explicit choice still use it.
+        return Selection(
+            BackendId.MVTOOLS,
+            None,
+            _profile_for(cfg, BackendId.MVTOOLS, None),
+            M(
+                "MVTools on the CPU: RIFE is too slow for live playback on this Mac "
+                "unless a benchmark here shows otherwise. RIFE is still used to convert videos."
+            ),
+            False,
+            ranked,
+        )
     if first is BackendId.RIFE_NCNN:
         model = _default_model(report)
         dev = chosen_device(report)

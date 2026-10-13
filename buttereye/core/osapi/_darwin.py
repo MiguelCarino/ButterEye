@@ -235,6 +235,35 @@ def exit_watch(pid: int) -> int | None:
         kq.close()
 
 
+# ======================================================================== quarantine
+#: the extended attribute a browser (or anything else that downloads) sets, and
+#: Gatekeeper reads before it lets a file run for the first time
+QUARANTINE = b"com.apple.quarantine"
+#: ``<sys/xattr.h>``: look at a symlink itself, not at what it points to
+XATTR_NOFOLLOW = 0x0001
+
+_getxattr = _libc.getxattr
+_getxattr.restype = ctypes.c_ssize_t
+_getxattr.argtypes = (
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_void_p,
+    ctypes.c_size_t,
+    ctypes.c_uint32,
+    ctypes.c_int,
+)
+
+
+def quarantined(path: Path) -> bool:
+    """Does ``path`` carry ``com.apple.quarantine``? Asked with a NULL buffer,
+    ``getxattr`` answers the attribute's size, or -1 (ENOATTR) when there is
+    none; any other failure reads as "not quarantined", because this only feeds
+    advice and must never stop ButterEye starting. Python's ``os.getxattr`` is
+    Linux-only, hence ctypes."""
+    size = int(_getxattr(os.fsencode(path), QUARANTINE, None, 0, 0, XATTR_NOFOLLOW))
+    return size >= 0
+
+
 # ======================================================================== VSScript
 #: the leaf names mpv's ``vapoursynth`` filter ``dlopen``s. Both are strings in
 #: ``<prefix>/bin/mpv``, next to "Failed to load VapourSynth VSScript library" and

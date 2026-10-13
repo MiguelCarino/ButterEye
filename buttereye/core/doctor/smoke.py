@@ -19,7 +19,7 @@ from pathlib import Path
 
 from buttereye.core import osapi
 from buttereye.core.doctor import gpufault
-from buttereye.core.doctor.checks_pkgs import MODELS_SUBDIR, REPAIR, tool_fix
+from buttereye.core.doctor.checks_pkgs import APP_REPAIR, MODELS_SUBDIR, REPAIR, tool_fix
 from buttereye.core.doctor.proc import CmdResult, run
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
@@ -65,7 +65,7 @@ def smoke_argv(
         "model_dir": str(paths.rpm_data_dir / MODELS_SUBDIR),
         "model": model or "",
         "gpu": str(gpu_index),
-        "threads": str(RIFE_THREADS),
+        "threads": str(1 if osapi.IS_MACOS else RIFE_THREADS),
         "size": size,
         "frames": str(frames),
     }
@@ -156,7 +156,13 @@ async def smoke_test(
             # Windows: vspipe comes with ButterEye's installer (Repair), not winget.
             # macOS: Homebrew's vapoursynth formula is what ships it, so the generic
             # "choose another backend" advice would send the user the wrong way.
-            REPAIR if osapi.IS_WINDOWS else INSTALL_VSPIPE_MACOS if osapi.IS_MACOS else f.fix,
+            REPAIR
+            if osapi.IS_WINDOWS
+            else APP_REPAIR
+            if osapi.MACOS_APP is not None
+            else INSTALL_VSPIPE_MACOS
+            if osapi.IS_MACOS
+            else f.fix,
             ()
             if osapi.IS_WINDOWS
             else tool_fix(M(""), "sudo dnf install vapoursynth-tools", "vapoursynth")["commands"],

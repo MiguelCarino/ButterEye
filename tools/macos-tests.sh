@@ -45,6 +45,11 @@
 # and so never sets it, and those tests skip there by design. A developer's Mac
 # is the machine they want, which is why they are asked for here.
 #
+# BUTTEREYE_TEST_APP=/path/to/ButterEye.app (not set here: there may be no app
+# built) opts tests/macos/test_app_bundle.py in, which measures a built app from
+# the outside - packaging/macos/build-app.sh leaves one in
+# ~/.cache/buttereye/macos-app/stage. Without it those six tests skip.
+#
 # ASSUMED INSTALLED: Homebrew, and a Python 3.14 (brew install python@3.14).
 # The test tools go in a venv this script makes and then reuses:
 #

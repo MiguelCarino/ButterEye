@@ -390,7 +390,7 @@ cp "$specs"/buttereye-vs-rife-ncnn-no-pack8.patch \
    "$specs"/buttereye-vs-rife-ncnn-host-pool.patch \
    "$specs"/buttereye-vs-rife-ncnn-model-path.patch "$out/sources/"
 cat >"$srcout/BUTTEREYE-MACOS-BUILD.txt" <<EOF
-This is the source of $out/vapoursynth/librife.dylib, as built.
+This is the source of vapoursynth/librife.dylib in build-plugins.sh's output, as built.
 
 Upstream: $url
   tag $tag, commit $commit.

@@ -79,12 +79,12 @@ from buttereye.core.mpvctl.ipc import (
     check_socket_path,
 )
 from buttereye.core.scriptgen.generator import (
-    RIFE_GPU_THREAD_DEFAULT,
     FilterParams,
     ScriptConstants,
     default_frames,
     entry_gen,
     filter_entry,
+    rife_gpu_thread,
     vf_argument,
     write_script,
 )
@@ -993,11 +993,25 @@ class _Session:
         ``general.backend_override`` (Setup's engine page) applies to profiles set
         to Automatic and to the shipped Quality/Balanced/Fast profiles while they
         keep their shipped engine; CPU (MVTools) and profiles the user pinned to an
-        engine keep theirs, with a notice when that differs from the Setup choice."""
+        engine keep theirs, with a notice when that differs from the Setup choice.
+
+        On macOS a shipped profile still on its shipped RIFE-ncnn, with no Setup
+        choice, asks for Automatic instead (``decide.rife_live_needs_proof``)."""
         override = cfg.general.backend_override if cfg is not None else None
         if profile.backend == "auto":
             return override, None
         pinned = BackendId(profile.backend)
+        if (
+            override is None
+            and pinned is BackendId.RIFE_NCNN
+            and decide.rife_live_needs_proof()
+            and _follows_setup_choice(profile)
+        ):
+            # macOS: a shipped profile's RIFE is a Linux default, not the user's
+            # choice, and RIFE was measured offline-only on a Mac. Automatic then
+            # trusts RIFE only with a benchmark that caps it (decide.pick_engine);
+            # a profile the user set to RIFE, or RIFE chosen in Setup, still pins it.
+            return None, None
         if override is None or override is pinned:
             return pinned, None
         if _follows_setup_choice(profile):
@@ -1428,7 +1442,7 @@ class _Session:
             gpu_id=(
                 self.gpu_index(cfg) if backend in (BackendId.RIFE_NCNN, BackendId.MVGPU) else None
             ),
-            gpu_thread=RIFE_GPU_THREAD_DEFAULT if backend is BackendId.RIFE_NCNN else None,
+            gpu_thread=rife_gpu_thread() if backend is BackendId.RIFE_NCNN else None,
             uhd=decide.uhd_mode(*(size or (facts.width, facts.height))),
             sc_threshold=profile.sc_threshold if backend in decide.GPU_BACKENDS else None,
             title=self.title,

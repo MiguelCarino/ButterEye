@@ -280,10 +280,14 @@ def _resolve_macos(e: Mapping[str, str]) -> Paths:
 def install_dir() -> Path:
     """Windows: the folder ButterEye is installed in (its plugins and models sit
     next to it, where Linux has /usr/lib64 and /usr/share). ``BUTTEREYE_HOME``
-    overrides; otherwise the folder above the ``buttereye`` package."""
+    overrides; otherwise the folder above the ``buttereye`` package. ButterEye.app
+    on macOS: its ``Contents/Resources``, which holds the same install record
+    (``osapi.MACOS_APP``)."""
     home = os.environ.get("BUTTEREYE_HOME", "")
     if home and os.path.isabs(home):
         return Path(home)
+    if osapi.MACOS_APP is not None:
+        return osapi.MACOS_APP
     return Path(__file__).resolve().parents[2]
 
 

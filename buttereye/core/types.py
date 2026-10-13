@@ -141,6 +141,13 @@ def macos_plugin_dirs() -> tuple[Path, ...]:
     Mac where Homebrew's autoloaded MVTools was interpolating
     (packaging/macos/homebrew/buttereye-vs-mvgpu.rb records both runs).
     """
+    app = osapi.MACOS_APP
+    if app is not None:
+        # ButterEye.app: one directory, the app's own, as on Windows. Homebrew's
+        # autoload directory is not asked even when this Mac has one - the
+        # app's VapourSynth does not autoload from it, and a plugin found there
+        # is not a plugin the app would run.
+        return (app / "vapoursynth",)
     prefix = homebrew_prefix()
     own = prefix / "lib" / "buttereye" / "vapoursynth"
     autoload = _brew_autoload_dir(prefix)
@@ -170,11 +177,16 @@ def macos_plugin_dir() -> Path:
     With neither, ButterEye's own directory, so that every caller names the place
     a tap would install into rather than a directory nobody owns.
 
+    ButterEye.app answers before any of that: its own ``Contents/Resources/
+    vapoursynth``, the one directory it loads plugins from (``osapi.MACOS_APP``).
+
     Naming ButterEye's own directory while Homebrew's MVTools sits in the
     autoload one costs a script nothing - ``_load`` skips a namespace
     VapourSynth has already autoloaded - which is why this stayed one directory
     and only the doctor needed the search path beside it.
     """
+    if osapi.MACOS_APP is not None:
+        return osapi.MACOS_APP / "vapoursynth"
     prefix = homebrew_prefix()
     own = prefix / "lib" / "buttereye" / "vapoursynth"
     if own.is_dir():
@@ -189,8 +201,13 @@ def _packaged_plugin_dir() -> Path:
 def _packaged_data_dir() -> Path:
     """Where the RIFE models live. On macOS ``<brew prefix>/share/buttereye``, the
     analogue of Fedora's ``%{_datadir}/buttereye``: no fallback, because Homebrew
-    has no models of its own to find, so nothing is there until a tap ships them."""
-    return homebrew_prefix() / "share" / "buttereye" if osapi.IS_MACOS else _FEDORA_DATA_DIR
+    has no models of its own to find, so nothing is there until a tap ships them.
+    ButterEye.app carries its own, in ``Contents/Resources/share``."""
+    if osapi.IS_MACOS:
+        if osapi.MACOS_APP is not None:
+            return osapi.MACOS_APP / "share"
+        return homebrew_prefix() / "share" / "buttereye"
+    return _FEDORA_DATA_DIR
 
 
 # ---------- paths (§4.6) ----------

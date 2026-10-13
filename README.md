@@ -58,35 +58,76 @@ it); see "NVIDIA TensorRT" under [Status](#status) to set it up yourself.
 **Coming later:** a COPR repository, so that `sudo dnf copr enable <owner>/buttereye`
 and `sudo dnf install buttereye` install and update everything. It isn't published yet.
 
-**macOS and Windows are not supported in 0.0.1**, and nothing for either is released.
-0.0.1 is packaged and tested as Fedora RPMs only; other Linux distributions may work
-from source (see Development setup) but are untested. Ports to both other systems are
+**macOS and Windows are experimental, not supported.** Fedora 44 and 45 are the
+supported systems; other Linux distributions may work from source (see Development
+setup) but are untested. Windows has had an experimental installer since 0.0.2 and
+macOS an experimental disk image since 0.0.3. Ports to both other systems are
 post-v1 work, held to the same bar as this one, and every step of each is written up
 with its measurements in [docs/PLATFORMS.md](docs/PLATFORMS.md). Windows has an
 installer that has been tested under Wine and on GitHub's Windows Server runners but
 never on a real Windows PC with a GPU.
 
-On macOS the short description is **ported and measured on one Mac; not released, not
-supported** — Apple Silicon, one Apple M2, the machine it was written on.
+On macOS the short description is **released as an experimental download, measured on
+one Mac; not supported** — Apple Silicon, one Apple M2, the machine it was written on.
 **Measured there:** live smoothing runs in mpv with MVTools, `buttereye doctor` reports
 nothing blocking, an offline render goes through `vspipe`, `ffmpeg` and `mkvmerge` end
 to end, and every window opens and draws through Qt's real Mac platform
 ([`docs/design/screenshots/macos/`](docs/design/screenshots/macos/)) — drawn and
 photographed, though, never yet driven by a person on a Mac.
-**Everything it needs, you would install yourself:** Homebrew's `mpv` (0.41 or newer,
-for its VapourSynth filter), `vapoursynth`, `vapoursynth-mvtools`, `ffms2`, `ffmpeg`,
-`mkvtoolnix`, `molten-vk`, `vulkan-loader` — and, for ButterEye's own GPU engines, a
-build from `packaging/macos/`, because there is no package. The Homebrew tap written
-there is unpublished and **no formula has ever been installed from it**. **Most of what
-a release would need is still unmeasured:** one machine, one macOS version, no Intel
-Mac, no second user account, no clean install of anything. And some of it will never
-exist on a Mac: the experimental NVIDIA TensorRT path cannot (no CUDA, no NVIDIA GPU),
-there will be no `.app` bundle, and RIFE on an M2 is for offline copies only — about
-five times too slow for live playback, where MVTools is what runs. Neither port is
+**From 0.0.3 there is an experimental download: `ButterEye-<version>-macos-arm64.dmg`**,
+a self-contained `ButterEye.app` (its own Python, Qt, VapourSynth, mpv, FFmpeg, MVTools,
+RIFE, mvgpu and MoltenVK — no Homebrew needed) for Apple Silicon and macOS 27 or newer,
+measured on that one Mac (see [Installing the macOS app](#installing-the-macos-app)).
+The other route — Homebrew's `mpv`, `vapoursynth`, `vapoursynth-mvtools`, `ffms2`,
+`ffmpeg`, `molten-vk`, `vulkan-loader` plus a build from `packaging/macos/` — still
+works; the Homebrew tap written there is unpublished and **no formula has ever been
+installed from it**. **Most of what a release would need is still unmeasured:** one
+machine, one macOS version, no Intel Mac, no second user account. And some of it will
+never exist on a Mac: the experimental NVIDIA TensorRT path cannot (no CUDA, no NVIDIA
+GPU), and RIFE on an M2 is for offline copies only — about five times too slow for live
+playback, where MVTools is what runs. Neither port is
 supported, nothing here is an offer of support or a promise that one is coming;
 [docs/PLATFORMS.md](docs/PLATFORMS.md) has every measurement and every gap, and
 [docs/macos-release-bar.md](docs/macos-release-bar.md) puts the same evidence as a
 release checklist with a verdict on each item.
+
+### Installing the macOS app
+
+Experimental, Apple Silicon only, macOS 27 or newer. The app is **not signed by an
+Apple Developer ID and not notarised** (it carries only an ad-hoc signature), so macOS
+blocks it the first time; this is the one step to get past that:
+
+1. Open `ButterEye-<version>-macos-arm64.dmg` and drag **ButterEye** onto
+   **Applications**.
+2. Open **Terminal** and run, once:
+
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/ButterEye.app
+   ```
+
+   This removes the "downloaded from the internet" mark from the app and everything
+   inside it — including the mpv, ffmpeg and vspipe ButterEye starts in the
+   background, which macOS would otherwise hold back one by one.
+3. Open ButterEye from Applications as usual.
+
+Without step 2, macOS refuses to start ButterEye and shows a warning instead. The
+route Apple documents for that — try to open it once, then **System Settings ▸ Privacy &
+Security ▸ Open Anyway** — has not been tried with this app, and the programs inside it
+are checked separately when they first run, so step 2 is the route to use;
+`buttereye doctor` names any program still held back, with the same command.
+
+The command line is inside the app:
+
+```sh
+/Applications/ButterEye.app/Contents/MacOS/buttereye doctor
+```
+
+(`ButterEye` and `buttereye` are the same file there: macOS file names ignore case.)
+The app writes one file outside its own folders: VapourSynth's
+`~/.config/vapoursynth/vapoursynth.toml` gets a line telling VapourSynth which Python
+the app carries, exactly as `vapoursynth config` would. To remove ButterEye, delete
+the app (and, if you like, `~/Library/Application Support/ButterEye`,
+`~/Library/Caches/ButterEye`, `~/Library/Logs/ButterEye` and that one line).
 
 ## Status
 

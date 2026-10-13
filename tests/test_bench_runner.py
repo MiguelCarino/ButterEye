@@ -514,7 +514,8 @@ async def test_user_data_reaches_vspipe(env: Env) -> None:
     args = log.read_text().splitlines()
     data = [json.loads(a.split("=", 1)[1]) for a in args if a.startswith("user_data=")]
     rife = next(d for d in data if d["backend"] == "rife")
-    assert rife["gpu_thread"] == 4
+    # 4, the soak-tested value; 1 on a Mac, MoltenVK's single compute queue
+    assert rife["gpu_thread"] == (1 if osapi.IS_MACOS else 4)
     assert (rife["src_num"], rife["src_den"], rife["out_num"], rife["out_den"]) == (
         24000,
         1001,

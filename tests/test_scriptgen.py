@@ -299,9 +299,13 @@ def test_template_rife_vspipe(tmp_path: Path) -> None:
     assert "Output 120 frames" in res.stderr
 
 
-def test_rife_gpu_thread_is_independent_of_concurrent_frames() -> None:
+def test_rife_gpu_thread_is_independent_of_concurrent_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """§4.4 (owner decision 2026-10-07): mpv concurrent-frames 8, plugin gpu_thread 4.
-    gpu_thread follows its own default, never concurrent-frames (8 was not soak-tested)."""
+    gpu_thread follows its own default, never concurrent-frames (8 was not soak-tested).
+    Linux and Windows; the Mac's 1 is the test below."""
+    monkeypatch.setattr(g.osapi, "IS_MACOS", False)
     params = g.FilterParams(
         gen=1,
         backend=BackendId.RIFE_NCNN,
@@ -313,3 +317,23 @@ def test_rife_gpu_thread_is_independent_of_concurrent_frames() -> None:
     assert json.loads(g.user_data(params))["gpu_thread"] == g.RIFE_GPU_THREAD_DEFAULT == 4
     explicit = dataclasses.replace(params, gpu_thread=2)
     assert json.loads(g.user_data(explicit))["gpu_thread"] == 2
+
+
+def test_rife_gpu_thread_is_one_on_a_mac(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MoltenVK exposes one compute queue on Apple Silicon, ncnn warns above 1, and
+    2 or 4 bought nothing on an M2 (packaging/macos/RIFE-SPIKE.md, "Throughput":
+    18.81 / 19.66 / 17.62 fps at 720p). Every RIFE script there gets 1 unless a
+    caller asks for another value."""
+    monkeypatch.setattr(g.osapi, "IS_MACOS", True)
+    params = g.FilterParams(
+        gen=1,
+        backend=BackendId.RIFE_NCNN,
+        src_fps=Fraction(24000, 1001),
+        target_fps=Fraction(48000, 1001),
+        buffered_frames=4,
+        concurrent_frames=8,
+    )
+    assert g.rife_gpu_thread() == g.RIFE_GPU_THREAD_MACOS == 1
+    assert json.loads(g.user_data(params))["gpu_thread"] == 1
+    monkeypatch.setattr(g.osapi, "IS_MACOS", False)
+    assert g.rife_gpu_thread() == g.RIFE_GPU_THREAD_DEFAULT == 4

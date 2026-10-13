@@ -11,7 +11,7 @@ from pathlib import Path
 
 from buttereye.core import osapi
 from buttereye.core.doctor import brew
-from buttereye.core.doctor.checks_pkgs import Fix, platform_fix
+from buttereye.core.doctor.checks_pkgs import APP_REPAIR, Fix, platform_fix
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
 from buttereye.core.hw.detect import HwProbe, interpolation_pci
@@ -23,6 +23,12 @@ if osapi.IS_WINDOWS:
     _SYSTEM = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
     LOADER_PATHS: tuple[Path, ...] = (_SYSTEM / "vulkan-1.dll",)
     ICD_DIRS: tuple[Path, ...] = ()
+elif osapi.MACOS_APP is not None:
+    # ButterEye.app carries the loader and MoltenVK, and points every child at
+    # that manifest alone (osapi.point_at_app, VK_DRIVER_FILES): these are the
+    # only files that decide whether its Vulkan starts
+    LOADER_PATHS = (osapi.MACOS_APP / "lib/libvulkan.1.dylib",)
+    ICD_DIRS = ((osapi.MACOS_APP / osapi.APP_VULKAN_ICD).parent,)
 elif osapi.IS_MACOS:
     # macOS has no Vulkan of its own: the loader is Homebrew's vulkan-loader and the
     # only driver is MoltenVK, whose manifest Homebrew puts in <prefix>/etc. The
@@ -69,6 +75,12 @@ _MOLTEN_PRESENT = M(
     "reports, and check that the loader and MoltenVK are the versions Homebrew "
     "installed."
 )
+#: ButterEye.app, whose loader and MoltenVK both started and found no GPU
+_APP_NO_GPU = M(
+    "Vulkan started with ButterEye.app's own loader and MoltenVK and still offered "
+    "no GPU. Run the app's vulkaninfo to see what it reports: "
+    "ButterEye.app/Contents/Resources/bin/vulkaninfo --summary"
+)
 #: macOS with MoltenVK installed and Vulkan refusing to start: the driver is
 #: accounted for, so the loader is the piece left to repair.
 _LOADER_REPAIR = M(
@@ -105,7 +117,7 @@ def _fix(
     the Homebrew lines there, otherwise byte for byte what platform_fix already said.
     The brew lines are written out here as the ``dnf`` ones are - ``commands.BREW``
     maps the tools ButterEye drives, not the Vulkan pieces it only reports on."""
-    if osapi.IS_MACOS:
+    if osapi.IS_MACOS and osapi.MACOS_APP is None:
         return {"fix": macos or fix, "commands": macos_commands}
     if windows is None:
         return platform_fix(fix, commands)
@@ -199,6 +211,11 @@ def _macos_no_gpu_fix(icds: Sequence[Path], *, started: bool) -> tuple[Msg, tupl
     ``started`` is whether vulkaninfo ran at all, which is what separates a
     broken loader from a loader that works and found no device.
     """
+    if osapi.MACOS_APP is not None:
+        # the app's own loader and driver: neither is installed separately, so
+        # the repair is the app, and a working start that found no GPU is what
+        # the run measured
+        return (_APP_NO_GPU, ()) if started else (APP_REPAIR, ())
     if not _driver_installed(icds):
         if started:
             return _MOLTEN, ("brew install molten-vk",)

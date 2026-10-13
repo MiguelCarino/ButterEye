@@ -465,6 +465,38 @@ GPU_BACKENDS = frozenset({BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVG
 RIFE_BACKENDS = frozenset({BackendId.RIFE_TRT, BackendId.RIFE_NCNN})
 
 
+def rife_live_needs_proof() -> bool:
+    """True where RIFE-ncnn may run live only on a benchmark that measured it.
+
+    macOS, and nowhere else. On an Apple M2 through MoltenVK, RIFE-ncnn was
+    measured offline-only at every size (docs/macos-release-bar.md, item 18;
+    docs/spikes/m0s.md): 17.9-20.1 fps in mpv at 720p, 8.3-9.3 at 1080p and
+    4.6-5.4 at 1440p against the 55.14 fps a real-time 2x of 23.976 needs, and
+    a 4K run did not finish at all. The fresh-install measurement of the
+    self-contained app confirmed what that means without a benchmark on file:
+    the shipped Quality profile pinned RIFE v4.26, nothing capped it, and mpv
+    ran at 6-8 % of real time at 1080p (silently, with no drops, because mpv
+    slows the clock instead of dropping) and stalled at 4K. So on a Mac RIFE is
+    never chosen for live playback by default, by a shipped profile or by
+    "the only engine there is" - only by a benchmark whose in-mpv measurement
+    caps it (Automatic then weighs it like any other engine) or by the user's
+    own explicit choice. Offline render is untouched: RIFE is the right engine
+    there at any speed.
+
+    Not shared with Linux and Windows, because there it would be wrong rather
+    than cautious: an RTX 4090 runs RIFE v4.26 live at 1080p (M0(f), 56-58 fps
+    in mpv), and the shipped Quality profile is that machine's default before
+    any benchmark. Read at call time, so a test can ask either platform.
+    """
+    return osapi.IS_MACOS
+
+
+def _unproven_rife(o: EngineOption) -> bool:
+    return (
+        o.backend is BackendId.RIFE_NCNN and o.sustainable_fps is None and rife_live_needs_proof()
+    )
+
+
 def _display_tier(
     t: Fraction | None, src: Fraction, display_hz: float | None, kind: TargetKind
 ) -> int:
@@ -504,8 +536,10 @@ def pick_engine(
       RIFE that can't keep up at this size loses to mvgpu at full size. On
       "Match your display" a RIFE pick that misses the display rate (then 60
       fps) gives way to mvgpu when mvgpu reaches it. When the only installed
-      engine is an unmeasured GPU engine, it is used uncapped (the health
-      detector still guards it).
+      engines are unmeasured GPU engines, the first is used uncapped (the
+      health detector still guards it) - except an unmeasured RIFE-ncnn where
+      :func:`rife_live_needs_proof` (macOS), which is skipped for the next one,
+      or gives ``NO_REALTIME`` when it is the only engine.
     * pinned (``options[0]`` is the engine the profile asks for): used when it
       reaches a target; a pinned GPU engine that can't falls back to the next
       option that can for this file: mvgpu (after RIFE) with
@@ -521,7 +555,9 @@ def pick_engine(
     pick = _pick_engine(options, src, display_hz, kind, fixed, auto=auto)
     if not forced or not options or pick.target.bypass is not BypassReason.NO_REALTIME:
         return pick
-    first = options[0]
+    # "smooth anyway" on Automatic is not a request for RIFE on a Mac: the first
+    # engine that is not an unmeasured RIFE-ncnn there, if there is one
+    first = next((o for o in options if not _unproven_rife(o)), options[0]) if auto else options[0]
     tc = choose_target(src, display_hz, kind, fixed)  # the speed test's cap is ignored
     if tc.bypass is not None or tc.target is None:
         return pick
@@ -594,9 +630,16 @@ def _pick_engine(
     if not options:
         return EnginePick(None, TargetChoice(None, BypassReason.NO_REALTIME), no_realtime_notice())
     if auto:
+        # an unmeasured GPU engine is trusted only when it is all there is - and
+        # on a Mac never RIFE-ncnn (rife_live_needs_proof): the next engine, or
+        # nothing, rather than a live 2x at a fraction of real time
         eligible = [
             o for o in options if o.backend not in GPU_BACKENDS or o.sustainable_fps is not None
-        ] or [options[0]]
+        ] or [o for o in options if not _unproven_rife(o)][:1]
+        if not eligible:
+            return EnginePick(
+                None, TargetChoice(None, BypassReason.NO_REALTIME), no_realtime_notice()
+            )
         picks: list[tuple[EngineOption, TargetChoice]] = []
         for o in eligible:
             tc = target_for(o)
@@ -910,6 +953,7 @@ __all__ = [
     "BACKEND_PLUGIN",
     "GPU_BACKENDS",
     "RIFE_BACKENDS",
+    "rife_live_needs_proof",
     "TargetChoice",
     "interp_rate",
     "load_rate",

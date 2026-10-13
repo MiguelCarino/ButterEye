@@ -98,6 +98,15 @@ def report(
     return DoctorReport((findings if findings is not None else base) + extra, hw, probe, 1.0, trt)
 
 
+@pytest.fixture(autouse=True)
+def linux_rife_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These fixtures are a Linux box with an RTX 4090, where an unbenchmarked
+    RIFE is the right default. Pinned, because this suite also runs on a Mac,
+    where ``decide.rife_live_needs_proof`` says otherwise (tested in
+    tests/core/test_macos_doctor_pure.py)."""
+    monkeypatch.setattr(select_mod.decide, "rife_live_needs_proof", lambda: False)
+
+
 @pytest.fixture
 def cfg() -> Config:
     return default_config()
@@ -310,3 +319,66 @@ def test_mvgpu_status_follows_its_package_and_the_gpu(cfg: Config) -> None:
         extra=(mvgpu, f("mpv.vf_vapoursynth", Severity.BLOCKING, ErrorCode.MPV_NO_VS_FILTER))
     )
     assert not {b.id: b for b in backends(blocked, cfg)}[BackendId.MVGPU].available
+
+
+def _m(label: str, backend: BackendId, model: str | None, *, realtime: bool) -> BenchMeasurement:
+    return BenchMeasurement(
+        label, backend, model, 80.0, 75.0, 0.01, True, 1.0, 0.5, None, realtime, 0
+    )
+
+
+def _run(recommended: str | None, *ms: BenchMeasurement) -> BenchResult:
+    return BenchResult(
+        BenchRequest(1920, 1080, Fraction(24000, 1001)),
+        ms,
+        recommended,
+        datetime(2026, 10, 1, tzinfo=UTC),
+        "uuid-nv",
+    )
+
+
+def test_an_mvgpu_recommendation_stands_in_with_the_best_rankable_real_time_row(
+    cfg: Config,
+) -> None:
+    """mvgpu is never ranked, so a run recommending it used to be thrown away whole
+    and the choice fell to ``ranked[0]`` whatever the run measured. The run now
+    answers among the rankable engines, in its own quality order.
+
+    On a discrete GPU where RIFE also holds real time that is RIFE, with the
+    measured model - the answer this machine gets with no mvgpu installed, so a
+    Linux box keeps its RIFE (``from_benchmark`` now True, the model measured
+    rather than defaulted). Where the run measured RIFE too slow it is MVTools,
+    not the RIFE the old fallback picked (docs/macos-release-bar.md, item 4)."""
+    lite = "rife-v4.22_lite_ensembleFalse"
+    mvgpu = _m("mvgpu", BackendId.MVGPU, None, realtime=True)
+    mvtools = _m("mvtools", BackendId.MVTOOLS, None, realtime=True)
+    r = report(extra=(f("packages.mvgpu"),))
+
+    rife_ok = _run("mvgpu", _m("lite", BackendId.RIFE_NCNN, lite, realtime=True), mvgpu, mvtools)
+    s = select(r, cfg, (rife_ok,))
+    assert s.backend is BackendId.RIFE_NCNN and s.model == lite and s.from_benchmark
+    assert s.reason.params == {"label": "lite"}
+
+    rife_slow = _run(
+        "mvgpu", _m("lite", BackendId.RIFE_NCNN, lite, realtime=False), mvgpu, mvtools
+    )
+    assert select(r, cfg, ()).backend is BackendId.RIFE_NCNN  # what discarding it gave
+    s = select(r, cfg, (rife_slow,))
+    assert s.backend is BackendId.MVTOOLS and s.from_benchmark and s.profile_id == "cpu"
+
+    # nothing rankable kept up: no evidence either way, the unmeasured default
+    only_mvgpu = _run("mvgpu", _m("lite", BackendId.RIFE_NCNN, lite, realtime=False), mvgpu)
+    assert select(r, cfg, (only_mvgpu,)) == select(r, cfg, ())
+
+
+def test_a_repeatable_stand_in_is_preferred_like_the_runner_prefers_one(cfg: Config) -> None:
+    """``bench.runner.recommend``'s rule, applied to the rankable rows: quality
+    order, but a repeatable measurement before an unrepeatable better one."""
+    full, lite = "rife-v4.26_ensembleFalse", "rife-v4.22_lite_ensembleFalse"
+    shaky = dataclasses.replace(
+        _m("full", BackendId.RIFE_NCNN, full, realtime=True), repeatable=False
+    )
+    steady = _m("lite", BackendId.RIFE_NCNN, lite, realtime=True)
+    mvgpu = _m("mvgpu", BackendId.MVGPU, None, realtime=True)
+    s = select(report(extra=(f("packages.mvgpu"),)), cfg, (_run("mvgpu", shaky, mvgpu, steady),))
+    assert s.model == lite
