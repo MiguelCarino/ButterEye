@@ -41,9 +41,12 @@ case $ID in
         # the 64-bit time_t transition renamed a few packages on 24.04 and 13
         # (libasound2 -> libasound2t64): take whichever name this release has
         pick() {
-            local n
+            local n info
             for n in "$@"; do
-                if apt-cache show "$n" 2>/dev/null | grep -q '^Version:'; then echo "$n"; return; fi
+                # captured, not piped into grep -q: under pipefail an early grep
+                # exit makes apt-cache's SIGPIPE fail the test
+                info=$(apt-cache show "$n" 2>/dev/null || true)
+                if grep -q '^Version:' <<<"$info"; then echo "$n"; return; fi
             done
             echo "$1"
         }

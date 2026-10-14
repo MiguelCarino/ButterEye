@@ -208,7 +208,8 @@ def t_mpv_filter() -> str:
         "import vapoursynth as vs\n"
         "core = vs.core\n"
         f"core.std.LoadPlugin({str(TREE / 'vapoursynth' / 'mvtools.so')!r})\n"
-        "c = video_in\n"
+        # mpv hands the script a clip without a frame rate; FlowFPS needs one
+        "c = core.std.AssumeFPS(video_in, fpsnum=24, fpsden=1)\n"
         "sup = core.mv.Super(c)\n"
         "bv = core.mv.Analyse(sup, isb=True)\n"
         "fv = core.mv.Analyse(sup, isb=False)\n"
