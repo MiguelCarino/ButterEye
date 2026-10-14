@@ -123,7 +123,14 @@ def search_dirs(elf: Path, appdir: Path) -> tuple[list[Path], list[str]]:
     return inside, outside
 
 
-def resolve(name: str, dirs: list[Path]) -> Path | None:
+def resolve(name: str, dirs: list[Path], elf: Path | None = None) -> Path | None:
+    if "/" in name:
+        # a path, not a soname: python-build-standalone's libpython3.so needs
+        # "$ORIGIN/../lib/libpython3.14.so.1.0", which the loader opens as is
+        if elf is None:
+            return None
+        path = expand(name, elf)
+        return path if path.exists() else None
     for d in dirs:
         if (d / name).exists():
             return d / name
@@ -169,7 +176,7 @@ def closure(appdir: Path, out: Path) -> None:
             # the user's machine wherever the build happened to be
             set_runpath(elf, [rel_origin(elf, d) for d in inside])
         for name in needed:
-            if is_host(name, patterns) or resolve(name, inside):
+            if is_host(name, patterns) or resolve(name, inside, elf):
                 continue
             target_dir = inside[0] if inside else lib
             if not inside:
@@ -219,7 +226,7 @@ def check(appdir: Path) -> None:
         if outside:
             bad.append(f"{rel}: RUNPATH outside the AppImage: {':'.join(outside)}")
         for name in needed:
-            if not is_host(name, patterns) and resolve(name, inside) is None:
+            if not is_host(name, patterns) and resolve(name, inside, elf) is None:
                 bad.append(f"{rel}: needs {name}, not inside the AppImage and not a host library")
         out = subprocess.run(
             ["readelf", "-VW", str(elf)], capture_output=True, text=True, check=False
