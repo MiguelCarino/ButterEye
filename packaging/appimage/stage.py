@@ -436,7 +436,15 @@ AppImage, holds the Corresponding Source of every part of it:
   mpv-{mpv}.tar.gz             mpv {mpv}: bin/mpv
   libplacebo-{libplacebo}.tar.gz
                               libplacebo {libplacebo} (git {libplacebo_commit}, with
-                              its 3rdparty submodules), linked statically into mpv
+                              its 3rdparty submodules), linked statically into mpv;
+                              its 3rdparty/Vulkan-Headers are also the Vulkan
+                              headers FFmpeg and mpv were compiled against
+  glslang-{glslang}.tar.gz      glslang {glslang}, linked statically into mpv
+  wayland-{wayland}.tar.xz, wayland-protocols-{wayland_protocols}.tar.xz
+                              Wayland {wayland} and wayland-protocols
+                              {wayland_protocols}: mpv carries the code
+                              wayland-scanner generated from their protocol XML
+                              (libwayland itself is the host's)
   ffms2-{ffms2}.tar.gz          FFMS2 {ffms2}: vapoursynth/libffms2.so
   vapoursynth-mvtools-{mvtools}.tar.gz
                               MVTools {mvtools} with

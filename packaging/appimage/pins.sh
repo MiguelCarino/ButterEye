@@ -34,6 +34,8 @@
 #   mpv, MVTools  GitHub's tag archives: no published digest exists, so these
 #                 are the SHA-256 of the archive as downloaded on 2026-10-14
 #                 (MVTools' is the Source0 of packaging/plugins/buttereye-vs-mvtools.spec)
+#   glslang, wayland, wayland-protocols
+#                 no published digest either: as downloaded on 2026-10-14
 #   libplacebo    a git commit, not an archive: its 3rdparty/ submodules (glad,
 #                 jinja, markupsafe, fast_float) are part of the build and no
 #                 archive carries them; the commit pins them too
@@ -98,10 +100,34 @@ MVTOOLS_TAG=v29_2
 MVTOOLS_URL=https://github.com/dubhatervapoursynth/vapoursynth-mvtools/archive/$MVTOOLS_TAG/vapoursynth-mvtools-$MVTOOLS_TAG.tar.gz
 MVTOOLS_SHA256=65578c649776ac2da6cfa32b7306841076ae184cac607b914649dfc1237498ce
 
-# libplacebo v7.351.0 (the tag object 98c1416e resolves to this commit)
-LIBPLACEBO_VER=7.351.0
+# libplacebo v7.360.1 (the tag object 719cc952 resolves to this commit). Not
+# 7.351.0 any more: its Vulkan code generator (src/vulkan/utils_gen.py) fails
+# under Python 3.14, which runs meson here; 12509c0f "vulkan/utils_gen: fix for
+# python 3.14" is in 7.360. It is also the libplacebo Fedora 44's mpv uses.
+LIBPLACEBO_VER=7.360.1
 LIBPLACEBO_GIT=https://github.com/haasn/libplacebo.git
-LIBPLACEBO_COMMIT=3188549fba13bbdf3a5a98de2a38c2e71f04e21e
+LIBPLACEBO_COMMIT=cee9b076f2c63104ccfd497fa79c39a867293ec4
+
+# glslang: libplacebo's GLSL -> SPIR-V compiler, which its Vulkan renderer needs
+# (static, into mpv). GitHub's tag archive: no published digest, so the SHA-256
+# of the archive as downloaded on 2026-10-14. 16.x is newer than Ubuntu 22.04's
+# 11.8, and its CMake floor (3.22.1) is exactly that Ubuntu's.
+GLSLANG_VER=16.6.0
+GLSLANG_URL=https://github.com/KhronosGroup/glslang/archive/$GLSLANG_VER/glslang-$GLSLANG_VER.tar.gz
+GLSLANG_SHA256=9c09b901149c729df745057dafa815278aaa101b84d2b6e14f16a42de52f97f2
+
+# Wayland, build-time only: mpv 0.41 wants libwayland-client >= 1.21 and
+# wayland-protocols >= 1.31, Ubuntu 22.04 has 1.20 and 1.25. mpv is compiled
+# against these and their wayland-scanner output, but runs with the HOST's
+# libwayland (host-libs.txt), so build-appimage.sh checks that every libwayland
+# function mpv calls exists in 1.20 as well. freedesktop.org's release pages
+# publish no digest: the SHA-256 of each archive as downloaded on 2026-10-14.
+WAYLAND_VER=1.26.0
+WAYLAND_URL=https://gitlab.freedesktop.org/wayland/wayland/-/releases/$WAYLAND_VER/downloads/wayland-$WAYLAND_VER.tar.xz
+WAYLAND_SHA256=64176eaa46e4969903e286f8e5ef8331affc17fdf03ac9b58381d2b23162b7a3
+WAYLAND_PROTOCOLS_VER=1.49
+WAYLAND_PROTOCOLS_URL=https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/$WAYLAND_PROTOCOLS_VER/downloads/wayland-protocols-$WAYLAND_PROTOCOLS_VER.tar.xz
+WAYLAND_PROTOCOLS_SHA256=ec4c8f74942d6dff7ace8b4ce4764f0ef9ff618a935d974ea77edee2ad240b14
 
 # ---------------------------------------------------------------- the AppImage itself
 # the static type-2 runtime: no libfuse2 on the host, squashfuse built in; it

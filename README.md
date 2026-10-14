@@ -105,8 +105,10 @@ chmod +x ButterEye-<version>-x86_64.AppImage
 
 It has been tested in clean containers of Ubuntu, Debian, Fedora and Arch in CI
 ([docs/appimage-trial.md](docs/appimage-trial.md) has the runs), not yet on many
-desktops. It carries MVTools only, no GPU engine; on Fedora the RPMs above are the
-supported way and bring the GPU plugins.
+desktops. Its mpv runs natively on Wayland and X11, with Vulkan or OpenGL, and
+needs the system's Vulkan loader (`libvulkan.so.1`, which any desktop with a GPU
+driver has). It smooths with MVTools only, no GPU engine; on Fedora the RPMs above
+are the supported way and bring the GPU plugins.
 
 ### Installing the macOS app
 

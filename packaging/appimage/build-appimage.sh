@@ -18,9 +18,11 @@
 # mainstream base at that floor, and it has every -dev package mpv needs, where
 # AlmaLinux 8 would have meant building the X11 stack too, for no wider reach.
 #
-#   1. build from pinned source (pins.sh): dav1d, FFmpeg (shared, GPL: x264),
-#      libplacebo (static, OpenGL only), mpv with the vapoursynth filter, FFMS2,
-#      and MVTools with the RPM's patch
+#   1. build from pinned source (pins.sh): dav1d, FFmpeg (shared, GPL: x264,
+#      Vulkan decoding), glslang (static), libplacebo (static, OpenGL and
+#      Vulkan), mpv with the vapoursynth filter on X11 and Wayland, FFMS2, and
+#      MVTools with the RPM's patch; libwayland and wayland-protocols for mpv's
+#      build only (the host's libwayland is the one that runs)
 #   2. the AppDir:
 #        AppRun                      the entry point (GUI, or CLI with arguments)
 #        python/                     python-build-standalone + site-packages
@@ -67,10 +69,11 @@ source "$here/pins.sh"
 # apt-get source (the sources tar).
 BUILD_DEPS=(
     build-essential pkg-config nasm ninja-build git ca-certificates curl xz-utils
-    zstd patchelf squashfs-tools file dpkg-dev binutils
+    zstd patchelf squashfs-tools file dpkg-dev binutils cmake
     zlib1g-dev libx11-dev libxext-dev libxss-dev libxpresent-dev libxrandr-dev
     libegl-dev libgl-dev libdrm-dev libva-dev libasound2-dev libpulse-dev
     libass-dev liblua5.2-dev libx264-dev libfftw3-dev
+    libvulkan-dev libxkbcommon-dev libffi-dev libexpat1-dev
     libfontconfig1 libfreetype6 libharfbuzz0b libglib2.0-0 libdbus-1-3
     libegl1 libgl1 libopengl0 libxkbcommon0 libxkbcommon-x11-0
     libwayland-client0 libwayland-cursor0 libwayland-egl1
@@ -101,7 +104,7 @@ done
 . /etc/os-release
 [[ ${ID:-} == ubuntu && ${VERSION_ID:-} == 22.04 && $(uname -m) == x86_64 ]] \
     || { echo "build-appimage.sh builds in an x86_64 ubuntu:22.04 container" >&2; exit 1; }
-for tool in gcc g++ nasm ninja pkg-config patchelf readelf mksquashfs git curl zstd dpkg; do
+for tool in gcc g++ nasm ninja pkg-config patchelf readelf mksquashfs git curl zstd dpkg cmake; do
     command -v "$tool" >/dev/null || { echo "$tool is missing (--install-build-deps)" >&2; exit 1; }
 done
 version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$repo/buttereye/__init__.py")
@@ -142,6 +145,9 @@ dav1d_tar=$(fetch "$DAV1D_URL" "$DAV1D_SHA256")
 ffms2_tar=$(fetch "$FFMS2_URL" "$FFMS2_SHA256")
 mpv_tar=$(fetch "$MPV_URL" "$MPV_SHA256")
 mvtools_tar=$(fetch "$MVTOOLS_URL" "$MVTOOLS_SHA256")
+glslang_tar=$(fetch "$GLSLANG_URL" "$GLSLANG_SHA256")
+wayland_tar=$(fetch "$WAYLAND_URL" "$WAYLAND_SHA256")
+wlprotos_tar=$(fetch "$WAYLAND_PROTOCOLS_URL" "$WAYLAND_PROTOCOLS_SHA256")
 runtime=$(fetch "$RUNTIME_URL" "$RUNTIME_SHA256")
 qt_srcs=("$(fetch "$QTBASE_URL" "$QTBASE_SHA256")" "$(fetch "$QTSVG_URL" "$QTSVG_SHA256")")
 pyside_src=$(fetch "$PYSIDE_SRC_URL" "$PYSIDE_SRC_SHA256")
@@ -165,7 +171,8 @@ sys.exit(main())
 EOF
 chmod +x "$work/tools/bin/meson"
 export PATH=$work/tools/bin:$PATH
-export PKG_CONFIG_PATH=$deps/lib/pkgconfig
+export PKG_CONFIG_PATH=$deps/lib/pkgconfig:$deps/share/pkgconfig:$work/pc
+mkdir -p "$work/pc"
 echo "==> meson $(meson --version), $(gcc --version | head -1)"
 
 # ---------------------------------------------------------------- 1. dav1d
@@ -178,40 +185,15 @@ logged dav1d-setup meson setup "$d/build" "$d" --prefix="$deps" --libdir=lib \
     -Denable_tools=false -Denable_tests=false -Denable_examples=false
 logged dav1d-build ninja -C "$d/build" -j"$jobs" install
 
-# ---------------------------------------------------------------- 1. FFmpeg
-# Shared libraries, because mpv, ffmpeg, ffprobe and FFMS2 all link the same
-# ones. Nothing is auto-detected, so the result does not depend on what the
-# container happens to have: zlib, iconv, dav1d (AV1), x264 (the encoder render
-# falls back to without NVENC: --enable-gpl, which makes these libraries GPL),
-# VA-API through libdrm (the host's libva and drivers, never bundled).
-f=$work/src/ffmpeg
-mkdir -p "$f"
-tar -xJf "$ffmpeg_tar" -C "$f" --strip-components=1
-ffmpeg_flags=(
-    --prefix="$deps" --libdir="$deps/lib" --enable-shared --disable-static
-    --enable-gpl --disable-autodetect --enable-pthreads
-    --enable-zlib --enable-iconv --enable-libdav1d --enable-libx264
-    --enable-vaapi --enable-libdrm
-    --disable-doc --disable-ffplay --disable-debug
-)
-echo "==> FFmpeg $FFMPEG_VER"
-(cd "$f" && logged ffmpeg-configure ./configure "${ffmpeg_flags[@]}")
-for want in CONFIG_GPL CONFIG_LIBX264 CONFIG_LIBDAV1D CONFIG_VAAPI CONFIG_ZLIB; do
-    grep -q "^$want=yes" "$f/ffbuild/config.mak" || { echo "FFmpeg: $want is not enabled" >&2; exit 1; }
-done
-if grep -Eq '^CONFIG_(NONFREE)=yes' "$f/ffbuild/config.mak"; then
-    echo "FFmpeg was configured with non-free parts" >&2
-    exit 1
-fi
-logged ffmpeg-build make -C "$f" -j"$jobs"
-logged ffmpeg-install make -C "$f" install
-
-# ---------------------------------------------------------------- 1. libplacebo
+# ---------------------------------------------------------------- 1. libplacebo's checkout, the Vulkan headers
 # A git checkout at a pinned commit: the 3rdparty/ submodules it builds with
 # (glad for OpenGL, jinja and markupsafe for its shader templates, fast_float,
-# and Vulkan-Headers, which its stub of the Vulkan API includes even when Vulkan
-# is off) are in no release archive. Static, so mpv carries it; OpenGL only -
-# the trial's mpv has no Vulkan output (no shaderc/glslang, no host Vulkan needed).
+# and Vulkan-Headers) are in no release archive. Its Vulkan-Headers (1.4.x) are
+# also the Vulkan headers FFmpeg and mpv compile against: Ubuntu 22.04's are
+# 1.3.204, older than either accepts. vulkan.pc names them, and links the
+# loader through libvulkan-dev's libvulkan.so - which is 1.3.204, the oldest a
+# host can have, so a symbol missing there fails this link rather than a user's
+# start. At run time the loader is the host's (host-libs.txt).
 p=$work/src/libplacebo
 git init -q "$p"
 git -C "$p" fetch -q --depth 1 "$LIBPLACEBO_GIT" "$LIBPLACEBO_COMMIT"
@@ -221,31 +203,129 @@ git -C "$p" config remote.origin.url "$LIBPLACEBO_GIT" 2>/dev/null \
     || git -C "$p" remote add origin "$LIBPLACEBO_GIT"
 logged libplacebo-submodules git -C "$p" submodule update --init --depth 1 \
     3rdparty/glad 3rdparty/jinja 3rdparty/markupsafe 3rdparty/fast_float 3rdparty/Vulkan-Headers
-echo "==> libplacebo $LIBPLACEBO_VER (static, OpenGL)"
+vkinc=$p/3rdparty/Vulkan-Headers/include
+vkh=$vkinc/vulkan/vulkan_core.h
+vkpatch=$(sed -n 's/^#define VK_HEADER_VERSION \([0-9]*\)$/\1/p' "$vkh")
+vkmm=$(sed -n 's/^#define VK_HEADER_VERSION_COMPLETE VK_MAKE_API_VERSION(0, \([0-9]*\), \([0-9]*\), VK_HEADER_VERSION)$/\1.\2/p' "$vkh")
+[[ -n $vkpatch && -n $vkmm ]] || { echo "could not read the Vulkan header version from $vkh" >&2; exit 1; }
+cat >"$work/pc/vulkan.pc" <<EOF
+includedir=$vkinc
+
+Name: vulkan
+Description: Vulkan headers from libplacebo's 3rdparty/Vulkan-Headers; the loader is the host's
+Version: $vkmm.$vkpatch
+Libs: -lvulkan
+Cflags: -I\${includedir}
+EOF
+echo "==> Vulkan headers $vkmm.$vkpatch (libplacebo's submodule)"
+
+# ---------------------------------------------------------------- 1. FFmpeg
+# Shared libraries, because mpv, ffmpeg, ffprobe and FFMS2 all link the same
+# ones. Nothing is auto-detected, so the result does not depend on what the
+# container happens to have: zlib, iconv, dav1d (AV1), x264 (the encoder render
+# falls back to without NVENC: --enable-gpl, which makes these libraries GPL),
+# VA-API through libdrm (the host's libva and drivers, never bundled), and
+# Vulkan video decoding (mpv's hwdec=vulkan), which needs only the headers:
+# FFmpeg dlopens the host's loader, so libavutil gains no DT_NEEDED for it.
+f=$work/src/ffmpeg
+mkdir -p "$f"
+tar -xJf "$ffmpeg_tar" -C "$f" --strip-components=1
+ffmpeg_flags=(
+    --prefix="$deps" --libdir="$deps/lib" --enable-shared --disable-static
+    --enable-gpl --disable-autodetect --enable-pthreads
+    --enable-zlib --enable-iconv --enable-libdav1d --enable-libx264
+    --enable-vaapi --enable-libdrm --enable-vulkan
+    --disable-doc --disable-ffplay --disable-debug
+)
+echo "==> FFmpeg $FFMPEG_VER"
+(cd "$f" && logged ffmpeg-configure ./configure "${ffmpeg_flags[@]}")
+for want in CONFIG_GPL CONFIG_LIBX264 CONFIG_LIBDAV1D CONFIG_VAAPI CONFIG_VULKAN CONFIG_ZLIB; do
+    grep -q "^$want=yes" "$f/ffbuild/config.mak" || { echo "FFmpeg: $want is not enabled" >&2; exit 1; }
+done
+if grep -Eq '^CONFIG_(NONFREE)=yes' "$f/ffbuild/config.mak"; then
+    echo "FFmpeg was configured with non-free parts" >&2
+    exit 1
+fi
+logged ffmpeg-build make -C "$f" -j"$jobs"
+logged ffmpeg-install make -C "$f" install
+
+# ---------------------------------------------------------------- 1. Wayland, for mpv's build only
+# libwayland 1.26 and wayland-protocols 1.49 into the build prefix: their
+# headers, wayland-scanner and the protocol XML are what mpv compiles against.
+# None of their libraries goes into the AppImage - libwayland-client, -cursor
+# and -egl are the host's (host-libs.txt) - and the check after mpv's build
+# makes sure mpv asks those for nothing newer than Ubuntu 22.04's 1.20 has.
+wl=$work/src/wayland
+mkdir -p "$wl"
+tar -xJf "$wayland_tar" -C "$wl" --strip-components=1
+echo "==> wayland $WAYLAND_VER (build only)"
+logged wayland-setup meson setup "$wl/build" "$wl" --prefix="$deps" --libdir=lib \
+    -Dbuildtype=release -Dlibraries=true -Dscanner=true -Dtests=false \
+    -Ddocumentation=false -Ddtd_validation=false
+logged wayland-build ninja -C "$wl/build" -j"$jobs" install
+wp=$work/src/wayland-protocols
+mkdir -p "$wp"
+tar -xJf "$wlprotos_tar" -C "$wp" --strip-components=1
+echo "==> wayland-protocols $WAYLAND_PROTOCOLS_VER (build only)"
+logged wlprotos-setup meson setup "$wp/build" "$wp" --prefix="$deps" --libdir=lib -Dtests=false
+logged wlprotos-build ninja -C "$wp/build" -j"$jobs" install
+export PATH=$deps/bin:$PATH
+
+# ---------------------------------------------------------------- 1. glslang
+# libplacebo's Vulkan renderer compiles its shaders to SPIR-V at run time, with
+# glslang (static, into mpv): no SPIRV-Tools optimiser, no HLSL, no programs.
+g=$work/src/glslang
+mkdir -p "$g"
+tar -xzf "$glslang_tar" -C "$g" --strip-components=1
+echo "==> glslang $GLSLANG_VER (static)"
+logged glslang-setup cmake -S "$g" -B "$g/build" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$deps" -DCMAKE_INSTALL_LIBDIR=lib \
+    -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    -DENABLE_OPT=OFF -DENABLE_HLSL=OFF -DENABLE_GLSLANG_BINARIES=OFF \
+    -DGLSLANG_TESTS=OFF -DBUILD_EXTERNAL=OFF -DGLSLANG_ENABLE_INSTALL=ON
+logged glslang-build ninja -C "$g/build" -j"$jobs" install
+
+# ---------------------------------------------------------------- 1. libplacebo
+# Static, so mpv carries it; OpenGL and Vulkan (through the host's loader:
+# vk-proc-addr links vkGetInstanceProcAddr from it), with glslang found static
+# in the build prefix.
+echo "==> libplacebo $LIBPLACEBO_VER (static, OpenGL and Vulkan)"
+# meson's find_library searches the compiler's own directories, which GCC takes
+# from LIBRARY_PATH (LDFLAGS are not searched), and glslang's headers are needed
+# when ninja compiles too, not only at setup: both for this step only
+export CPATH=$deps/include LIBRARY_PATH=$deps/lib
 logged libplacebo-setup meson setup "$p/build" "$p" --prefix="$deps" --libdir=lib \
-    -Dbuildtype=release -Ddefault_library=static -Db_staticpic=true \
-    -Dvulkan=disabled -Dvk-proc-addr=disabled -Dopengl=enabled -Dd3d11=disabled \
-    -Dglslang=disabled -Dshaderc=disabled -Dlcms=disabled -Ddovi=disabled \
+    -Dbuildtype=release -Ddefault_library=static -Db_staticpic=true -Dprefer_static=true \
+    -Dvulkan=enabled -Dvk-proc-addr=enabled -Dopengl=enabled -Dd3d11=disabled \
+    -Dglslang=enabled -Dshaderc=disabled -Dlcms=disabled -Ddovi=disabled \
     -Dlibdovi=disabled -Dunwind=disabled -Dxxhash=disabled \
     -Ddemos=false -Dtests=false -Dbench=false -Dfuzz=false
 logged libplacebo-build ninja -C "$p/build" -j"$jobs" install
-# its float parsing is C++ (fast_float, std::to_chars), and the static library's
-# .pc does not say so: mpv's C link needs libstdc++ after it
-sed -i 's/^Libs: .*/& -lstdc++/' "$deps/lib/pkgconfig/libplacebo.pc"
+unset CPATH LIBRARY_PATH
+for want in vulkan glslang; do
+    grep -q "^pl_has_$want=1" "$deps/lib/pkgconfig/libplacebo.pc" \
+        || { echo "libplacebo was built without $want" >&2; exit 1; }
+done
+# a static library's own dependencies are in Libs.private, which mpv's (not
+# static) dependency() does not read: glslang's archives, the loader, and
+# libstdc++ for glslang's and fast_float's C++. Grouped, because the glslang
+# archives refer to each other in no single order.
+pl_private=$(sed -n 's/^Libs.private: //p' "$deps/lib/pkgconfig/libplacebo.pc")
+sed -i "s|^Libs: .*|& -Wl,--start-group $pl_private -Wl,--end-group -lstdc++|" \
+    "$deps/lib/pkgconfig/libplacebo.pc"
 
 # ---------------------------------------------------------------- 1. mpv
 # The vapoursynth filter links VSScript from VapourSynth's wheel, which ships
 # the headers but no vapoursynth-script.pc: this writes one, pointing at the
 # wheel's own folder. The wheel is unpacked here for the build only; the AppDir
-# gets its own copy below. Everything else is off unless named: X11 with EGL
-# (Wayland sessions run it through XWayland - mpv 0.41 wants libwayland 1.21 and
-# Ubuntu 22.04 has 1.20), VA-API (copy-back; no DRM interop), ALSA and
-# PulseAudio, Lua for the on-screen controller.
+# gets its own copy below. Everything else is off unless named: X11 and Wayland,
+# each with EGL (OpenGL) and Vulkan contexts, VA-API (copy-back; no DRM
+# interop), Vulkan decoding through FFmpeg, ALSA and PulseAudio, Lua for the
+# on-screen controller.
 vsbuild=$work/vs-build
 mkdir -p "$vsbuild"
 stagepy unwheel "${wheels[2]}" "$vsbuild" >/dev/null
 vsdir=$vsbuild/vapoursynth
-mkdir -p "$work/pc"
 cat >"$work/pc/vapoursynth-script.pc" <<EOF
 libdir=$vsdir
 includedir=$vsdir/include
@@ -257,7 +337,7 @@ Requires: vapoursynth
 Libs: -L\${libdir} -lvsscript
 Cflags: -I\${includedir}
 EOF
-export PKG_CONFIG_PATH=$deps/lib/pkgconfig:$work/pc:$vsdir/pkgconfig
+export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:$vsdir/pkgconfig
 m=$work/src/mpv
 mkdir -p "$m"
 tar -xzf "$mpv_tar" -C "$m" --strip-components=1
@@ -268,12 +348,26 @@ logged mpv-setup meson setup "$m/build" "$m" --prefix="$deps" --libdir=lib \
     -Dvapoursynth=enabled -Dlua=enabled -Diconv=enabled -Dzlib=enabled \
     -Dlibavdevice=enabled \
     -Dx11=enabled -Dgl=enabled -Degl=enabled -Degl-x11=enabled \
-    -Dvaapi=enabled -Dvaapi-x11=enabled \
+    -Dwayland=enabled -Degl-wayland=enabled -Dvulkan=enabled \
+    -Dvaapi=enabled -Dvaapi-x11=enabled -Dvaapi-wayland=enabled \
     -Dalsa=enabled -Dpulse=enabled
 logged mpv-build ninja -C "$m/build" -j"$jobs"
 logged mpv-install ninja -C "$m/build" install
 readelf -dW "$deps/bin/mpv" | grep -q 'Shared library: \[libvsscript.so\]' \
     || { echo "mpv was built without the vapoursynth filter" >&2; exit 1; }
+for want in libvulkan.so.1 libwayland-client.so.0 libwayland-cursor.so.0 libwayland-egl.so.1; do
+    readelf -dW "$deps/bin/mpv" | grep -qF "Shared library: [$want]" \
+        || { echo "mpv does not link $want" >&2; exit 1; }
+done
+# libwayland is the host's at run time, and the oldest a host can have is this
+# container's (Ubuntu 22.04: 1.20; the glibc floor rules out anything older).
+# mpv was compiled against 1.26, so every libwayland function it calls has to
+# exist in 1.20 too, or it would not start on such a host.
+wl_missing=$(comm -23 \
+    <(nm -D --undefined-only "$deps/bin/mpv" | awk '{print $2}' | sed 's/@.*//' | grep '^wl_' | sort -u) \
+    <(nm -D --defined-only /usr/lib/x86_64-linux-gnu/libwayland-{client,cursor}.so.0 \
+        /usr/lib/x86_64-linux-gnu/libwayland-egl.so.1 | awk '{print $3}' | sort -u))
+[[ -z $wl_missing ]] || { echo "mpv calls libwayland functions Ubuntu 22.04's lacks:" $wl_missing >&2; exit 1; }
 
 # ---------------------------------------------------------------- 1. FFMS2
 # Compiled the way packaging/windows/build-tools-in-chroot.sh does (FFMS2 5.0's
@@ -379,7 +473,7 @@ stagepy closure "$appdir" "$work/closure.json"
 
 # ---------------------------------------------------------------- licences and the record
 lic=$appdir/licenses
-mkdir -p "$lic"/{buttereye/LICENSES,python,pyside6,vapoursynth,mpv,ffmpeg,dav1d,libplacebo,ffms2,buttereye-vs-mvtools,appimage-runtime}
+mkdir -p "$lic"/{buttereye/LICENSES,python,pyside6,vapoursynth,mpv,ffmpeg,dav1d,libplacebo,glslang,vulkan-headers,wayland,ffms2,buttereye-vs-mvtools,appimage-runtime}
 cp "$repo/COPYING" "$repo/THIRD-PARTY.md" "$lic/buttereye/"
 cp "$repo"/LICENSES/*.txt "$lic/buttereye/LICENSES/"
 cp "$pystd/LICENSE.txt" "$lic/python/LICENSE.txt"
@@ -399,6 +493,13 @@ cp "$f/COPYING.GPLv2" "$f/COPYING.LGPLv2.1" "$f/LICENSE.md" "$lic/ffmpeg/"
 } >"$lic/ffmpeg/FFMPEG-CONFIGURATION.txt"
 cp "$d/COPYING" "$lic/dav1d/COPYING"
 cp "$p/LICENSE" "$lic/libplacebo/LICENSE"
+cp "$g/LICENSE.txt" "$lic/glslang/LICENSE.txt"
+cp "$p/3rdparty/Vulkan-Headers/LICENSE.md" "$lic/vulkan-headers/LICENSE.md"
+cp "$p"/3rdparty/Vulkan-Headers/LICENSES/*.txt "$lic/vulkan-headers/"
+# mpv carries the code wayland-scanner generated from the protocol XML: wayland's
+# own wayland.xml and wayland-protocols' (both MIT)
+cp "$wl/COPYING" "$lic/wayland/COPYING.wayland"
+cp "$wp/COPYING" "$lic/wayland/COPYING.wayland-protocols"
 cp "$s/COPYING" "$lic/ffms2/COPYING"
 cp "$v/LICENSE" "$lic/buttereye-vs-mvtools/LICENSE"
 cp "$v/src/asm/include/x86inc.asm" "$lic/buttereye-vs-mvtools/x86inc.asm"
@@ -422,8 +523,11 @@ stagepy record "$work/components.json" "$appdir/buttereye-install.json" \
     "python3-shiboken6=$PYSIDE_VER=LGPL-3.0-only=licenses/pyside6/LGPL-3.0-only.txt,licenses/pyside6/GPL-3.0-only.txt" \
     "vapoursynth-libs=$VAPOURSYNTH_VER=LGPL-2.1-or-later=licenses/vapoursynth/COPYING.LESSER" \
     "vapoursynth-tools=$VAPOURSYNTH_VER=LGPL-2.1-or-later=licenses/vapoursynth/COPYING.LESSER" \
-    "mpv=$MPV_VER=GPL-2.0-or-later AND LGPL-2.1-or-later=$(files_of mpv)=bundled(libplacebo)($LIBPLACEBO_VER)" \
+    "mpv=$MPV_VER=GPL-2.0-or-later AND LGPL-2.1-or-later=$(files_of mpv)=bundled(libplacebo)($LIBPLACEBO_VER),bundled(glslang)($GLSLANG_VER)" \
     "libplacebo=$LIBPLACEBO_VER=LGPL-2.1-or-later=$(files_of libplacebo)" \
+    "glslang=$GLSLANG_VER=BSD-3-Clause AND BSD-2-Clause AND MIT AND Apache-2.0 AND GPL-3.0-or-later WITH Bison-exception-2.2=$(files_of glslang)" \
+    "vulkan-headers=$vkmm.$vkpatch=Apache-2.0 OR MIT=$(files_of vulkan-headers)" \
+    "wayland-protocols=$WAYLAND_PROTOCOLS_VER=MIT=$(files_of wayland)" \
     "ffmpeg=$FFMPEG_VER=GPL-2.0-or-later=$(files_of ffmpeg)=bundled(dav1d)($DAV1D_VER)" \
     "dav1d=$DAV1D_VER=BSD-2-Clause=$(files_of dav1d)" \
     "ffms2=$FFMS2_VER=MIT=$(files_of ffms2)" \
@@ -434,6 +538,7 @@ stagepy sources-txt "$lic/SOURCES.txt" version="$version" repo=https://github.co
     python="$PYTHON_VER" pbs="$PYTHON_PBS" pyside="$PYSIDE_VER" vapoursynth="$VAPOURSYNTH_VER" \
     ffmpeg="$FFMPEG_VER" dav1d="$DAV1D_VER" mpv="$MPV_VER" libplacebo="$LIBPLACEBO_VER" \
     libplacebo_commit="$LIBPLACEBO_COMMIT" ffms2="$FFMS2_VER" mvtools="$MVTOOLS_TAG" \
+    glslang="$GLSLANG_VER" wayland="$WAYLAND_VER" wayland_protocols="$WAYLAND_PROTOCOLS_VER" \
     runtime="$RUNTIME_VER" debs="$work/deb-sources.txt"
 
 # bytecode, compiled now because the AppImage is read-only and AppRun passes
@@ -465,6 +570,7 @@ if ((sources)); then
     mkdir -p "$src/ubuntu"
     cp -R "$work/src/pristine" "$src/buttereye-$version"
     cp "$ffmpeg_tar" "$dav1d_tar" "$mpv_tar" "$ffms2_tar" "$mvtools_tar" "$vs_src" \
+        "$glslang_tar" "$wayland_tar" "$wlprotos_tar" \
         "${qt_srcs[@]}" "$pyside_src" "$lic/SOURCES.txt" "$src/"
     # libplacebo: the pinned commit with the submodules it was built with
     (cd "$p" && git ls-files -z --recurse-submodules) |

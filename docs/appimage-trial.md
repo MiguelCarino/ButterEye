@@ -40,9 +40,11 @@ and FUSE on a distribution's own setup.
 | Python | 3.14.8 | python-build-standalone 20261009, `x86_64-unknown-linux-gnu-install_only_stripped`, SHA-256 pinned |
 | PySide6-Essentials, Shiboken6 | 6.11.2 | PyPI `manylinux_2_34_x86_64` wheels, trimmed to Core/Gui/Widgets/Svg/SvgWidgets/DBus and the xcb, Wayland, offscreen and minimal platforms |
 | VapourSynth | R81 | the official `manylinux_2_28_x86_64` wheel (it exists, so VapourSynth is not built) |
-| mpv | 0.41.0 | built: X11 + EGL, VA-API (copy-back), ALSA, PulseAudio, Lua, **vapoursynth**; no Wayland, no Vulkan |
-| libplacebo | 7.351.0 | built, static into mpv, OpenGL only |
-| FFmpeg | 8.1.3 | built, shared, `--enable-gpl` (x264), dav1d, zlib, iconv, VA-API via libdrm; nothing auto-detected |
+| mpv | 0.41.0 | built: X11 and Wayland, each with OpenGL (EGL) and Vulkan contexts; VA-API (copy-back) and Vulkan decoding; ALSA, PulseAudio, Lua, **vapoursynth** |
+| libplacebo | 7.360.1 | built, static into mpv, OpenGL and Vulkan (7.351.0's Vulkan code generator fails under Python 3.14) |
+| glslang | 16.6.0 | built, static into mpv: libplacebo's SPIR-V compiler for Vulkan |
+| Wayland, wayland-protocols | 1.26.0, 1.49 | built for mpv's build only (headers, wayland-scanner, protocol XML); libwayland itself is the host's |
+| FFmpeg | 8.1.3 | built, shared, `--enable-gpl` (x264), dav1d, zlib, iconv, VA-API via libdrm, Vulkan (headers only: it dlopens the host's loader); nothing auto-detected |
 | dav1d | 1.5.4 | built, static into libavcodec |
 | FFMS2 | 5.0 | built (compiled the way the Windows build does) |
 | MVTools | v29_2 | built from the RPM spec's tag and patch |
@@ -68,10 +70,20 @@ was found whose source and build could be reproduced and offered, and the filter
 in mpv 0.41 links VSScript at build time, so it has to be built against the
 VapourSynth it will run with anyway. The build writes a `vapoursynth-script.pc`
 pointing at the wheel's headers and `libvsscript.so`, links mpv against it, and
-gives mpv a RUNPATH to the wheel's folder. Feature set: the minimum that is a
-usable player on X11 (and on Wayland through XWayland). Wayland itself is off
-because mpv 0.41 wants libwayland-client 1.21 and Ubuntu 22.04 has 1.20 - and
-libwayland must be the host's, so a newer bundled copy is not an option.
+gives mpv a RUNPATH to the wheel's folder. Feature set: X11 and native Wayland,
+each with an OpenGL (EGL) and a Vulkan context, so an mpv.conf with
+`gpu-api=vulkan` and `gpu-context=waylandvk` works as it does with a
+distribution's mpv. mpv 0.41 wants libwayland-client 1.21 and Ubuntu 22.04 has
+1.20, and libwayland must be the host's, so mpv is compiled against wayland 1.26
+(built for the build only) and runs with the host's: the build refuses an mpv
+that calls any libwayland function Ubuntu 22.04's 1.20 does not export (every
+one it calls is from libwayland's first years). Vulkan's headers are
+libplacebo's pinned Vulkan-Headers (1.4.310; Ubuntu's 1.3.204 is too old for
+mpv and FFmpeg), the loader is the host's `libvulkan.so.1` - which mpv now
+needs to start, as every desktop with a GPU driver has - and libplacebo
+compiles its shaders with a static glslang. Measured on a Fedora 44 desktop
+(Hyprland, RTX 4090): mpv opens `waylandvk`, creates its Vulkan device on the
+GPU, decodes with `vulkan-copy`, and ButterEye smooths through it.
 
 **Layout.** The AppDir mirrors the macOS app's `Contents/Resources`:
 `AppRun`, `python/`, `bin/` (mpv, ffmpeg, ffprobe), `lib/`, `vapoursynth/`
@@ -273,8 +285,9 @@ accommodates.
    CLI stays up until mpv quits, so this never happened. It needs either mpv to
    hold the runtime's keep-alive descriptor, or ButterEye inside an AppImage to
    refuse to leave a session behind.
-5. **No Wayland in mpv** (libwayland 1.20 on the base), so Wayland desktops run
-   it through XWayland. Qt's Wayland plugin is carried and resolves, but was not
+5. **Wayland in mpv: solved** (2026-10-14). mpv is compiled against a newer
+   libwayland and runs with the host's, behind a build check (above, "mpv: built,
+   not reused"). Qt's Wayland plugin is carried and resolves, but was not
    exercised.
 6. **Loose pins for the Ubuntu-archive part.** The archive moves with security
    updates; the build records and offers the exact versions it copied, but two
@@ -320,9 +333,8 @@ Before the AppImage could ship as an experimental download:
    desktop, X11 and Wayland - with mpv's real video output, sound and the GUI
 2. the detach/lifetime problem (4) settled
 3. the doctor's AppImage wording per row (2)
-4. Wayland in mpv (a newer base for mpv alone is not possible without raising
-   the glibc floor; more likely: build libwayland-client against which mpv
-   compiles but take the host's at run time, or accept XWayland and say so)
+4. ~~Wayland in mpv~~ - done the second way: mpv compiles against libwayland 1.26
+   and runs with the host's (measured on one NVIDIA desktop, Hyprland)
 5. RIFE and mvgpu, if the AppImage is to be more than MVTools (both need the
    host's Vulkan, which the allow-list already allows)
 6. a pinned Ubuntu snapshot, re-derived Qt notices, a signature, and update
