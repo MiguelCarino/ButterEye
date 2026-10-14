@@ -91,6 +91,23 @@ supported, nothing here is an offer of support or a promise that one is coming;
 [docs/macos-release-bar.md](docs/macos-release-bar.md) puts the same evidence as a
 release checklist with a verdict on each item.
 
+### Any other Linux: the AppImage (experimental)
+
+From 0.0.5 each release also carries `ButterEye-<version>-x86_64.AppImage`: one file
+with ButterEye, its own Python, Qt, VapourSynth, mpv, FFmpeg and MVTools inside, for
+x86-64 Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later).
+Nothing is installed:
+
+```sh
+chmod +x ButterEye-<version>-x86_64.AppImage
+./ButterEye-<version>-x86_64.AppImage
+```
+
+It has been tested in clean containers of Ubuntu, Debian, Fedora and Arch in CI
+([docs/appimage-trial.md](docs/appimage-trial.md) has the runs), not yet on many
+desktops. It carries MVTools only, no GPU engine; on Fedora the RPMs above are the
+supported way and bring the GPU plugins.
+
 ### Installing the macOS app
 
 Experimental, Apple Silicon only, macOS 27 or newer. The app is **not signed by an

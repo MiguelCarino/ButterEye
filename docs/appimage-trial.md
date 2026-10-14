@@ -1,8 +1,9 @@
 # The AppImage trial
 
 A feasibility trial of ButterEye as an x86_64 Linux AppImage: built and tested in
-CI only, on the `appimage-trial` branch, **not a release and not a supported way
-to install ButterEye**. Fedora's RPMs remain the Linux packaging; nothing here
+CI only, on the `appimage-trial` branch. **Since 0.0.5 the AppImage is attached to
+each release as an experimental download** (built by `appimage.yml` dispatched on
+the release tag); it is still not the supported way to install ButterEye. Fedora's RPMs remain the Linux packaging; nothing here
 changes them (the seam is inert unless ButterEye's own Python runs from inside an
 AppImage, and that is tested). Everything below that claims something working
 names the CI run it was measured in.

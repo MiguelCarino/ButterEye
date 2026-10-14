@@ -20,6 +20,11 @@ first time it is set up.
   after the app was opened with System Settings ▸ Open Anyway. It runs only when
   something is marked; a failure is logged and the doctor still names the command.
 
+### Added
+
+- **A Linux AppImage (experimental)** on the release, for distributions other than
+  Fedora: one file, mpv included, glibc 2.35 or newer, MVTools on the CPU only.
+
 ## 0.0.4 — 2026-10-13
 
 Live smoothing no longer makes frames your screen can't show, which on a 60 Hz
