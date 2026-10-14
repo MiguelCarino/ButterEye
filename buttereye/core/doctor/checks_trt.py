@@ -87,7 +87,28 @@ def trt_macos_finding() -> Finding:
     )
 
 
+def trt_appimage_finding() -> Finding:
+    """The Linux AppImage: its VapourSynth is R81, and vstrt (and akarin) are
+    API 3 plugins that R80 and later refuse to load, so no vstrt the user built
+    can run inside it. Fedora's packages use the host's VapourSynth, where it can."""
+    return Finding(
+        "trt.off",
+        Section.TRT,
+        Severity.INFO,
+        None,
+        M("Experimental NVIDIA TensorRT isn't available in the AppImage"),
+        M(
+            "The AppImage's VapourSynth (R81) can't load vstrt, which is an API 3 "
+            "plugin. The AppImage smooths with MVTools; for TensorRT and the GPU "
+            "engines, use ButterEye's Fedora packages."
+        ),
+        M(""),
+    )
+
+
 def trt_off_finding() -> Finding:
+    if osapi.LINUX_APP is not None:
+        return trt_appimage_finding()
     if osapi.IS_MACOS:
         return trt_macos_finding()
     if osapi.IS_WINDOWS:
@@ -136,6 +157,8 @@ def trt_findings(
         return [trt_macos_finding()]
     if osapi.IS_WINDOWS:
         return [trt_windows_finding()]
+    if osapi.LINUX_APP is not None:
+        return [trt_appimage_finding()]
     out: list[Finding] = []
     dnf_rt = "sudo dnf install libnvinfer-bin"
     nv = [g for g in hw.info.gpus if g.vendor == "NVIDIA"]
@@ -393,6 +416,7 @@ def find_trtexec() -> str | None:
 
 
 __all__ = [
+    "trt_appimage_finding",
     "trt_off_finding",
     "trt_windows_finding",
     "trt_macos_finding",

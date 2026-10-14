@@ -92,7 +92,10 @@ def _vstrt_dirs(paths: Paths) -> list[Path]:
     # too. Where TensorRT cannot exist, say so rather than globbing for a name
     # that will never be on disk -- otherwise macOS gets the right answer only
     # because the Linux file name happens not to match (osapi.HAS_VSTRT).
-    if not osapi.HAS_VSTRT:
+    # The Linux AppImage carries VapourSynth R81, which refuses vstrt's API 3:
+    # a vstrt built for the host's VapourSynth is on disk but can never load
+    # there, and picking it made every live session fail and roll back.
+    if not osapi.HAS_VSTRT or osapi.LINUX_APP is not None:
         return []
     root = paths.data_dir / VSTRT_SUBDIR
     found = [p.parent for p in root.glob(f"*/{osapi.VSTRT_LIB}") if p.is_file()]

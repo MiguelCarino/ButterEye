@@ -213,6 +213,16 @@ def backends(report: DoctorReport, cfg: Config) -> tuple[BackendStatus, ...]:
             M("TensorRT can't run on macOS: it needs CUDA and an NVIDIA GPU."),
             ErrorCode.TRT_UNSUPPORTED,
         )
+    elif osapi.LINUX_APP is not None:
+        # the AppImage's VapourSynth (R81) refuses vstrt's API 3, whatever the
+        # opt-in says; the doctor's row is INFO, so this has to come first too
+        trt = BackendStatus(
+            BackendId.RIFE_TRT,
+            False,
+            True,
+            M("TensorRT isn't available in the AppImage: its VapourSynth can't load vstrt."),
+            ErrorCode.TRT_UNSUPPORTED,
+        )
     elif not cfg.general.trt_experimental:
         trt = BackendStatus(BackendId.RIFE_TRT, False, True, M("Experimental NVIDIA TensorRT: off"))
     elif not report.trt_included:

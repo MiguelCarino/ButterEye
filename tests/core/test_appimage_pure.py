@@ -16,11 +16,13 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from buttereye.core import osapi
 from buttereye.core.doctor import checks_pkgs as pk
+from buttereye.core.i18n import render
 from buttereye.core.types import Msg
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX ownership and paths")
@@ -124,3 +126,44 @@ def test_inside_the_appimage_the_doctor_offers_no_dnf(monkeypatch: pytest.Monkey
     assert carried == {"fix": pk.APPIMAGE_REPAIR, "commands": ()}
     other = pk.tool_fix(Msg("Install mkvtoolnix."), "sudo dnf install mkvtoolnix", "mkvtoolnix")
     assert other == {"fix": Msg("Install mkvtoolnix."), "commands": ()}
+
+
+def test_the_appimage_never_looks_for_vstrt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A vstrt built for the host's VapourSynth is on disk, but the AppImage's R81
+    refuses its API 3: found, it was picked for live play and every session rolled
+    back. Outside the AppImage the same tree is found as before."""
+    from types import SimpleNamespace
+
+    from buttereye.core.backends import trt
+
+    data = tmp_path / "data"
+    lib = data / trt.VSTRT_SUBDIR / "v16" / osapi.VSTRT_LIB
+    lib.parent.mkdir(parents=True)
+    lib.write_bytes(b"")
+    paths: Any = SimpleNamespace(data_dir=data)
+    monkeypatch.setattr(osapi, "LINUX_APP", None)
+    assert trt._vstrt_dirs(paths) == [lib.parent]
+    monkeypatch.setattr(osapi, "LINUX_APP", tmp_path / "app")
+    assert trt._vstrt_dirs(paths) == []
+
+
+def test_the_appimage_s_doctor_is_honest_about_what_it_lacks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """TensorRT: one INFO row, not two DEGRADED ones about API 3. RIFE and mvgpu:
+    the AppImage never carries them, so "download it again" would do nothing."""
+    from buttereye.core.doctor import checks_trt
+    from buttereye.core.types import Severity
+
+    monkeypatch.setattr(osapi, "IS_WINDOWS", False)
+    monkeypatch.setattr(osapi, "IS_MACOS", False)
+    monkeypatch.setattr(osapi, "LINUX_APP", tmp_path)
+    off = checks_trt.trt_off_finding()
+    assert off.id == "trt.off" and off.severity is Severity.INFO
+    assert "AppImage" in render(off.title)
+    no_gpu = pk.platform_fix(
+        Msg("Install it."), ("sudo dnf install x",), appimage=pk.APPIMAGE_NO_GPU
+    )
+    assert no_gpu == {"fix": pk.APPIMAGE_NO_GPU, "commands": ()}

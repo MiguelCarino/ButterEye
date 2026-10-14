@@ -274,6 +274,16 @@ def compute(
                 Msg(_TRT_IMPOSSIBLE),
                 _commands(trt_findings),
             )
+        elif osapi.LINUX_APP is not None:
+            # the AppImage: an INFO row only (``checks_trt.trt_appimage_finding``),
+            # so without this arm it would fall through to ``trt_static``
+            states[Feature.TRT] = CapState(
+                False,
+                Reason.MISSING_DEPENDENCY,
+                ErrorCode.TRT_UNSUPPORTED,
+                Msg(_TRT_APPIMAGE),
+                (),
+            )
         elif trt_findings:
             states[Feature.TRT] = unavailable_state(
                 Feature.TRT,
@@ -328,6 +338,12 @@ def compute(
 #: macOS only (``osapi.HAS_VSTRT`` False): the TensorRT path cannot be set up here
 #: at all, so the (TRT, MISSING_DEPENDENCY) text below, which names the two pieces
 #: as missing, would read as a to-do list. Phase 1 of the port measured this.
+#: the Linux AppImage: its VapourSynth (R81) can't load vstrt's API 3
+_TRT_APPIMAGE = (
+    "TensorRT isn't available in the AppImage.\n"
+    "Its VapourSynth can't load vstrt. ButterEye's Fedora packages can run it."
+)
+
 _TRT_IMPOSSIBLE = (
     "TensorRT can't run on macOS.\n"
     "It needs CUDA and an NVIDIA GPU, and macOS has neither. RIFE runs through "

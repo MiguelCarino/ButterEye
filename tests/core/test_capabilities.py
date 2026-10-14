@@ -309,6 +309,24 @@ def test_trt_is_impossible_without_vstrt(monkeypatch: pytest.MonkeyPatch) -> Non
         assert "macOS" in render(st.message) and "install" not in render(st.message)
 
 
+def test_trt_is_unavailable_in_the_appimage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The Linux AppImage: its doctor's TensorRT row is INFO (it is not a fault the
+    user can fix there), so without its own arm this would fall through to the
+    static state and report TensorRT available."""
+    monkeypatch.setattr(capabilities.osapi, "LINUX_APP", tmp_path)
+    on = dataclasses.replace(
+        sc.default_config(),
+        general=dataclasses.replace(sc.default_config().general, trt_experimental=True),
+    )
+    rep = dataclasses.replace(sc.report(()), trt_included=True)
+    st = compute(on, rep, static=_all_static()).states[Feature.TRT]
+    assert not st.available
+    assert (st.reason, st.code) == (Reason.MISSING_DEPENDENCY, ErrorCode.TRT_UNSUPPORTED)
+    assert "AppImage" in render(st.message)
+
+
 def test_hdr_passthrough_available_after_m0d() -> None:
     st = compute(None, None, static=_all_static()).states[Feature.HDR_PASSTHROUGH]
     assert st.available  # spike M0(d) passed for PQ

@@ -397,6 +397,12 @@ APP_CARRIES = frozenset({"mpv", "vapoursynth", "ffmpeg"})
 #: the Linux AppImage's peer of ``APP_REPAIR``: it carries mpv, VapourSynth,
 #: FFmpeg and MVTools, so the one repair is a fresh copy (``osapi.LINUX_APP``)
 APPIMAGE_REPAIR = M("Download the ButterEye AppImage again and replace the old file with it.")
+#: the AppImage never carries RIFE or mvgpu, so a fresh copy cannot bring them:
+#: say where they are instead of a repair that does nothing
+APPIMAGE_NO_GPU = M(
+    "The AppImage smooths with MVTools only. For RIFE and mvgpu on the GPU, use "
+    "ButterEye's Fedora packages."
+)
 #: macOS: ButterEye has no macOS package of its own yet (phase 3 builds the
 #: plugins, phase 4 taps them), and Homebrew has no formula for RIFE-ncnn-Vulkan
 #: or mvgpu, so for ButterEye's own pieces there is nothing to type. Saying that
@@ -422,6 +428,7 @@ def platform_fix(
     windows: Msg = REPAIR,
     macos: Msg = NO_MACOS_PACKAGE,
     macos_commands: tuple[str, ...] = (),
+    appimage: Msg = APPIMAGE_REPAIR,
 ) -> Fix:
     """``fix=``/``commands=`` for a finding: the Fedora advice with its commands,
     on Windows ``windows`` (by default the installer's Repair) with nothing to
@@ -436,7 +443,7 @@ def platform_fix(
             return {"fix": APP_REPAIR, "commands": ()}
         return {"fix": macos, "commands": macos_commands}
     if osapi.LINUX_APP is not None:
-        return {"fix": APPIMAGE_REPAIR, "commands": ()}
+        return {"fix": appimage, "commands": ()}
     return {"fix": fix, "commands": commands}
 
 
@@ -539,6 +546,7 @@ def mvgpu_finding(db: RpmDb, paths: Paths) -> Finding:
             # formula for it; it runs on MoltenVK bar one instance flag
             # (docs/PLATFORMS.md), so this is "not yet", not "never".
             macos=M("ButterEye doesn't build mvgpu for macOS yet, so it can't be installed."),
+            appimage=APPIMAGE_NO_GPU,
         ),
     )
 
@@ -679,7 +687,8 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
         out.append(
             _f(
                 "packages.rife",
-                Severity.DEGRADED,
+                # the AppImage is MVTools by design: a note, not a fault to fix
+                Severity.INFO if osapi.LINUX_APP is not None else Severity.DEGRADED,
                 M("The RIFE plugin is not installed"),
                 code=ErrorCode.PKG_MISSING,
                 # the Fedora row names the RPM, which is what a user would install;
@@ -702,6 +711,7 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                         "RIFE has no macOS package yet, so only MVTools (CPU) smoothing "
                         "works here."
                     ),
+                    appimage=APPIMAGE_NO_GPU,
                 ),
             )
         )

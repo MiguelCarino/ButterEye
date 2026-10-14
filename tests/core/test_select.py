@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 from datetime import UTC, datetime
 from fractions import Fraction
+from pathlib import Path
 
 import pytest
 
@@ -216,6 +217,25 @@ def test_trt_is_never_offered_without_vstrt(
         s = select(r, c, ())
         assert s.backend is not BackendId.RIFE_TRT
         assert BackendId.RIFE_TRT not in s.ranked
+
+
+def test_trt_is_never_offered_in_the_appimage(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The Linux AppImage: its VapourSynth (R81) refuses vstrt's API 3, so a vstrt
+    built for the host can never load there. Offered, it made every live session
+    fail and roll back to unsmoothed playback (0.0.5, an RTX 4090 with vstrt set up
+    for Fedora's R72)."""
+    monkeypatch.setattr(select_mod.osapi, "LINUX_APP", tmp_path)
+    r = report(trt=True, extra=_trt_ok())
+    for c in (with_general(cfg, trt_experimental=True), cfg):
+        st = {b.id: b for b in backends(r, c)}
+        assert not st[BackendId.RIFE_TRT].available
+        assert st[BackendId.RIFE_TRT].code is ErrorCode.TRT_UNSUPPORTED
+        assert select(r, c, ()).backend is not BackendId.RIFE_TRT
+    monkeypatch.setattr(select_mod.osapi, "LINUX_APP", None)
+    st = {b.id: b for b in backends(r, with_general(cfg, trt_experimental=True))}
+    assert st[BackendId.RIFE_TRT].available
 
 
 def test_blocking_selects_nothing(cfg: Config) -> None:
