@@ -5,7 +5,10 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
-## Unreleased
+## 0.0.5 — 2026-10-14
+
+On a Mac, ButterEye now gets the programs inside it past Gatekeeper on its own the
+first time it is set up.
 
 ### Changed
 

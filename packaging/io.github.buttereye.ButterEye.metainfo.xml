@@ -32,6 +32,12 @@
     <binary>buttereye-gui</binary>
   </provides>
   <releases>
+    <release version="0.0.5" date="2026-10-14" type="stable">
+      <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.5</url>
+      <description>
+        <p>On macOS, ButterEye's first-time setup clears the download mark from the app itself, so mpv, ffmpeg and vspipe are no longer held back after Open Anyway.</p>
+      </description>
+    </release>
     <release version="0.0.4" date="2026-10-13" type="stable">
       <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.4</url>
       <description>
