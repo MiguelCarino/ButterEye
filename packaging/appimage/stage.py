@@ -196,9 +196,13 @@ def closure(appdir: Path, out: Path) -> None:
                 copied[str(dest.relative_to(appdir))] = copied.get(
                     str(src.relative_to(appdir)), f"<appdir>/{src.relative_to(appdir)}"
                 )
+            if dest.exists():
+                continue  # copied for another file a moment ago
             target_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
             dest.chmod(0o755)
+            # a copied library finds what it needs beside itself
+            set_runpath(dest, ["$ORIGIN"])
             print(f"  + {dest.relative_to(appdir)}  ({copied[str(dest.relative_to(appdir))]}, "
                   f"for {elf.relative_to(appdir)})")
             queue.append(dest)

@@ -67,7 +67,7 @@ libXfixes\.so\.3
 libXau\.so\.6
 libXdmcp\.so\.6
 libxcb\.so\.1
-libxcb-(composite|damage|dbe|dpms|dri2|dri3|glx|present|randr|record|render|res|screensaver|shape|shm|sync|xf86dri|xfixes|xinerama|xinput|xkb|xtest|xv|xvmc)\.so\.0
+libxcb-(composite|damage|dbe|dpms|dri2|dri3|glx|present|randr|record|render|res|screensaver|shape|shm|sync|xf86dri|xfixes|xinerama|xinput|xkb|xtest|xv|xvmc)\.so\.[01]
 libwayland-(client|cursor|server)\.so\.0
 libwayland-egl\.so\.1
 libxkbcommon\.so\.0
@@ -77,7 +77,8 @@ libxkbcommon-x11\.so\.0
 # and configuration are the host's; FreeType and HarfBuzz link each other on
 # most distributions, so a bundled copy of either would meet the host's other
 # half), GLib and D-Bus (the session bus), the sound servers' client libraries,
-# and zlib, which every Linux system has.
+# and zlib and zstd, which every Linux system has (systemd links both) and which
+# Mesa's drivers load into the same process.
 libfontconfig\.so\.1
 libfreetype\.so\.6
 libharfbuzz\.so\.0
@@ -89,3 +90,4 @@ libdbus-1\.so\.3
 libasound\.so\.2
 libpulse\.so\.0
 libz\.so\.1
+libzstd\.so\.1
