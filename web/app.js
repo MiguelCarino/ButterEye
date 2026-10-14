@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 The ButterEye contributors
-// butter.carino.systems. A Fedora button is a plain link to the app's RPM (the
-// no-JS path) and also opens the install sheet, since the app's plugins are not
-// in Fedora's repositories. The Windows button links the installer and opens its
+// butter.carino.systems. The Linux button opens a choice: the AppImage (one file
+// for any recent x86-64 Linux, linked from the release when it has one) or
+// Fedora, which opens the install sheet, since the app's plugins are not in
+// Fedora's repositories; without JS it is a link to the release. The Windows button links the installer and opens its
 // three steps (mpv from winget, SmartScreen, Microsoft's terms). The macOS button
 // links the disk image and opens the steps past Gatekeeper (not notarised).
-// Linux readers see both Fedora buttons marked (the browser doesn't say which
-// Fedora), Windows and Mac readers their own. The links follow the latest
+// Linux, Windows and Mac readers each see their own button marked. The links follow the latest
 // GitHub release when the API answers.
 'use strict';
 
@@ -24,14 +24,16 @@ const FALLBACK = {
 };
 const SETUP = /^ButterEye-.*-setup\.exe$/;
 const DMG = /^ButterEye-.*-macos-arm64\.dmg$/;
+const APPIMAGE = /^ButterEye-.*-x86_64\.AppImage$/;
 // install order in the command: the app first, then its plugins
 const ORDER = ['buttereye-', 'buttereye-vs-mvtools', 'buttereye-vs-rife-ncnn', 'buttereye-rife-ncnn-models', 'buttereye-vs-mvgpu'];
 
 let release = FALLBACK;
 let platform = 'fc44';
 
-const chips = Array.from(document.querySelectorAll('.dl-btn'));
+const chips = Array.from(document.querySelectorAll('#downloads .dl-btn'));
 const install = document.getElementById('installDialog');
+const linux = document.getElementById('linuxDialog');
 const mac = document.getElementById('macDialog');
 const windows = document.getElementById('windowsDialog');
 const seg = Array.from(install.querySelectorAll('.seg button'));
@@ -50,7 +52,7 @@ function detectOS() {
 const os = detectOS();
 for (const c of chips) {
   const p = c.dataset.platform;
-  if ((os === 'linux' && p.startsWith('fc')) || (os === p)) {
+  if (os === p) {
     c.classList.add('recommended');
   }
 }
@@ -82,7 +84,31 @@ function fill() {
   const sums = release.assets.find((a) => a.name === 'SHA256SUMS');
   if (sums) document.getElementById('sums').href = sums.url;
   document.getElementById('installTitle').textContent = `Install ButterEye ${release.tag.replace(/^v/, '')}`;
+  fillAppImage();
 }
+
+// ---------------------------------------------------------------- the Linux sheet
+function fillAppImage() {
+  const v = release.tag.replace(/^v/, '');
+  const app = release.assets.find((a) => APPIMAGE.test(a.name));
+  const btn = document.getElementById('appimageBtn');
+  btn.querySelector('.fmt').textContent = app ? 'any Linux · x86-64' : `not in ${v} yet`;
+  btn.setAttribute('aria-disabled', String(!app));
+  btn.href = app ? app.url : `https://github.com/${REPO}/releases`;
+  document.getElementById('appimageSteps').hidden = !app;
+  if (app) {
+    document.getElementById('appcmd').textContent = `chmod +x ${app.name}\n./${app.name}`;
+  }
+  document.getElementById('appsums').href = `https://github.com/${REPO}/releases/tag/${release.tag}`;
+  document.getElementById('linuxTitle').textContent = `ButterEye ${v} for Linux`;
+}
+document.getElementById('appimageBtn').addEventListener('click', (e) => {
+  if (e.currentTarget.getAttribute('aria-disabled') === 'true') e.preventDefault();
+});
+document.getElementById('fedoraBtn').addEventListener('click', () => {
+  linux.close();
+  openInstall();
+});
 function openInstall(p) {
   if (p) platform = p;
   fill();
@@ -99,9 +125,14 @@ seg.forEach((b, k) => b.addEventListener('keydown', (e) => {  // radiogroup: arr
 document.getElementById('installBtn').addEventListener('click', () => openInstall());
 
 // ---------------------------------------------------------------- the buttons
-chips.forEach((c) => c.addEventListener('click', () => {
+chips.forEach((c) => c.addEventListener('click', (e) => {
   const p = c.dataset.platform;
-  if (p === 'windows') {
+  if (p === 'linux') {
+    // the link is the release page, for no JS; here the sheet offers the two ways in
+    e.preventDefault();
+    fill();
+    linux.showModal();
+  } else if (p === 'windows') {
     // the link downloads the installer; the sheet says what else to do
     windows.showModal();
   } else if (p === 'macos') {
@@ -114,7 +145,7 @@ chips.forEach((c) => c.addEventListener('click', () => {
 }));
 
 // close a sheet by clicking its backdrop
-for (const d of [install, mac, windows]) {
+for (const d of [install, linux, mac, windows]) {
   d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
 }
 
@@ -138,6 +169,7 @@ async function copyFrom(button, source) {
 document.getElementById('copy').addEventListener('click', (e) => copyFrom(e.currentTarget, 'cmd'));
 document.getElementById('wincopy').addEventListener('click', (e) => copyFrom(e.currentTarget, 'wincmd'));
 document.getElementById('maccopy').addEventListener('click', (e) => copyFrom(e.currentTarget, 'maccmd'));
+document.getElementById('appcopy').addEventListener('click', (e) => copyFrom(e.currentTarget, 'appcmd'));
 
 // ---------------------------------------------------------------- latest release
 fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } })
@@ -155,6 +187,7 @@ fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accep
         if (setup) c.href = setup.url;
         continue;
       }
+      if (c.dataset.platform === 'linux') continue;  // the sheet carries the links
       if (c.dataset.platform === 'macos') {
         const dmg = release.assets.find((a) => DMG.test(a.name));
         if (dmg) c.href = dmg.url;
@@ -166,7 +199,7 @@ fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accep
     for (const id of ['winsums', 'macsums']) {
       document.getElementById(id).href = `https://github.com/${REPO}/releases/tag/${release.tag}`;
     }
-    if (install.open) fill();
+    fill();
   })
   .catch(() => { /* offline or rate-limited: the built-in 0.0.4 list stays */ });
 

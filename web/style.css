@@ -154,7 +154,18 @@ a { color: var(--accent); }
   border: 1px solid var(--accent); background: var(--accent); color: #050505; }
 .copy:hover { background: var(--accent-hover); }
 .copy.done { background: transparent; color: var(--accent); }
-.modal code:not(#cmd):not(#wincmd) { font-family: var(--mono); background: #1a1a1a; padding: 1px 5px; border-radius: 3px; color: #fde68a; }
+.modal code:not(#cmd):not(#wincmd):not(#appcmd) { font-family: var(--mono); background: #1a1a1a; padding: 1px 5px; border-radius: 3px; color: #fde68a; }
+/* the Linux sheet's two choices: the download chips, smaller */
+.picks { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0 6px; }
+.pick { flex: 1 1 200px; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 14px 18px; border-radius: 10px; text-decoration: none; font: inherit; cursor: pointer;
+  border: 1px solid var(--border); background: linear-gradient(180deg, var(--panel), #0a0a0a);
+  color: var(--text); transition: .15s; }
+.pick:hover { border-color: var(--accent); }
+.pick b { font-size: 1.1rem; font-weight: 600; }
+.pick .fmt { font-family: var(--mono); font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.pick[aria-disabled="true"] { opacity: .5; cursor: default; }
+.pick[aria-disabled="true"]:hover { border-color: var(--border); }
 details { margin-top: 10px; }
 summary { cursor: pointer; font-weight: 600; }
 .files { margin: 8px 0; padding-left: 18px; font-family: var(--mono); font-size: .78rem; }
@@ -169,4 +180,4 @@ summary { cursor: pointer; font-weight: 600; }
   .downloads { gap: 10px; }
   .dl-note { font-size: .78rem; }
 }
-@media (prefers-reduced-motion: reduce) { .dl-btn, .btn { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .dl-btn, .btn, .pick { transition: none; } }

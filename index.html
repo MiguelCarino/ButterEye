@@ -46,19 +46,19 @@
 
       <!-- Above the buttons: it is what they hand you. app.js rewrites it from the
            latest release so the line and the buttons never disagree. -->
-      <p class="version" id="version">Version <strong>0.0.4</strong> · Fedora Linux · Windows · macOS · AGPL-3.0</p>
+      <p class="version" id="version">Version <strong>0.0.4</strong> · Linux · Windows · macOS · AGPL-3.0</p>
 
-      <!-- The hrefs are the no-JS path: the app's RPM for each Fedora. It needs
-           its plugins (not in Fedora's repositories), so a click also opens the
-           one-line install that brings them. Windows is one installer (mpv comes
+      <!-- The hrefs are the no-JS path. Linux is one button: its href is the
+           release page, and a click opens a choice between the AppImage (any
+           Linux) and Fedora's RPMs, whose plugins are not in Fedora's
+           repositories, so that choice opens the one-line install that brings them. Windows is one installer (mpv comes
            from winget); a click also opens its three steps. macOS is one disk
            image with everything in it, mpv included; a click also opens the
            steps past Gatekeeper, since it is not notarised. -->
       <div class="downloads" id="downloads">
-        <a class="dl-btn" data-platform="fc44" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.4/buttereye-0.0.4-1.fc44.noarch.rpm">
-          <span class="rec">for your system</span><b>🐧 Fedora 44</b><span class="fmt">.rpm · x86-64</span></a>
-        <a class="dl-btn" data-platform="fc45" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.4/buttereye-0.0.4-1.fc45.noarch.rpm">
-          <span class="rec">for your system</span><b>🐧 Fedora 45</b><span class="fmt">.rpm · x86-64</span></a>
+        <a class="dl-btn" data-platform="linux" href="https://github.com/MiguelCarino/ButterEye/releases/latest"
+           aria-haspopup="dialog" aria-controls="linuxDialog">
+          <span class="rec">for your system</span><b>🐧 Linux</b><span class="fmt">AppImage · Fedora .rpm</span></a>
         <a class="dl-btn" data-platform="macos" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.4/ButterEye-0.0.4-macos-arm64.dmg">
           <span class="rec">for your system</span><b> macOS</b><span class="fmt">.dmg · Apple silicon</span></a>
         <a class="dl-btn" data-platform="windows" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.4/ButterEye-0.0.4-setup.exe">
@@ -68,7 +68,7 @@
       <p class="dl-manual"><button class="btn ghost" type="button" id="installBtn"
          aria-haspopup="dialog" aria-controls="installDialog">⌨ Install in one command</button></p>
       <p class="dl-all"><a href="https://github.com/MiguelCarino/ButterEye/releases">All versions and changelogs →</a></p>
-      <p class="dl-note">On Fedora the one-line install brings everything. On Windows, install mpv with winget, then run the installer. On a Mac, drag ButterEye to Applications.</p>
+      <p class="dl-note">On Linux, run the AppImage, or on Fedora use the one-line install that brings everything. On Windows, install mpv with winget, then run the installer. On a Mac, drag ButterEye to Applications.</p>
     </div>
   </header>
 
@@ -98,6 +98,32 @@
         <ul class="files" id="files"></ul>
         <p class="small">Check them against <a id="sums" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.4/SHA256SUMS">SHA256SUMS</a>. The minimum is <code>buttereye</code> and <code>buttereye-vs-mvtools</code>; the others add GPU smoothing.</p>
       </details>
+    </div>
+  </dialog>
+
+  <!-- Linux: two ways in. The AppImage is one file for any recent x86-64 Linux;
+       Fedora gets RPMs (the install sheet above). app.js fills the AppImage's
+       link from the release and says so when a release has none. -->
+  <dialog class="modal" id="linuxDialog" aria-labelledby="linuxTitle">
+    <div class="modal-head">
+      <h2 class="modal-title" id="linuxTitle">ButterEye for Linux</h2>
+      <form method="dialog"><button class="modal-x" aria-label="Close">✕</button></form>
+    </div>
+    <div class="modal-body">
+      <p>Choose how to install it:</p>
+      <div class="picks">
+        <a class="pick" id="appimageBtn" href="https://github.com/MiguelCarino/ButterEye/releases/latest">
+          <b>AppImage</b><span class="fmt">any Linux · x86-64</span></a>
+        <button class="pick" type="button" id="fedoraBtn" aria-haspopup="dialog" aria-controls="installDialog">
+          <b>Fedora</b><span class="fmt">.rpm · 44 / 45</span></button>
+      </div>
+      <div id="appimageSteps">
+        <p><strong>AppImage:</strong> one file with everything inside, mpv included; nothing to install. Make it runnable and start it:</p>
+        <div class="code"><pre><code id="appcmd">chmod +x ButterEye-*-x86_64.AppImage
+./ButterEye-*-x86_64.AppImage</code></pre><button type="button" class="copy" id="appcopy">Copy</button></div>
+        <p class="small" id="appimageNote">Needs glibc 2.35 or newer: Ubuntu 22.04, Debian 12, Fedora 36 or later. Experimental: tested in clean containers of Ubuntu, Debian, Fedora and Arch, not yet on many desktops. <a id="appsums" href="https://github.com/MiguelCarino/ButterEye/releases/latest">Checksums and source code</a>.</p>
+      </div>
+      <p><strong>Fedora:</strong> RPM packages that dnf keeps up to date, with the GPU plugins. One command installs everything.</p>
     </div>
   </dialog>
 
