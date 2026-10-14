@@ -5,6 +5,26 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
+## 0.0.4 — 2026-10-13
+
+Live smoothing no longer makes frames your screen can't show, which on a 60 Hz
+screen also made ButterEye believe a fast enough engine was too slow.
+
+### Fixed
+
+- **"Double (2×)" no longer asks for more frames than your display shows.** A 50 fps
+  video on a 60 Hz screen was smoothed to 100 fps; mpv threw 40 of every 100 frames
+  away, ButterEye reported "Dropping frames" although the engine kept up, and then
+  remembered the engine as too slow. Double and a fixed rate now stop at the display
+  rate (50 fps on 60 Hz → 60, which is just as smooth on that screen), and a video
+  the screen already shows at full rate plays as it is. Speed limits learned by
+  earlier versions are forgotten once, since some came from those dropped frames.
+- **A display rate such as 60.0024 Hz is read as 60**, so a 50 fps video goes to
+  60 rather than to a rate that shares no frame with it (about 13 % less work with
+  MVTools, measured).
+- **Automatic prefers GPU motion vectors at a smaller size** when the display can't
+  show twice the video's rate, instead of requiring a doubling no screen could show.
+
 ## 0.0.3 — 2026-10-13
 
 ButterEye now runs on **macOS** (Apple silicon, experimental), and Automatic no longer

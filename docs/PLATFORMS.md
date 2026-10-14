@@ -2608,6 +2608,140 @@ offer, as on Windows. Each Homebrew binary is the bottle's with only its load co
 rewritten and its signature redone, and SOURCES.txt says how to put a rebuilt library
 in its place.
 
+#### Live smoothing on the M2: where the time goes (after 0.0.3)
+
+A user played a 1080p50 AV1 + Opus webm through the 0.0.3 app on the dev M2 (4
+performance and 4 efficiency cores, 8-core GPU, the built-in 2560 × 1664 panel at
+**60 Hz**), with the simple window's "CPU only" and its default target "Double
+(2×)". The log said `no_realtime`, then, forced, "smoothing 50 → 100 fps with
+MVTools (CPU) at 1280 × 720", then "Dropping frames (27.8 % over 10 s)". Everything
+below was measured on that file, read-only, from a copy of the 0.0.3 app taken out
+of its image, with the podman VM stopped (1-minute load 2.3–6 before each batch).
+"Untimed" is mpv `--vo=null --untimed --no-audio` with ButterEye's own generated
+script and `user-data`, timed as the difference between a 3 s and a 13 s run from
+60 s in (so start-up cancels); "live" is the real `gpu-next` window with
+`video-sync=display-resample`, a Lua script reading `frame-drop-count` every
+second, 15–25 s.
+
+| Stage, 1080p50 AV1 | Cost | Measured how |
+|---|---|---|
+| AV1 decode (dav1d 1.5, NEON) | 7.8 ms CPU per frame → **0.4 cores** at 50 fps; 1 000 fps untimed (20× real time) | mpv, no filter; ffmpeg `-threads 1`: 171 fps, 5.8 ms |
+| mpv → VapourSynth bridge | +1.3 ms per frame (0.07 cores) | a pass-through script |
+| shrink 1080p → 720p (`resize.Spline36`) | +2.0 ms per frame (**0.1 cores**); Bilinear +1.2 | the same script with the resize |
+| MVTools FlowFPS, 1080p, 50 → 60 | ~150 ms CPU per source frame → **7.5 cores** needed; untimed 1.03× real time with 7.8 cores busy; **live: about 10 drops a second (≈ 17 %)** | |
+| MVTools FlowFPS, 720p, 50 → 60 | 76 ms per source frame (3.8 cores); untimed 2.02×; **live: 0 drops in 15 s windowed, 3 in 25 s full screen, 3.0–3.3 cores** | |
+| mvgpu, 1080p, 50 → 60 | 22 ms CPU per source frame (**1.2 cores**); untimed 1.12×; **live: 0 drops in 15 s windowed and in 25 s full screen** | |
+| mvgpu, 720p, 50 → 60 | untimed 2.03×, 1.8 cores; live 0 drops | |
+| MVTools BlockFPS, 1080p, 50 → 60 | untimed 1.33× at 7.5 cores; **live: 0 drops in 25 s full screen, 4.6 cores** | |
+| rendering (`gpu-next`, full screen 2 560 × 1 664) | not separable here; with mvgpu sharing the GPU, still 0 drops | |
+
+Where MVTools spends it (`sample` on the 1080p run, on-CPU samples only): SAD
+37 % (`sad_c` 8×8 and 16×16), the vector-field upsampling of FlowFPS 22 %
+(`simpleResize<short>`), `FlowInterExtra` 15 %, the block search 13 %, the mask
+resize 5 %, dav1d 4 %. Homebrew's MVTools 29 bottle takes upstream's aarch64
+branch (`MVTOOLS_ARM`: `sse2neon.h` for Degrain and the sub-pixel planes); SAD,
+FlowFPS and the resizer are its plain C, which clang auto-vectorises
+(`sad_c<16,16>` is a `uabd.16b` loop with a horizontal add per row) — NEON, but
+not hand-written NEON. Nothing in the settings changes that: `concurrent-frames`
+4 / 8 / 16 gave 0.84× / 1.03× / 1.01× at 1080p, VapourSynth threads 4 / 6 / 8
+(the default) 0.76× / 0.91× / 1.03×, `pel` 2 0.75× against `pel` 1's 1.03×;
+BlockFPS 1.33× (the existing fallback when FlowFPS can't keep up).
+
+**What actually went wrong was the target, not the engine.** 50 → 100 on a 60 Hz
+panel: mpv drops every frame above the refresh rate at the video output and counts
+each in `frame-drop-count` — measured with `--vf=fps=100` and no smoothing at all:
+40 dropped every second, none at `fps=60`. The same 720p MVTools run the user saw
+"dropping" was replayed live at 50 → 100: **40 drops a second at 3.2 cores**,
+avsync 0.001 — the engine kept up; the display threw the frames away. Live
+correction then stored that as slowness: `live-limits.json` held **0.5399 and
+0.5396** for MVTools at 1080p and 720p — exactly `(1 − 0.40) × 0.9` — which is why
+the next play said `no_realtime` at 720p too and needed "smooth anyway".
+50 → 60 infers exactly as many frames as 50 → 100 (`decide.load_rate`: 100 either
+way), so the cap costs no smoothness the panel could show.
+
+What changed (all platforms: the principle is not a Mac one — mpv drops what a
+display can't show wherever it runs, so a 60 fps video at "Double" on a 60 Hz
+Linux monitor asked for 120; that is reasoning from the Mac measurement, not a
+Linux measurement):
+
+- **2× and fixed-rate targets never exceed a known display rate**
+  (`decide.over_display`, `choose_target`): above it, the highest refresh/k above
+  the source that fits (50 fps → 60 on 60 Hz, 24 → 30 on 30 Hz), and a source
+  the display already shows frame for frame (60 on 60 Hz, 59.94 on 60 Hz) plays
+  as it is (`ALREADY_AT_RATE`), remembered against the display rate so another
+  display re-decides it. 1 % above is still "within" — that much is what
+  display-resample absorbs by changing the speed (mpv's
+  `video-sync-max-video-change`). Unknown display rate (None or 0): unchanged.
+  No test or design note relied on a target above the display: the three tests
+  that hit it used 120 and 240 fps sources on a 180 Hz display to exercise
+  "nothing keeps up", and now name a display that shows their target. **For the
+  owner:** SCOPE §5.6 says the `target` key "can force `"2x"`"; with this change
+  "2×" means 2× up to the display rate. SCOPE was not edited here.
+- **Automatic's "a GPU engine at a smaller size must double the rate"** now asks
+  for the doubling rate or the best target the display allows, whichever is lower
+  (`pick_size`): on 60 Hz a 50 fps video can't double, and mvgpu reaching 60 at
+  720p was losing to the CPU for missing a 100 nobody could see.
+- **The display rate is read to the nearest whole number within 0.05 %**
+  (`decide.display_rate`): mpv reported this panel as 60.000131 in one run and
+  60.0024 in the next, and 60.0024 kept as 49982/833 makes every output frame an
+  inferred one — MVTools at 720p ran 1.66× real time towards 60.0024 against
+  1.92× towards 60, and no source frame passed through untouched. NTSC rates
+  (59.94, 119.88) are matched first, as before.
+- **Live correction no longer learns from drops above the display rate**
+  (`Session.live_fallback` re-decides instead), and `live-limits.json` records now
+  carry a version: the ones written before this change are ignored, because
+  a record learned from display drops can't be told from a real one
+  (`livelimits.VERSION`).
+
+Not changed, with the measurement that argues for leaving it:
+
+- **`hwdec`.** "nvdec-copy,auto-copy" costs a Mac one "Unsupported hwdec:
+  nvdec-copy" line and nothing else: `auto-copy` already settles on
+  `videotoolbox-copy` — H.264 291 / 297 fps, HEVC 307 / 317, VP9 242 / 255 for
+  the SCOPE string / `videotoolbox-copy` (1080p50 clips cut from the same film,
+  0.32 cores either way, against 4.6–7 cores and 975–1 478 fps in software).
+  AV1 on an M2 has no hardware decoder (M3 and later do), so mpv tries
+  VideoToolbox once, logs "Failed setup for format videotoolbox_vld", and decodes
+  with dav1d — 0.4 cores, above.
+- **"Frame requested during init! … Returning black dummy frame"** comes from
+  MVTools only (never mvgpu): its filters read the analysis parameters from frame
+  0 of the vector clip while the script is being built, and mpv answers such a
+  request with a black frame at once. Harmless — no stall; MVTools starts in
+  0.9–1.6 s, mvgpu in 0.7–1.4.
+- **The speed test is not mis-costed for 50p.** It measures 24p 2× and converts by
+  inferred frames; in those units the real file ran mvgpu 112 and MVTools 103
+  (1080p, 50 → 60) against benchmark rows of 106 (89–121 over the runs on file) and
+  115. What keeps mvgpu off 1080p for this file on Automatic is
+  `LIVE_HEADROOM` (1.25: 50 → 60 needs a 125 fps row), while live it held real
+  time at 1.12× untimed. One file and one machine are not enough to lower a
+  cross-platform margin; left as a recommendation.
+
+For comparison, 30 s of the same film cut to 23.976 fps (H.264, VideoToolbox
+decode): MVTools FlowFPS 23.976 → 60 at 1080p ran 1.48× untimed (202 ms CPU per
+source frame, but half the source frames) and held real time live, full screen,
+0 drops in 25 s at 4.1 cores. MVTools analyses every source frame, so a 50 fps
+film costs it more than a 24 fps one at the same output rate.
+
+**Re-measured from a rebuilt image** (`build-app.sh` with these changes, a fresh
+copy of the app, `env -i` with a scratch `HOME` holding *copies* of the user's
+`config.toml`, `bench.json` and `live-limits.json`, 30 s from 60 s in, muted):
+
+```
+0.0.3, CPU only + Double  -> bypassed: too demanding to smooth in real time
+fixed, CPU only + Double  -> 50 → 60 fps with mvtools (active, ok)
+                             (BlockFPS at 1080p: MVTools' FlowFPS cap misses
+                             50 → 60, its block mode does not; 0.0.3's live
+                             limits ignored)
+fixed, Auto + Double      -> 50 → 60 fps with mvgpu (active, ok), at 1280 × 720
+```
+
+So, on this M2, this file smooths live to **60 fps at full 1080p with mvgpu**
+(0 drops, 1.2 cores — but Automatic picks it only at 720p, see the headroom
+above), **at 1080p with MVTools' block mode** (0 drops, 4.6 cores) or **at 720p
+with MVTools' FlowFPS** (0–0.2 % drops, 3–3.3 cores); FlowFPS at 1080p cannot
+(CPU-bound). 100 fps would mean something only on a 120 Hz ProMotion panel,
+which nobody has measured.
+
 #### What is not verified, and could not be here
 
 - **One machine**: one M2, one macOS (27.0.1), one account that *has* Homebrew

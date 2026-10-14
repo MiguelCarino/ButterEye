@@ -677,9 +677,10 @@ async def test_session_nothing_keeps_up_bypasses_with_notice(
 ) -> None:
     bench_history.append(_devbox())
     s = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
-    # 240 → 480 at 720p: RIFE ~110, MVTools ~184 live (BlockFPS ~368); nothing
+    # 240 → 480 at 720p on a 480 Hz display (a 2x target never goes above the
+    # display rate): RIFE ~110, MVTools ~184 live (BlockFPS ~368); nothing
     # reaches 480, and 720p has no smaller size to try
-    _load(s, fps=240.0, w=1280, h=720)
+    _load(s, fps=240.0, w=1280, h=720, hz=480.0)
     await s.apply(raise_on_fail=False)
     snap = s.snapshot()
     assert snap.filter is FilterState.BYPASSED and snap.bypass is BypassReason.NO_REALTIME
@@ -744,7 +745,8 @@ async def test_session_forced_without_smaller_size_runs_at_its_own(
     bench_history.append(_devbox())
     s = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
     s.forced = True
-    _load(s, fps=240.0, w=1280, h=720)  # not even MVTools' block mode reaches 480
+    # 480 Hz, so the 2x target stays 480: not even MVTools' block mode reaches it
+    _load(s, fps=240.0, w=1280, h=720, hz=480.0)
     await s.apply(raise_on_fail=False)
     snap = s.snapshot()
     assert snap.backend is BackendId.RIFE_NCNN and snap.notice == decide.forced_notice()
@@ -757,8 +759,9 @@ async def test_session_mvtools_block_mode_keeps_up_where_flow_cannot(
     bench_history.append(_devbox())
     s = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
     # 120 → 240 at 720p: RIFE ~110 and MVTools FlowFPS ~184 fall short; BlockFPS
-    # (~368, spike M0(p)) keeps up at the video's own size
-    _load(s, fps=120.0, w=1280, h=720)
+    # (~368, spike M0(p)) keeps up at the video's own size (on a 240 Hz display,
+    # which shows all 240)
+    _load(s, fps=120.0, w=1280, h=720, hz=240.0)
     await s.apply(raise_on_fail=False)
     snap = s.snapshot()
     assert snap.backend is BackendId.MVTOOLS and snap.target_fps == 240
@@ -1165,6 +1168,46 @@ async def test_short_or_light_drops_change_nothing(
     monkeypatch.setattr(s.detector, "update", lambda _sample: _heavy(0.8))
     await s.step()  # heavy, but only just started
     assert _engine(s) is BackendId.RIFE_NCNN and s.heavy_since is not None
+
+
+async def test_drops_above_the_display_rate_are_not_learned_as_slowness(
+    tmp_path: Path, bench_history: list[BenchResult], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mpv drops every frame above the refresh rate by design (decide.over_display):
+    on a 60 Hz Apple M2 panel 50 -> 100 'dropped' 40 % with any engine, and 0.0.3
+    stored that as a 0.54 slowdown. A display that changed under a running
+    target is re-decided, and nothing is written."""
+    bench_history.append(_devbox())
+    ctx, s = await _running(tmp_path, _simple())
+    assert s.target == NTSC * 2 and s.auto_chosen
+    # the window moved to a 30 Hz display: 47.952 is now above what it shows
+    s.props["display-fps"] = 30.0
+    s.display_fps = 30.0
+    monkeypatch.setattr(s.detector, "update", lambda _sample: _heavy(0.38))
+    s.heavy_since = time.monotonic() - live.HEAVY_HOLD_S - 1
+    await s.step()
+    await _settle(ctx)
+    assert not (ctx.paths.state_dir / live.livelimits.FILE).exists()
+    assert s.target == 30, "re-decided within the new display rate"
+
+
+async def test_double_on_a_display_that_cant_show_it(
+    tmp_path: Path, bench_history: list[BenchResult]
+) -> None:
+    """The simple window's default "Double (2x)" on a 60 Hz panel: a 50 fps video
+    runs 50 -> 60, and a 60 fps one plays as it is, remembered against the
+    display rate so another display re-decides it (§4.11)."""
+    bench_history.append(_devbox())
+    s = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
+    _load(s, fps=50.0, hz=60.0024)
+    await s.apply(raise_on_fail=False)
+    assert s.target == 60
+    s2 = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
+    _load(s2, fps=60.0, hz=60.0024)
+    await s2.apply(raise_on_fail=False)
+    snap = s2.snapshot()
+    assert snap.filter is FilterState.BYPASSED and snap.bypass is BypassReason.ALREADY_AT_RATE
+    assert s2.bypass_display == pytest.approx(60.0024)
 
 
 async def test_an_engine_the_user_chose_is_not_second_guessed(

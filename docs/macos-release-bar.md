@@ -475,6 +475,20 @@ time. That is fixed too — item 18 has the change and the measurement.
   mpv at 1080p** — the 8.79 in the table above is `rife-v4.22_lite`, a different
   and faster model, and quoting it here understated the gate's value.
 
+**A real 50p film, after 0.0.3 (`docs/PLATFORMS.md`, "Live smoothing on the M2:
+where the time goes").** The benchmark's costing held on a 1080p50 AV1 film: in
+its own 2×-rate units the film ran mvgpu at 112 and MVTools at 103 (1080p,
+50 → 60, untimed) against benchmark rows of 106 and 115. What was wrong was the
+target: "Double" sent 50 → 100 to a 60 Hz panel, mpv dropped 40 frames a second
+by design, and live correction stored 0.54 for MVTools at 1080p and 720p from
+those drops. Targets now stop at the display rate on every platform, older
+live-limit records are ignored, and Automatic lets a GPU engine at a smaller size
+win with the best rate the display allows. Measured live on this M2 afterwards
+(the table there): mvgpu 1080p 50 → 60 holds real time (0 drops, 1.2 cores),
+MVTools does at 720p and not at 1080p. mvgpu at 1080p is still not *chosen* on
+Automatic for this film, because the live cap's 1.25 headroom asks for a 125 fps
+benchmark row and the rows on file are 89–121; left for the owner.
+
 ### 5. The GUI as a user sees it — PARTLY VERIFIED
 
 This item moved while this document was being written, and the move is real:
@@ -995,7 +1009,13 @@ wrong to read it as doing so: on this loaded machine even MVTools' plain 2×
 dropped frames at 1080p, where the app's earlier, quieter run measured MVTools
 2× at 1080p in real time with one drop. Two things remain open and are not
 fixed here: whether MVTools at the display's 60 Hz (2.5× from 24p, where every
-m0s figure is 2×) holds 1080p on an idle M2, and the 4K behaviour, where nothing
+m0s figure is 2×) holds 1080p on an idle M2 (since measured, once, on a quieter
+machine — 1-minute load 5–6 with the VM stopped: 30 s of a 1080p film cut to
+23.976 fps and re-encoded as H.264, MVTools FlowFPS **23.976 → 60 at 1080p ran
+1.48× real time untimed and held real time live, full screen, 0 drops in 25 s, at
+4.1 cores**. A 1080p **50** fps film is harder than its inferred-frame count
+suggests, because MVTools analyses every source frame: 50 → 60 ran 1.03× untimed
+and dropped about 17 % live — `docs/PLATFORMS.md`, "Live smoothing on the M2"), and the 4K behaviour, where nothing
 holds real time on this Mac (item 4) and an unmeasured MVTools is tried, stalls
 once and rolls back — one stall now, where RIFE-then-MVTools was two. Both want
 an idle machine; the first also wants a benchmark at the display rate. The RIFE formula's `caveats` says

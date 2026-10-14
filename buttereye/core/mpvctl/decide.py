@@ -16,7 +16,7 @@ user directory counts only if it is a real directory holding an ncnn model
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -42,6 +42,29 @@ DISPLAY_MULTIPLIER = Fraction(8)
 
 #: Auto counts a target as "doubling" from 1.98x (24.0031 → 48 still doubles).
 AUTO_DOUBLING_TOLERANCE = Fraction(99, 100)
+
+#: How far a video rate may sit above the display rate and still be shown
+#: frame for frame: mpv's ``video-sync=display-resample`` (ButterEye's profile)
+#: changes the playback speed by up to ``video-sync-max-video-change``, 1 % by
+#: default, so 60 fps on a 59.94 Hz display is resampled, not dropped.
+DISPLAY_RESAMPLE_TOLERANCE = Fraction(101, 100)
+
+
+def over_display(target: Fraction | None, display_hz: float | None) -> bool:
+    """``target`` is more frames per second than a known display can show.
+
+    mpv then drops the surplus at the video output - every one of them, by
+    design - and counts each in ``frame-drop-count``, the counter the health
+    detector reads. Measured on an Apple M2 at 60 Hz with mpv 0.41 and a filter
+    that only changes the rate (``--vf=fps=100``): 40 of every 100 frames
+    dropped, every second, with no interpolation at all; at ``fps=60``, none.
+    So an output above the refresh rate is pure cost - the frames are computed
+    and thrown away - and it reads as "Dropping frames" even when the engine
+    keeps up. False when either rate is unknown."""
+    display = display_rate(display_hz)
+    if target is None or display is None:
+        return False
+    return Fraction(target) > display * DISPLAY_RESAMPLE_TOLERANCE
 
 #: Packaged RIFE ncnn models, best first (§5.3 step 4 conservative defaults).
 DEFAULT_MODELS: tuple[str, ...] = (
@@ -98,6 +121,31 @@ def fps_fraction(value: float | int | None) -> Fraction | None:
     if abs(x - n * 1000 / 1001) < 1.5e-3:
         return Fraction(n * 1000, 1001)
     return Fraction(x).limit_denominator(1000)
+
+
+#: A display rate this close to a whole number is that number (``display_rate``)
+DISPLAY_SNAP = Fraction(1, 2000)
+
+
+def display_rate(value: float | int | None) -> Fraction | None:
+    """mpv's ``display-fps`` as a target rate: ``fps_fraction``, and a rate within
+    0.05 % of a whole number as that number.
+
+    mpv reports the rate it measures or the mode's own, which is rarely exact:
+    the same Apple M2 panel read 60.000131 in one run and 60.0024 in the next.
+    ``fps_fraction`` keeps 60.0024 as 49982/833, and a 50 fps video then goes to
+    a target that shares no frame with it, so every output frame is inferred:
+    measured (MVTools, 50 fps at 720p, untimed) 1.66× real time against 1.92× for
+    50 -> 60, and no source frame passes through untouched. display-resample
+    absorbs the 0.004 % (up to 1 %, ``DISPLAY_RESAMPLE_TOLERANCE``). NTSC rates
+    (59.94) are matched first, as ``fps_fraction`` does."""
+    r = fps_fraction(value)
+    if r is None or r.denominator in (1, 1001):
+        return r
+    n = round(r)
+    if n > 0 and abs(r - n) <= n * DISPLAY_SNAP:
+        return Fraction(n)
+    return r
 
 
 def matrix_name(colormatrix: object, height: int) -> str:
@@ -249,24 +297,31 @@ def choose_target(
 
     When no refresh/k ≥ 2× fits the cap, both take plain 2× if it fits below the
     display rate, then the highest refresh/k that fits (50 fps on 60 Hz → 60).
+
+    ``X2`` and ``FPS`` never go above a known display rate (``over_display``):
+    there the highest refresh/k above the source that fits is used instead
+    (50 fps at 2× on 60 Hz → 60; 60 fps on 60 Hz → ``ALREADY_AT_RATE``), since
+    mpv would drop every frame above the refresh rate. With the display rate
+    unknown (None or 0) they keep their own rate, as before.
     """
     cap = Fraction(sustainable_fps).limit_denominator(1001) if sustainable_fps else None
 
     def fits(t: Fraction) -> bool:
         return cap is None or load_rate(src, t) <= cap
 
-    if kind is TargetKind.X2:
-        t = src * 2
+    if kind is TargetKind.X2 or kind is TargetKind.FPS:
+        if kind is TargetKind.X2:
+            t = src * 2
+        elif fixed is None or fixed <= src:
+            return TargetChoice(None, BypassReason.ALREADY_AT_RATE)
+        else:
+            t = fixed
+        if over_display(t, display_hz):
+            return _within_display(src, display_hz, fits)
         if not fits(t):
             return TargetChoice(None, BypassReason.NO_REALTIME)
         return TargetChoice(t, None)
-    if kind is TargetKind.FPS:
-        if fixed is None or fixed <= src:
-            return TargetChoice(None, BypassReason.ALREADY_AT_RATE)
-        if not fits(fixed):
-            return TargetChoice(None, BypassReason.NO_REALTIME)
-        return TargetChoice(fixed, None)
-    display = fps_fraction(display_hz)
+    display = display_rate(display_hz)
     if display is None:
         return TargetChoice(None, None)  # pending: no display rate yet
     if display <= src:
@@ -299,6 +354,27 @@ def choose_target(
         if t < doubling and fits(t):
             return TargetChoice(t, None)
     return TargetChoice(None, BypassReason.NO_REALTIME if rates else BypassReason.ALREADY_AT_RATE)
+
+
+def _within_display(
+    src: Fraction, display_hz: float | None, fits: Callable[[Fraction], bool]
+) -> TargetChoice:
+    """A 2× or fixed target the display can't show (``over_display``): the
+    highest refresh/k above the source that ``fits``, so 50 fps at 2× on a 60 Hz
+    panel runs 50 → 60, which infers as many frames as 50 → 100 (``load_rate``)
+    but sends none to be dropped. A source the display already shows frame for
+    frame - its rate within ``DISPLAY_RESAMPLE_TOLERANCE`` of the refresh rate,
+    or above it - is ``ALREADY_AT_RATE``: 59.94 → 60 would infer almost every
+    output frame for a 0.1 % change that display-resample makes for free."""
+    display = display_rate(display_hz)
+    if display is None or display <= src * DISPLAY_RESAMPLE_TOLERANCE:
+        return TargetChoice(None, BypassReason.ALREADY_AT_RATE)
+    k = 1
+    while (t := display / k) > src * DISPLAY_RESAMPLE_TOLERANCE:
+        if fits(t):
+            return TargetChoice(t, None)
+        k += 1
+    return TargetChoice(None, BypassReason.NO_REALTIME)
 
 
 def fmt_rate(r: Fraction) -> str:
@@ -505,7 +581,7 @@ def _display_tier(
     Other target kinds: always 0 (only the multiplier rules apply)."""
     if kind is not TargetKind.DISPLAY or t is None:
         return 0
-    display = fps_fraction(display_hz)
+    display = display_rate(display_hz)
     if display is not None and t == display and display / src <= DISPLAY_MULTIPLIER:
         return 0
     if t == Fraction(60) and display is not None and src < t < display:
@@ -586,22 +662,27 @@ def pick_size(
        (a pinned RIFE-ncnn may fall back to MVTools there);
     3. otherwise, with ``forced``, the first engine uncapped at the smallest size.
 
-    None: nothing works at any smaller size (and not forced, or no size)."""
+    None: nothing works at any smaller size (and not forced, or no size).
+
+    "Doubles" means at least the doubling rate or the best target the display
+    allows, whichever is lower: on a 60 Hz display a 50 fps video can go no
+    higher than 60, and a GPU engine that reaches 60 must not lose to the CPU
+    for missing a 100 the screen could never show."""
 
     def runs(p: EnginePick) -> bool:
         return p.backend is not None and p.target.bypass is None and p.target.target is not None
 
+    reach = choose_target(src, display_hz, kind, fixed).target  # speed aside
+    need = src * 2 * AUTO_DOUBLING_TOLERANCE
+    if reach is not None:
+        need = min(need, reach)
     for size, opts in sized:
         gpu = [o for o in opts if o.backend in GPU_BACKENDS and o.sustainable_fps is not None]
         if not gpu:
             continue
         p = pick_engine(gpu, src, display_hz, kind, fixed, auto=auto)
         target = p.target.target
-        if (
-            runs(p)
-            and target is not None
-            and (not auto or target >= src * 2 * AUTO_DOUBLING_TOLERANCE)
-        ):
+        if runs(p) and target is not None and (not auto or target >= need):
             return p, size
     for size, opts in sized:
         p = pick_engine(opts, src, display_hz, kind, fixed, auto=auto)
@@ -946,6 +1027,10 @@ def step_down_target(
 __all__ = [
     "MAX_MULTIPLIER",
     "AUTO_DOUBLING_TOLERANCE",
+    "DISPLAY_RESAMPLE_TOLERANCE",
+    "over_display",
+    "display_rate",
+    "DISPLAY_SNAP",
     "DEFAULT_MODELS",
     "MPV_MATRIX",
     "BACKEND_NAMES",

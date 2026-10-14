@@ -392,10 +392,10 @@ async def test_session_pinned_mvgpu_missing_falls_back_with_a_notice(
 async def test_session_mvgpu_too_slow_bypasses(
     tmp_path: Path, bench_history: list[BenchResult]
 ) -> None:
-    # 240 -> 480 at 720p: nothing keeps up, mvgpu included
+    # 240 -> 480 at 720p on a 480 Hz display: nothing keeps up, mvgpu included
     bench_history.extend([_devbox(), _result(_mvgpu_m(100.0), size=(1280, 720))])
     s = _session(FakeCtx(_mvgpu_paths(tmp_path), _config(_simple())), tmp_path)
-    _load(s, fps=240.0, w=1280, h=720)
+    _load(s, fps=240.0, w=1280, h=720, hz=480.0)
     await s.apply(raise_on_fail=False)
     snap = s.snapshot()
     assert snap.filter is FilterState.BYPASSED and snap.bypass is BypassReason.NO_REALTIME

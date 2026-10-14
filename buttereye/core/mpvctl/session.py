@@ -852,6 +852,12 @@ class _Session:
         src = self.source
         if self.backend is None or src is None:
             return
+        if decide.over_display(self.target, self.display_fps):
+            # the display can't show this rate (it changed after the decision):
+            # mpv drops the surplus by design, which says nothing about the
+            # engine's speed, so nothing is learned - only decided again
+            await self.apply(raise_on_fail=False)
+            return
         cfg, _ = self.config()
         size = self.run_size or (src.width, src.height)
         key = self.limit_key(self.backend, self.model, size, self.run_flow, self.gpu_device(cfg))
@@ -1391,9 +1397,13 @@ class _Session:
                 decide.fmt_rate(facts.fps),
                 tc.bypass.value,
             )
-            # ALREADY_AT_RATE / NO_REALTIME for a display target depend on the
-            # display rate: remember it so a new rate re-decides (§4.11).
-            depends = profile.target.kind in DISPLAY_KINDS and tc.bypass in (
+            # ALREADY_AT_RATE / NO_REALTIME depend on the display rate: for a
+            # display target always, for 2x and a fixed rate once it is known
+            # (they never go above it, decide.over_display): remember it so a
+            # new rate re-decides (§4.11).
+            depends = (
+                profile.target.kind in DISPLAY_KINDS or bool(facts.display_hz)
+            ) and tc.bypass in (
                 BypassReason.ALREADY_AT_RATE,
                 BypassReason.NO_REALTIME,
             )

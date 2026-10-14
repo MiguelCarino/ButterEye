@@ -29,6 +29,14 @@ MAX_AGE_S = 30 * 24 * 3600.0
 MARGIN = 0.9
 #: a factor never goes below this (an engine is not ruled out by one bad scene)
 FLOOR = 0.2
+#: Records carry this; older ones are ignored. Version 2 (after 0.0.3):
+#: before it a 2x target could run above the display rate, where mpv drops the
+#: surplus frames by design (``decide.over_display``), and those drops were
+#: learned as slowness - on an Apple M2 at 60 Hz, 50 -> 100 fps drops 40 % with
+#: any engine, and the store held exactly ``(1 - 0.4) x MARGIN`` = 0.54 for
+#: MVTools at 1080p and at 720p, which ruled out sizes that measured real time.
+#: Such a record can't be told from a real one, and a new chance is cheap.
+VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,9 +69,11 @@ def load(path: Path, *, now: float | None = None) -> dict[str, dict[str, float]]
         if not (isinstance(k, str) and isinstance(v, dict)):
             continue
         f, when = v.get("factor"), v.get("when")
+        if v.get("v") != VERSION:
+            continue
         if isinstance(f, (int, float)) and isinstance(when, (int, float)):
             if 0 < f <= 1 and now - when <= MAX_AGE_S:
-                out[k] = {"factor": float(f), "when": float(when)}
+                out[k] = {"factor": float(f), "when": float(when), "v": VERSION}
     return out
 
 
@@ -90,7 +100,11 @@ def record(
 ) -> None:
     """Store ``new_factor`` for ``key`` (in ``limits`` and on disk). A failed write
     keeps it for this run only."""
-    limits[key.text()] = {"factor": new_factor, "when": time.time() if now is None else now}
+    limits[key.text()] = {
+        "factor": new_factor,
+        "when": time.time() if now is None else now,
+        "v": VERSION,
+    }
     from buttereye.core.scriptgen.generator import write_atomic
 
     with contextlib.suppress(OSError):
@@ -103,6 +117,7 @@ __all__ = [
     "FLOOR",
     "MARGIN",
     "MAX_AGE_S",
+    "VERSION",
     "LimitKey",
     "factor",
     "load",

@@ -32,6 +32,12 @@
     <binary>buttereye-gui</binary>
   </provides>
   <releases>
+    <release version="0.0.4" date="2026-10-13" type="stable">
+      <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.4</url>
+      <description>
+        <p>Live smoothing no longer makes frames your screen can't show, so a 50 fps video on a 60 Hz screen smooths to 60 instead of dropping frames.</p>
+      </description>
+    </release>
     <release version="0.0.3" date="2026-10-13" type="stable">
       <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.3</url>
       <description>
