@@ -191,8 +191,9 @@ jobs:
       # and VapourSynth wheels) against this checkout's buttereye - which is not
       # inside the AppImage, so osapi.LINUX_APP is None and the Fedora
       # expectations hold. The tools come from packaging/appimage/test-requirements.txt,
-      # pinned by hash. The deselects are tools/macos-tests.sh's platform-neutral
-      # ones; everything else that needs mpv, vspipe or the RPMs skips itself.
+      # pinned by hash. Everything that needs mpv, vspipe or the RPMs skips
+      # itself; tests/integration/test_gui_devbox.py (qtbot) is devbox-only and
+      # skips before it needs pytest-qt.
       - name: The repository's tests, with the AppImage's Python
         env:
           QT_QPA_PLATFORM: offscreen
@@ -204,9 +205,10 @@ jobs:
           (cd "$tree" && "$RUNNER_TEMP"/dist/ButterEye-*-x86_64.AppImage --appimage-extract >/dev/null)
           # PYTHONPATH rather than sys.path: tests/conftest.py re-runs pytest
           # inside a memory-capped systemd scope, and the re-run must find both
+          # tests/gui is left out: it needs QtTest (pytest-qt), which the
+          # AppImage's trimmed PySide6 does not carry
           PYTHONPATH="$RUNNER_TEMP/testdeps:$PWD" "$tree/squashfs-root/python/bin/python3.14" -B -m pytest \
-            -p no:cacheprovider -q -rs \
-            --deselect tests/gui/test_bench_page.py::test_cancel_stops_the_run_and_keeps_old_results
+            -p no:cacheprovider -p no:pytestqt -q -rs --ignore=tests/gui
 
       - name: Upload the results
         if: always()
