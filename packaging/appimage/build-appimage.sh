@@ -303,7 +303,12 @@ mkdir -p "$v"
 tar -xzf "$mvtools_tar" -C "$v" --strip-components=1
 patch -d "$v" -p1 -s <"$repo/packaging/plugins/buttereye-vs-mvtools-pkgconfig.patch"
 echo "==> MVTools $MVTOOLS_TAG"
-logged mvtools-setup meson setup "$v/build" "$v" --prefix="$deps" --libdir=lib -Dbuildtype=release
+# -include math.h: MVDepan.cpp calls isfinite() unqualified, which Fedora's GCC
+# accepts through <cmath> and Ubuntu 22.04's GCC 11 does not; libstdc++'s
+# <math.h> puts std::isfinite into the global namespace. A compiler flag, not a
+# source patch, so the source is still exactly the spec's.
+logged mvtools-setup meson setup "$v/build" "$v" --prefix="$deps" --libdir=lib -Dbuildtype=release \
+    -Dcpp_args="-include math.h"
 logged mvtools-build ninja -C "$v/build" -j"$jobs" install
 mvtools_so=$deps/lib/buttereye/vapoursynth/mvtools.so
 readelf -dW "$mvtools_so" | grep -q 'Shared library: \[libfftw3f.so.3\]' \
