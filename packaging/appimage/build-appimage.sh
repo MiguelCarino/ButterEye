@@ -229,6 +229,9 @@ logged libplacebo-setup meson setup "$p/build" "$p" --prefix="$deps" --libdir=li
     -Dlibdovi=disabled -Dunwind=disabled -Dxxhash=disabled \
     -Ddemos=false -Dtests=false -Dbench=false -Dfuzz=false
 logged libplacebo-build ninja -C "$p/build" -j"$jobs" install
+# its float parsing is C++ (fast_float, std::to_chars), and the static library's
+# .pc does not say so: mpv's C link needs libstdc++ after it
+sed -i 's/^Libs: .*/& -lstdc++/' "$deps/lib/pkgconfig/libplacebo.pc"
 
 # ---------------------------------------------------------------- 1. mpv
 # The vapoursynth filter links VSScript from VapourSynth's wheel, which ships
