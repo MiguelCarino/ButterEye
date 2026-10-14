@@ -259,6 +259,12 @@ DEB_LICENCES = {
     "fribidi": "LGPL-2.1-or-later AND Unicode-DFS-2016",
     "lua5.2": "MIT",
     "x264": "GPL-2.0-or-later",
+    # debian/copyright: GPL-2+ overall; json11 and FindVLD.cmake Expat (MIT),
+    # compat/getopt LGPL-2.1+, x86inc.asm ISC
+    "x265": "GPL-2.0-or-later AND MIT AND LGPL-2.1-or-later AND ISC",
+    # libnuma (all the AppImage carries of numactl): "the GNU Lesser General
+    # Public License, v2.1"; the GPL-2 parts are numactl's programs
+    "numactl": "LGPL-2.1-only",
     "fftw3": "GPL-2.0-or-later AND MIT AND BSD-2-Clause",
     "libxrandr": "HPND-sell-variant",
     "libxrender": "HPND-sell-variant",
@@ -430,9 +436,12 @@ AppImage, holds the Corresponding Source of every part of it:
                               packaging/appimage/ (build-appimage.sh, which made
                               this AppImage, and its helpers) and
                               packaging/plugins/ (MVTools' patch)
-  ffmpeg-{ffmpeg}.tar.xz       FFmpeg {ffmpeg}, built with --enable-gpl (libx264):
+  ffmpeg-{ffmpeg}.tar.xz       FFmpeg {ffmpeg}, built with --enable-gpl (libx264,
+                              libx265):
                               bin/ffmpeg, bin/ffprobe, lib/libav*.so, lib/libsw*.so
   dav1d-{dav1d}.tar.xz         dav1d {dav1d}, linked statically into libavcodec
+  SVT-AV1-v{svtav1}.tar.gz      SVT-AV1 {svtav1} (git {svtav1_commit}), linked
+                              statically into libavcodec
   mpv-{mpv}.tar.gz             mpv {mpv}: bin/mpv
   libplacebo-{libplacebo}.tar.gz
                               libplacebo {libplacebo} (git {libplacebo_commit}, with

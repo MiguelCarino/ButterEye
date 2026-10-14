@@ -18,8 +18,8 @@
 # mainstream base at that floor, and it has every -dev package mpv needs, where
 # AlmaLinux 8 would have meant building the X11 stack too, for no wider reach.
 #
-#   1. build from pinned source (pins.sh): dav1d, FFmpeg (shared, GPL: x264,
-#      Vulkan and NVDEC decoding), glslang (static), libplacebo (static, OpenGL and
+#   1. build from pinned source (pins.sh): dav1d, SVT-AV1 (static), FFmpeg
+#      (shared, GPL: x264, x265, SVT-AV1, Vulkan and NVDEC decoding), glslang (static), libplacebo (static, OpenGL and
 #      Vulkan), mpv with the vapoursynth filter on X11 and Wayland, FFMS2, and
 #      MVTools with the RPM's patch; libwayland and wayland-protocols for mpv's
 #      build only (the host's libwayland is the one that runs)
@@ -72,7 +72,7 @@ BUILD_DEPS=(
     zstd patchelf squashfs-tools file dpkg-dev binutils cmake
     zlib1g-dev libx11-dev libxext-dev libxss-dev libxpresent-dev libxrandr-dev
     libegl-dev libgl-dev libdrm-dev libva-dev libasound2-dev libpulse-dev
-    libass-dev liblua5.2-dev libx264-dev libfftw3-dev
+    libass-dev liblua5.2-dev libx264-dev libx265-dev libfftw3-dev
     libvulkan-dev libxkbcommon-dev libffi-dev libexpat1-dev
     libfontconfig1 libfreetype6 libharfbuzz0b libglib2.0-0 libdbus-1-3
     libegl1 libgl1 libopengl0 libxkbcommon0 libxkbcommon-x11-0
@@ -186,6 +186,20 @@ logged dav1d-setup meson setup "$d/build" "$d" --prefix="$deps" --libdir=lib \
     -Denable_tools=false -Denable_tests=false -Denable_examples=false
 logged dav1d-build ninja -C "$d/build" -j"$jobs" install
 
+# ---------------------------------------------------------------- 1. SVT-AV1
+# A git checkout at a pinned commit (pins.sh says why), static into libavcodec
+# as dav1d is: the encoder library only, no apps, no tests, no git hash in it.
+a=$work/src/svt-av1
+git init -q "$a"
+git -C "$a" fetch -q --depth 1 "$SVTAV1_GIT" "$SVTAV1_COMMIT"
+git -C "$a" -c advice.detachedHead=false checkout -q FETCH_HEAD
+[[ $(git -C "$a" rev-parse HEAD) == "$SVTAV1_COMMIT" ]] || { echo "SVT-AV1: wrong commit" >&2; exit 1; }
+echo "==> SVT-AV1 $SVTAV1_VER (static, into libavcodec)"
+logged svtav1-setup cmake -S "$a" -B "$a/build" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$deps" -DCMAKE_INSTALL_LIBDIR=lib \
+    -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=OFF -DBUILD_TESTING=OFF -DEXCLUDE_HASH=ON
+logged svtav1-build ninja -C "$a/build" -j"$jobs" install
+
 # ---------------------------------------------------------------- 1. libplacebo's checkout, the Vulkan headers
 # A git checkout at a pinned commit: the 3rdparty/ submodules it builds with
 # (glad for OpenGL, jinja and markupsafe for its shader templates, fast_float,
@@ -233,8 +247,9 @@ logged nvcodec-install make -C "$nv" PREFIX="$deps" LIBDIR=lib install
 # ---------------------------------------------------------------- 1. FFmpeg
 # Shared libraries, because mpv, ffmpeg, ffprobe and FFMS2 all link the same
 # ones. Nothing is auto-detected, so the result does not depend on what the
-# container happens to have: zlib, iconv, dav1d (AV1), x264 (the encoder render
-# falls back to without NVENC: --enable-gpl, which makes these libraries GPL),
+# container happens to have: zlib, iconv, dav1d (AV1), x264, x265 and SVT-AV1
+# (the encoders render uses without NVENC; x265 and SVT-AV1 are also the two
+# that write HDR10: --enable-gpl, which makes these libraries GPL),
 # VA-API through libdrm (the host's libva and drivers, never bundled), and
 # Vulkan video decoding (mpv's hwdec=vulkan) and NVDEC (hwdec=nvdec), which
 # need only headers: FFmpeg dlopens the host's Vulkan loader and NVIDIA's
@@ -246,12 +261,13 @@ ffmpeg_flags=(
     --prefix="$deps" --libdir="$deps/lib" --enable-shared --disable-static
     --enable-gpl --disable-autodetect --enable-pthreads
     --enable-zlib --enable-iconv --enable-libdav1d --enable-libx264
+    --enable-libx265 --enable-libsvtav1
     --enable-vaapi --enable-libdrm --enable-vulkan --enable-ffnvcodec --enable-nvdec
     --disable-doc --disable-ffplay --disable-debug
 )
 echo "==> FFmpeg $FFMPEG_VER"
 (cd "$f" && logged ffmpeg-configure ./configure "${ffmpeg_flags[@]}")
-for want in CONFIG_GPL CONFIG_LIBX264 CONFIG_LIBDAV1D CONFIG_VAAPI CONFIG_VULKAN CONFIG_FFNVCODEC CONFIG_NVDEC CONFIG_ZLIB; do
+for want in CONFIG_GPL CONFIG_LIBX264 CONFIG_LIBX265 CONFIG_LIBSVTAV1 CONFIG_LIBDAV1D CONFIG_VAAPI CONFIG_VULKAN CONFIG_FFNVCODEC CONFIG_NVDEC CONFIG_ZLIB; do
     grep -q "^$want=yes" "$f/ffbuild/config.mak" || { echo "FFmpeg: $want is not enabled" >&2; exit 1; }
 done
 if grep -Eq '^CONFIG_(NONFREE)=yes' "$f/ffbuild/config.mak"; then
@@ -260,6 +276,15 @@ if grep -Eq '^CONFIG_(NONFREE)=yes' "$f/ffbuild/config.mak"; then
 fi
 logged ffmpeg-build make -C "$f" -j"$jobs"
 logged ffmpeg-install make -C "$f" install
+# x265 is Ubuntu's shared library (closure copies it in, with libnuma); SVT-AV1
+# is inside libavcodec
+avcodec=$(ls "$deps"/lib/libavcodec.so.*.*)
+readelf -dW "$avcodec" | grep -q 'Shared library: \[libx265\.so\.' \
+    || { echo "libavcodec does not link libx265" >&2; exit 1; }
+if readelf -dW "$avcodec" | grep -q 'Shared library: \[libSvtAv1Enc'; then
+    echo "libavcodec links SVT-AV1 dynamically; it should be static" >&2
+    exit 1
+fi
 for so in "$deps"/lib/libav*.so.*; do
     if readelf -dW "$so" | grep -Eq 'Shared library: \[lib(cuda|nvcuvid|vulkan)\.so'; then
         echo "${so##*/} links a GPU driver library; FFmpeg must dlopen those" >&2
@@ -507,7 +532,7 @@ stagepy closure "$appdir" "$work/closure.json"
 
 # ---------------------------------------------------------------- licences and the record
 lic=$appdir/licenses
-mkdir -p "$lic"/{buttereye/LICENSES,python,pyside6,vapoursynth,mpv,ffmpeg,dav1d,libplacebo,glslang,vulkan-headers,wayland,nv-codec-headers,ffms2,buttereye-vs-mvtools,appimage-runtime}
+mkdir -p "$lic"/{buttereye/LICENSES,python,pyside6,vapoursynth,mpv,ffmpeg,dav1d,libplacebo,glslang,vulkan-headers,wayland,nv-codec-headers,svt-av1,ffms2,buttereye-vs-mvtools,appimage-runtime}
 cp "$repo/COPYING" "$repo/THIRD-PARTY.md" "$lic/buttereye/"
 cp "$repo"/LICENSES/*.txt "$lic/buttereye/LICENSES/"
 cp "$pystd/LICENSE.txt" "$lic/python/LICENSE.txt"
@@ -526,6 +551,7 @@ cp "$f/COPYING.GPLv2" "$f/COPYING.LGPLv2.1" "$f/LICENSE.md" "$lic/ffmpeg/"
     printf '  %s\n' "${ffmpeg_flags[@]}"
 } >"$lic/ffmpeg/FFMPEG-CONFIGURATION.txt"
 cp "$d/COPYING" "$lic/dav1d/COPYING"
+cp "$a/LICENSE.md" "$a/LICENSE-BSD2.md" "$a/PATENTS.md" "$lic/svt-av1/"
 cp "$p/LICENSE" "$lic/libplacebo/LICENSE"
 cp "$g/LICENSE.txt" "$lic/glslang/LICENSE.txt"
 cp "$p/3rdparty/Vulkan-Headers/LICENSE.md" "$lic/vulkan-headers/LICENSE.md"
@@ -569,7 +595,8 @@ stagepy record "$work/components.json" "$appdir/buttereye-install.json" \
     "vulkan-headers=$vkmm.$vkpatch=Apache-2.0 OR MIT=$(files_of vulkan-headers)" \
     "wayland-protocols=$WAYLAND_PROTOCOLS_VER=MIT=$(files_of wayland)" \
     "nv-codec-headers=${NVCODEC_TAG#n}=MIT=$(files_of nv-codec-headers)" \
-    "ffmpeg=$FFMPEG_VER=GPL-2.0-or-later=$(files_of ffmpeg)=bundled(dav1d)($DAV1D_VER)" \
+    "ffmpeg=$FFMPEG_VER=GPL-2.0-or-later=$(files_of ffmpeg)=bundled(dav1d)($DAV1D_VER),bundled(svt-av1)($SVTAV1_VER)" \
+    "svt-av1=$SVTAV1_VER=BSD-3-Clause-Clear AND BSD-2-Clause AND LicenseRef-AOM-Patent-License-1.0=$(files_of svt-av1)" \
     "dav1d=$DAV1D_VER=BSD-2-Clause=$(files_of dav1d)" \
     "ffms2=$FFMS2_VER=MIT=$(files_of ffms2)" \
     "buttereye-vs-mvtools=${MVTOOLS_TAG#v}=GPL-2.0-or-later AND ISC=$(files_of buttereye-vs-mvtools)" \
@@ -580,7 +607,7 @@ stagepy sources-txt "$lic/SOURCES.txt" version="$version" repo=https://github.co
     ffmpeg="$FFMPEG_VER" dav1d="$DAV1D_VER" mpv="$MPV_VER" libplacebo="$LIBPLACEBO_VER" \
     libplacebo_commit="$LIBPLACEBO_COMMIT" ffms2="$FFMS2_VER" mvtools="$MVTOOLS_TAG" \
     glslang="$GLSLANG_VER" wayland="$WAYLAND_VER" wayland_protocols="$WAYLAND_PROTOCOLS_VER" \
-    nvcodec="$NVCODEC_TAG" \
+    nvcodec="$NVCODEC_TAG" svtav1="$SVTAV1_VER" svtav1_commit="$SVTAV1_COMMIT" \
     runtime="$RUNTIME_VER" debs="$work/deb-sources.txt"
 
 # bytecode, compiled now because the AppImage is read-only and AppRun passes
@@ -619,6 +646,11 @@ if ((sources)); then
         (cd "$p" && tar --null -T - --transform "s,^,libplacebo-$LIBPLACEBO_VER/," \
             --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner -czf - ) \
         >"$src/libplacebo-$LIBPLACEBO_VER.tar.gz"
+    # SVT-AV1: the pinned commit's tree (it has no submodules)
+    (cd "$a" && git ls-files -z) |
+        (cd "$a" && tar --null -T - --transform "s,^,SVT-AV1-v$SVTAV1_VER/," \
+            --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner -czf - ) \
+        >"$src/SVT-AV1-v$SVTAV1_VER.tar.gz"
     while IFS='=' read -r pkg ver; do
         [[ -n $pkg ]] || continue
         mkdir -p "$src/ubuntu/$pkg"

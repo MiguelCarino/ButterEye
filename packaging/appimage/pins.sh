@@ -100,6 +100,16 @@ MVTOOLS_TAG=v29_2
 MVTOOLS_URL=https://github.com/dubhatervapoursynth/vapoursynth-mvtools/archive/$MVTOOLS_TAG/vapoursynth-mvtools-$MVTOOLS_TAG.tar.gz
 MVTOOLS_SHA256=65578c649776ac2da6cfa32b7306841076ae184cac607b914649dfc1237498ce
 
+# SVT-AV1 v4.1.0, static into libavcodec: ButterEye's software AV1 encoder, its
+# default for saved copies without NVENC, and one of the two HDR10 encoders
+# (render passes mastering-display and content-light, which Ubuntu 22.04's
+# 0.9.0 predates). A git commit, not an archive: GitLab's tag archives are
+# generated on request and carry no published digest, so the commit pins the
+# tree instead. v4.1.0, not 4.2.0: FFmpeg 8.1's libsvtav1.c knows the 4.0 API.
+SVTAV1_VER=4.1.0
+SVTAV1_GIT=https://gitlab.com/AOMediaCodec/SVT-AV1.git
+SVTAV1_COMMIT=c04f951541ad600e0d9c10836f2ab7b9bc69816d
+
 # libplacebo v7.360.1 (the tag object 719cc952 resolves to this commit). Not
 # 7.351.0 any more: its Vulkan code generator (src/vulkan/utils_gen.py) fails
 # under Python 3.14, which runs meson here; 12509c0f "vulkan/utils_gen: fix for

@@ -44,11 +44,12 @@ and FUSE on a distribution's own setup.
 | libplacebo | 7.360.1 | built, static into mpv, OpenGL and Vulkan (7.351.0's Vulkan code generator fails under Python 3.14) |
 | glslang | 16.6.0 | built, static into mpv: libplacebo's SPIR-V compiler for Vulkan |
 | Wayland, wayland-protocols | 1.26.0, 1.49 | built for mpv's build only (headers, wayland-scanner, protocol XML); libwayland itself is the host's |
-| FFmpeg | 8.1.3 | built, shared, `--enable-gpl` (x264), dav1d, zlib, iconv, VA-API via libdrm, Vulkan and NVDEC (headers only: it dlopens the host's Vulkan loader and NVIDIA's libcuda/libnvcuvid; nv-codec-headers n12.1.14.1, NVIDIA driver 530.41 or newer); nothing auto-detected |
+| FFmpeg | 8.1.3 | built, shared, `--enable-gpl` (x264, x265), dav1d, SVT-AV1 (HDR10 render: x265 or SVT-AV1), zlib, iconv, VA-API via libdrm, Vulkan and NVDEC (headers only: it dlopens the host's Vulkan loader and NVIDIA's libcuda/libnvcuvid; nv-codec-headers n12.1.14.1, NVIDIA driver 530.41 or newer); nothing auto-detected |
 | dav1d | 1.5.4 | built, static into libavcodec |
+| SVT-AV1 | 4.1.0 | built from a pinned commit, static into libavcodec (Ubuntu 22.04's 0.9.0 predates the HDR10 options render passes) |
 | FFMS2 | 5.0 | built (compiled the way the Windows build does) |
 | MVTools | v29_2 | built from the RPM spec's tag and patch |
-| libass, FriBidi, Lua 5.2, x264, FFTW, libXss/Xpresent/Xrandr/Xrender, xcb-util × 6 | Ubuntu 22.04's | copied from the build container's packages, each one's exact Debian version recorded |
+| libass, FriBidi, Lua 5.2, x264, x265 (with libnuma), FFTW, libXss/Xpresent/Xrandr/Xrender, xcb-util × 6 | Ubuntu 22.04's | copied from the build container's packages, each one's exact Debian version recorded |
 | AppImage runtime | type2-runtime 20251108 | static (no libfuse2 on the host), SHA-256 pinned |
 
 The engine is MVTools only: no RIFE, no mvgpu, no models.
