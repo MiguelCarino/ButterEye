@@ -40,7 +40,7 @@ and FUSE on a distribution's own setup.
 | Python | 3.14.8 | python-build-standalone 20261009, `x86_64-unknown-linux-gnu-install_only_stripped`, SHA-256 pinned |
 | PySide6-Essentials, Shiboken6 | 6.11.2 | PyPI `manylinux_2_34_x86_64` wheels, trimmed to Core/Gui/Widgets/Svg/SvgWidgets/DBus and the xcb, Wayland, offscreen and minimal platforms |
 | VapourSynth | R81 | the official `manylinux_2_28_x86_64` wheel (it exists, so VapourSynth is not built) |
-| mpv | 0.41.0 | built: X11 and Wayland, each with OpenGL (EGL) and Vulkan contexts; VA-API (copy-back) and Vulkan decoding; ALSA, PulseAudio, Lua, **vapoursynth** |
+| mpv | 0.41.0 | built: X11 and Wayland, each with OpenGL (EGL) and Vulkan contexts; VA-API (copy-back, through X11: not libva-wayland, which Debian and Ubuntu may lack) and Vulkan decoding; ALSA, PulseAudio, Lua, **vapoursynth** |
 | libplacebo | 7.360.1 | built, static into mpv, OpenGL and Vulkan (7.351.0's Vulkan code generator fails under Python 3.14) |
 | glslang | 16.6.0 | built, static into mpv: libplacebo's SPIR-V compiler for Vulkan |
 | Wayland, wayland-protocols | 1.26.0, 1.49 | built for mpv's build only (headers, wayland-scanner, protocol XML); libwayland itself is the host's |

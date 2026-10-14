@@ -320,8 +320,13 @@ sed -i "s|^Libs: .*|& -Wl,--start-group $pl_private -Wl,--end-group -lstdc++|" \
 # wheel's own folder. The wheel is unpacked here for the build only; the AppDir
 # gets its own copy below. Everything else is off unless named: X11 and Wayland,
 # each with EGL (OpenGL) and Vulkan contexts, VA-API (copy-back; no DRM
-# interop), Vulkan decoding through FFmpeg, ALSA and PulseAudio, Lua for the
-# on-screen controller.
+# interop) through X11, Vulkan decoding through FFmpeg, ALSA and PulseAudio, Lua
+# for the on-screen controller. Not vaapi-wayland: it links libva-wayland.so.2,
+# which Debian and Ubuntu ship in a package of its own that a desktop need not
+# have (measured: mpv would not start on Ubuntu 22.04 and 24.04 or Debian 12 and
+# 13). Not vaapi-drm either: it needs mpv's drm feature, which needs
+# libdisplay-info, which Ubuntu 22.04 does not have. On native Wayland the GPU
+# decoder is Vulkan's, and mpv falls back to software where that is missing.
 vsbuild=$work/vs-build
 mkdir -p "$vsbuild"
 stagepy unwheel "${wheels[2]}" "$vsbuild" >/dev/null
@@ -349,12 +354,16 @@ logged mpv-setup meson setup "$m/build" "$m" --prefix="$deps" --libdir=lib \
     -Dlibavdevice=enabled \
     -Dx11=enabled -Dgl=enabled -Degl=enabled -Degl-x11=enabled \
     -Dwayland=enabled -Degl-wayland=enabled -Dvulkan=enabled \
-    -Dvaapi=enabled -Dvaapi-x11=enabled -Dvaapi-wayland=enabled \
+    -Dvaapi=enabled -Dvaapi-x11=enabled \
     -Dalsa=enabled -Dpulse=enabled
 logged mpv-build ninja -C "$m/build" -j"$jobs"
 logged mpv-install ninja -C "$m/build" install
 readelf -dW "$deps/bin/mpv" | grep -q 'Shared library: \[libvsscript.so\]' \
     || { echo "mpv was built without the vapoursynth filter" >&2; exit 1; }
+if readelf -dW "$deps/bin/mpv" | grep -qF 'Shared library: [libva-wayland.so.2]'; then
+    echo "mpv links libva-wayland.so.2, which Debian and Ubuntu desktops may lack" >&2
+    exit 1
+fi
 for want in libvulkan.so.1 libwayland-client.so.0 libwayland-cursor.so.0 libwayland-egl.so.1; do
     readelf -dW "$deps/bin/mpv" | grep -qF "Shared library: [$want]" \
         || { echo "mpv does not link $want" >&2; exit 1; }
