@@ -1163,17 +1163,31 @@ def spawn_detached(
                     raise
                 return DetachedChild(p.pid, p)
             raise AssertionError("unreachable")
-        pid = os.posix_spawnp(
-            argv[0],
-            list(argv),
-            dict(env) if env is not None else dict(os.environ),
-            file_actions=[
-                (os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0),
-                (os.POSIX_SPAWN_DUP2, fd, 1),
-                (os.POSIX_SPAWN_DUP2, fd, 2),
-            ],
-            setsid=True,
-        )
+        try:
+            pid = os.posix_spawnp(
+                argv[0],
+                list(argv),
+                dict(env) if env is not None else dict(os.environ),
+                file_actions=[
+                    (os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0),
+                    (os.POSIX_SPAWN_DUP2, fd, 1),
+                    (os.POSIX_SPAWN_DUP2, fd, 2),
+                ],
+                setsid=True,
+            )
+        except NotImplementedError:
+            # python-build-standalone's Linux CPython (the AppImage trial's) is
+            # built against glibc 2.17 headers, where POSIX_SPAWN_SETSID does not
+            # exist yet, so CPython raises this before starting anything. The
+            # same child, by fork+exec: its own session, the same descriptors,
+            # and a Popen that reaps it (the Windows shape). Fedora's Python
+            # never comes here.
+            p = subprocess.Popen(
+                list(argv), stdin=subprocess.DEVNULL, stdout=fd, stderr=fd,
+                env=dict(env) if env is not None else None, close_fds=True,
+                start_new_session=True,
+            )  # fmt: skip
+            return DetachedChild(p.pid, p)
         return DetachedChild(pid)
     finally:
         os.close(fd)

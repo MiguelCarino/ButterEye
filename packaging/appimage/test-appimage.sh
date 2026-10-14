@@ -38,13 +38,24 @@ case $ID in
     ubuntu|debian)
         export DEBIAN_FRONTEND=noninteractive
         $sudo apt-get update -qq
-        # the t64 renames on 24.04/13 are found through these names too
+        # the 64-bit time_t transition renamed a few packages on 24.04 and 13
+        # (libasound2 -> libasound2t64): take whichever name this release has
+        pick() {
+            local n
+            for n in "$@"; do
+                if apt-cache show "$n" 2>/dev/null | grep -q '^Version:'; then echo "$n"; return; fi
+            done
+            echo "$1"
+        }
         $sudo apt-get install -y -qq --no-install-recommends \
             libgl1 libegl1 libopengl0 libvulkan1 libdrm2 libgbm1 libva2 libva-drm2 libva-x11-2 \
-            libx11-6 libx11-xcb1 libxext6 libxfixes3 libxcb1 libxkbcommon0 libxkbcommon-x11-0 \
+            libx11-6 libx11-xcb1 libxext6 libxfixes3 libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb1 libxcb-render0 libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-xfixes0 \
+            libxcb-randr0 libxcb-xkb1 libxcb-xinput0 libxcb-glx0 libxcb-present0 libxcb-dri3-0 \
             libwayland-client0 libwayland-cursor0 libwayland-egl1 \
-            libfontconfig1 libfreetype6 libharfbuzz0b libglib2.0-0 libdbus-1-3 \
-            libasound2 libpulse0 zlib1g fonts-dejavu-core >/dev/null
+            libfontconfig1 libfreetype6 libharfbuzz0b "$(pick libglib2.0-0t64 libglib2.0-0)" \
+            libdbus-1-3 "$(pick libasound2t64 libasound2)" libpulse0 zlib1g libzstd1 \
+            fonts-dejavu-core >/dev/null
         ;;
     fedora)
         $sudo dnf -y -q install --setopt=install_weak_deps=False \
@@ -52,13 +63,13 @@ case $ID in
             libX11 libX11-xcb libXext libXfixes libxcb libxkbcommon libxkbcommon-x11 \
             libwayland-client libwayland-cursor libwayland-egl \
             fontconfig freetype harfbuzz glib2 dbus-libs alsa-lib pulseaudio-libs zlib-ng-compat \
-            dejavu-sans-fonts findutils procps-ng >/dev/null
+            libzstd dejavu-sans-fonts findutils procps-ng >/dev/null
         ;;
     arch)
         pacman -Sy --noconfirm --needed --noprogressbar \
             libglvnd vulkan-icd-loader libdrm mesa libva \
             libx11 libxext libxfixes libxcb libxkbcommon libxkbcommon-x11 wayland \
-            fontconfig freetype2 harfbuzz glib2 dbus alsa-lib libpulse zlib \
+            fontconfig freetype2 harfbuzz glib2 dbus alsa-lib libpulse zlib zstd \
             ttf-dejavu >/dev/null
         ;;
     *)

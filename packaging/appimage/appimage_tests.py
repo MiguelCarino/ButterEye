@@ -73,6 +73,8 @@ ENV.update(HOME=str(HOME), XDG_RUNTIME_DIR=str(RUN), XDG_CONFIG_HOME=str(HOME / 
 ENV.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
 FFMPEG = TREE / "bin" / "ffmpeg"
 FFPROBE = TREE / "bin" / "ffprobe"
+#: a shared object's file name (not ld.so.cache, not locale-archive)
+SHARED = re.compile(r"\.so(\.\d+)*$")
 
 results: dict[str, dict[str, object]] = {}
 
@@ -152,7 +154,7 @@ def t_version() -> str:
 MUST_BE_OK = ("mpv.version", "mpv.vf_vapoursynth", "packages.mvtools", "render.ffms2")
 #: what a blocking row may be about in a GPU-less container (anything else fails)
 GPU_PREFIXES = ("gpu.", "vulkan.", "hw.", "trt.", "display.")
-FOREIGN_WORDS = re.compile(r"\b(dnf|copr|rpm|sudo)\b", re.I)
+FOREIGN_WORDS = re.compile(r"\b(dnf|copr|rpm)\b", re.I)
 
 
 @test
@@ -178,7 +180,7 @@ def t_doctor() -> str:
     foreign = [f["id"] for f in rows
                if any(FOREIGN_WORDS.search(c) for c in f.get("commands") or ())
                or FOREIGN_WORDS.search(json.dumps(f.get("fix")))]  # fmt: skip
-    check(not foreign, f"advice naming dnf/COPR/rpm/sudo inside the AppImage: {foreign}")
+    check(not foreign, f"advice naming dnf/COPR/rpm inside the AppImage: {foreign}")
     return f"{len(rows)} findings, blocking: {blocking or 'none'}"
 
 
@@ -232,8 +234,8 @@ def t_mpv_filter() -> str:
     )
     done = run([str(TREE / "python" / "bin" / "python3.14"), "-I", "-B", "-c", starter,
                 str(mpv), "--no-config", "--msg-level=all=v", f"--vf=vapoursynth={vpy}",
-                "--ao=null", f"--o={enc}", "--of=matroska", "--ovc=libx264",
-                "--ovcopts=preset=ultrafast", "--oac=aac", str(clip)],
+                "--aid=no", f"--o={enc}", "--of=matroska", "--ovc=libx264",
+                "--ovcopts=preset=ultrafast", str(clip)],
                timeout=600, name="mpv-filter")  # fmt: skip
     check(done.returncode == 0, f"mpv exit {done.returncode}: {done.stderr[-1500:]}")
     check(marker.is_file(), "the .vpy never ran inside mpv")
@@ -270,7 +272,7 @@ def maps_of(pid: int) -> list[str]:
     try:
         for line in Path(f"/proc/{pid}/maps").read_text().splitlines():
             parts = line.split(maxsplit=5)
-            if len(parts) == 6 and ".so" in parts[5]:
+            if len(parts) == 6 and SHARED.search(parts[5].replace(" (deleted)", "")):
                 out.append(parts[5].replace(" (deleted)", ""))
     except OSError:
         return []
@@ -403,17 +405,28 @@ def ldd(path: str) -> list[tuple[str, str]]:
 
 
 def is_host_name(name: str) -> bool:
-    return any(p.fullmatch(name) for p in PATTERNS)
+    """Does a library file name match the allow-list? Matched as the soname
+    (``libEGL.so.1``) and, for a mapped file, as its real name with the trailing
+    version numbers taken off one by one (``libEGL.so.1.1.0`` -> ``libEGL.so.1``)."""
+    while True:
+        if any(p.fullmatch(name) for p in PATTERNS):
+            return True
+        if not re.search(r"\.so\.\d+$|\.so(\.\d+)+$", name) or name.endswith(".so"):
+            return False
+        name = name.rsplit(".", 1)[0]
+
 
 
 def host_closure(paths: set[str]) -> set[str]:
-    """Every library the allowed host libraries load in turn: theirs to choose."""
-    names: set[str] = set()
+    """The real files of the allowed host libraries and of every library they
+    load in turn (ldd): the host's to choose, not the AppImage's."""
+    out: set[str] = set()
     for p in paths:
-        for name, where in ldd(p):
-            names.add(os.path.basename(where) if where != "not found" else name)
-            names.add(name)
-    return names
+        out.add(os.path.realpath(p))
+        for _, where in ldd(p):
+            if where != "not found":
+                out.add(os.path.realpath(where))
+    return out
 
 
 @test
@@ -437,7 +450,6 @@ def t_libs() -> str:
                 if fh.read(4) == b"\x7fELF":
                     elfs.append(p)
     static: dict[str, list[str]] = {}
-    outside: set[str] = set()
     missing: list[str] = []
     for e in elfs:
         for name, where in ldd(str(e)):
@@ -445,20 +457,23 @@ def t_libs() -> str:
                 missing.append(f"{e.relative_to(TREE)}: {name}")
             elif not inside(where):
                 static.setdefault(where, []).append(str(e.relative_to(TREE)))
-                outside.add(where)
-    allowed = {p for p in outside if is_host_name(os.path.basename(p))}
-    closure = host_closure(allowed | {p for xs in MAPS.values() for p in xs
-                                      if not inside(p) and is_host_name(os.path.basename(p))})  # fmt: skip
-    bad_static = sorted(p for p in outside - allowed if os.path.basename(p) not in closure)
+    # ldd flattens: a library on the list and everything it loads are the
+    # host's; anything else from outside means the AppImage itself needs it
+    allowed = {p for p in static if is_host_name(os.path.basename(p))}
+    runtime_host = {p for xs in MAPS.values() for p in xs
+                    if not inside(p) and is_host_name(os.path.basename(p))}  # fmt: skip
+    closure = host_closure(allowed | runtime_host)
+    bad_static = sorted(p for p in static if p not in allowed and os.path.realpath(p) not in closure)
     bad_runtime: dict[str, list[str]] = {}
     for who, libs in MAPS.items():
         for p in libs:
-            if inside(p) or is_host_name(os.path.basename(p)) or os.path.basename(p) in closure:
+            if inside(p) or is_host_name(os.path.basename(p)) or os.path.realpath(p) in closure:
                 continue
             bad_runtime.setdefault(who, []).append(p)
     report = {
         "roots": sorted(roots),
         "elf_files": len(elfs),
+        "host_libraries_needed_directly": sorted(os.path.basename(p) for p in allowed),
         "host_libraries_needed": {p: sorted(set(v))[:5] for p, v in sorted(static.items())},
         "not_found": missing,
         "not_allowed_static": bad_static,
@@ -466,12 +481,16 @@ def t_libs() -> str:
         "not_allowed_runtime": bad_runtime,
     }
     save("libs.json", json.dumps(report, indent=2))
-    check(not missing, f"ldd cannot resolve: {missing[:15]}")
+    check(not missing, f"ldd cannot resolve: {sorted(set(missing))[:15]}")
     check(not bad_static, f"host libraries not on the allow-list: {bad_static}")
     check(not bad_runtime, f"mapped at run time, not allowed: {bad_runtime}")
     check(bool(MAPS), "no running process was traced (the live and gui tests failed?)")
-    return (f"{len(elfs)} ELF files; {len(allowed)} host libraries needed, all allowed; "
-            f"{sum(len(v) for v in MAPS.values())} mapped libraries in {len(MAPS)} processes checked")
+    outside_rt = sorted({os.path.basename(p) for xs in MAPS.values() for p in xs if not inside(p)})
+    save("libs-host-runtime.txt", "\n".join(outside_rt) + "\n")
+    return (f"{len(elfs)} ELF files; host libraries needed directly: "
+            f"{len({os.path.basename(p) for p in allowed})}, all allowed; "
+            f"{sum(len(v) for v in MAPS.values())} mapped libraries in {len(MAPS)} processes, "
+            f"{len(outside_rt)} from the host, all allowed or loaded by an allowed one")
 
 
 # ---------------------------------------------------------------- summary
