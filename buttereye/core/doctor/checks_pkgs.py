@@ -18,6 +18,11 @@ are ``brew install`` lines, and where Homebrew has no formula at all - RIFE-ncnn
 and mvgpu, which ButterEye has to build itself - the finding says so instead of
 offering a line that cannot work. No macOS finding carries a dnf, rpm, sudo,
 copr or journal word (a test checks that, as one does for Windows).
+
+Inside the Linux AppImage (a trial, ``osapi.LINUX_APP``) the install database is
+the AppImage's own install record, as in ButterEye.app, and no finding offers a
+dnf or COPR line: the AppImage may be running on any distribution, and what it
+carries is repaired by downloading it again (``APPIMAGE_REPAIR``).
 """
 
 from __future__ import annotations
@@ -325,6 +330,12 @@ async def rpm_query(names: Iterable[str] = BUTTEREYE_PKGS + OTHER_PKGS) -> RpmDb
 
             return manifest_db(install_dir())
         return brew_db(names)
+    if osapi.LINUX_APP is not None:
+        # the AppImage: its own install record. An rpm database on the same
+        # machine (Fedora) describes nothing the AppImage runs.
+        from buttereye.core.paths import install_dir
+
+        return manifest_db(install_dir())
     if shutil.which("rpm") is None:
         return RpmDb(False, {}, "rpm is not installed")
     res = await run(("rpm", "-q", "--qf", _QF, *names), timeout_s=6.0)
@@ -383,6 +394,9 @@ REPAIR = M("Run the ButterEye installer again and choose Repair.")
 APP_REPAIR = M("Download ButterEye again and replace ButterEye.app with the new copy.")
 #: the tools ``tool_fix`` names that ButterEye.app carries itself
 APP_CARRIES = frozenset({"mpv", "vapoursynth", "ffmpeg"})
+#: the Linux AppImage's peer of ``APP_REPAIR``: it carries mpv, VapourSynth,
+#: FFmpeg and MVTools, so the one repair is a fresh copy (``osapi.LINUX_APP``)
+APPIMAGE_REPAIR = M("Download the ButterEye AppImage again and replace the old file with it.")
 #: macOS: ButterEye has no macOS package of its own yet (phase 3 builds the
 #: plugins, phase 4 taps them), and Homebrew has no formula for RIFE-ncnn-Vulkan
 #: or mvgpu, so for ButterEye's own pieces there is nothing to type. Saying that
@@ -421,6 +435,8 @@ def platform_fix(
         if osapi.MACOS_APP is not None:
             return {"fix": APP_REPAIR, "commands": ()}
         return {"fix": macos, "commands": macos_commands}
+    if osapi.LINUX_APP is not None:
+        return {"fix": APPIMAGE_REPAIR, "commands": ()}
     return {"fix": fix, "commands": commands}
 
 
@@ -451,6 +467,13 @@ def tool_fix(
             "fix": macos or fix,
             "commands": (_commands.install_command(winget_key, verb=verb),),
         }
+    if osapi.LINUX_APP is not None:
+        # what the AppImage carries comes back with a fresh copy; anything else
+        # is the host distribution's, and the AppImage may be running on any of
+        # them: the advice stays, the Fedora command line does not
+        if winget_key in APP_CARRIES:
+            return {"fix": APPIMAGE_REPAIR, "commands": ()}
+        return {"fix": fix, "commands": ()}
     return {"fix": fix, "commands": (dnf_line,)}
 
 
@@ -524,13 +547,17 @@ def _unreadable_db_finding(db: RpmDb) -> Finding:
     """The note for "the install database can't be read at all": no rpm on
     Linux, no install record on Windows, no Homebrew on macOS. Each platform
     says what is missing and what would fix it, and nothing else."""
-    if osapi.IS_WINDOWS or osapi.MACOS_APP is not None:
+    if osapi.IS_WINDOWS or osapi.MACOS_APP is not None or osapi.LINUX_APP is not None:
         return _f(
             "packages.rpm",
             Severity.INFO,
             M("ButterEye's install record can't be read"),
             cause=M("{why}", {"why": db.error or "unknown"}),
-            fix=REPAIR if osapi.IS_WINDOWS else APP_REPAIR,
+            fix=REPAIR
+            if osapi.IS_WINDOWS
+            else APP_REPAIR
+            if osapi.MACOS_APP is not None
+            else APPIMAGE_REPAIR,
         )
     if osapi.IS_MACOS:
         return _f(

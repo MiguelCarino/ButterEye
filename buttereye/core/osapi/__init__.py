@@ -52,6 +52,12 @@ Linux path everywhere the rows below do not say otherwise:
   is the app's by full path (``executable``, ``bundled_vspipe``,
   ``types.macos_plugin_dir``) and the children's environment points at nothing
   else (``point_at_app``). Outside the app none of this runs.
+- the Linux AppImage (a trial, docs/appimage-trial.md): the same idea on Linux.
+  ``LINUX_APP`` says whether this process runs from one, decided the same way
+  (where the interpreter and this file are, never ``$APPDIR``), and when it does
+  mpv, ffmpeg, ffprobe, vspipe and the plugins are the AppImage's by full path
+  and the children's environment is ``point_at_appimage``'s. Fedora's RPMs never
+  meet any of it: their Python is ``/usr/bin/python3``.
 
 mypy checks all three: ``mypy --platform linux``, ``mypy --platform win32``
 and ``mypy --platform darwin``.
@@ -567,6 +573,131 @@ def app_quarantined(
     return tuple(p for p in programs if p.exists() and has_quarantine(p))
 
 
+# ======================================================================== the Linux AppImage (trial)
+#: Linux AppImage: the programs it carries in ``<root>/bin``, which are never
+#: looked for anywhere else while ButterEye runs from it (``executable``)
+APPIMAGE_TOOLS = frozenset({"mpv", "ffmpeg", "ffprobe"})
+#: variables that would make a child load something other than what the
+#: AppImage carries, removed from the children's environment
+#: (``point_at_appimage`` says why)
+APPIMAGE_UNSET = (
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "VAPOURSYNTH_EXTRA_PLUGIN_PATH",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+)
+
+
+def appimage_root(executable: str, module: str, *, uid: int | None = None) -> Path | None:
+    """The root of the ButterEye AppImage this Python runs from (the mounted or
+    extracted AppDir), or None.
+
+    The Linux peer of ``app_resources``, and decided the same way: by where the
+    running interpreter and this file are, never by an environment variable. The
+    AppImage runtime exports ``$APPDIR``, but so can anyone who starts a process,
+    so a variable alone must never make ButterEye hand its children a plugin
+    folder, a VSScript library or a ``PATH`` -- that would be a way to make it run
+    somebody else's code. ``packaging/appimage/AppRun`` execs
+    ``<root>/python/bin/python3.<minor>``, so all of these must hold:
+
+    - ``executable`` (``sys.executable``) is ``<root>/python/bin/<file>``,
+      resolved, so a symlink counts as what it points to;
+    - ``module`` (this file) is inside that same ``<root>/python``: the
+      AppImage's Python made to run some other checkout's ``buttereye`` is not
+      the AppImage;
+    - ``<root>`` holds the install record the build writes and ``AppRun``;
+    - ``<root>`` and ``<root>/python`` belong to this user or to root and nobody
+      else can write to them. A FUSE mount of the image shows root-owned
+      read-only files; ``--appimage-extract-and-run`` extracts into this user's
+      own ``$TMPDIR/appimage_extracted_<hash>``. A tree another local user
+      planted in a shared ``/tmp`` under that name is refused here rather than
+      trusted -- though the runtime itself would already have run its ``AppRun``,
+      which is the runtime's problem and is written down in the trial's report.
+
+    Pure but for the ``stat`` calls, so tests answer it for a planted tree on any
+    platform. ``uid``: the user to compare owners with (default: this one).
+    """
+    try:
+        exe = Path(executable).resolve()
+        mod = Path(module).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if len(exe.parts) < 5 or exe.parent.name != "bin" or exe.parent.parent.name != "python":
+        return None
+    root = exe.parent.parent.parent
+    if not mod.is_relative_to(root / "python"):
+        return None
+    me = os.getuid() if uid is None and hasattr(os, "getuid") else uid
+    try:
+        if not ((root / INSTALL_RECORD).is_file() and (root / "AppRun").is_file()):
+            return None
+        for folder in (root, root / "python"):
+            st = folder.stat()
+            if st.st_uid not in (0, me) or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                return None
+    except OSError:
+        return None
+    return root
+
+
+def appimage_runtime(root: Path) -> dict[str, Path]:
+    """The files of the AppImage's own Python and VapourSynth, by role, as
+    ``app_runtime`` names them for the macOS app: the interpreter, the
+    ``libpython`` VSScript loads, VapourSynth's package folder, and in it
+    ``libvsscript.so`` and ``vspipe`` (the manylinux wheel's layout)."""
+    minor = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    py = root / "python"
+    vs = py / "lib" / minor / "site-packages" / "vapoursynth"
+    return {
+        "python": py / "bin" / minor,
+        "libpython": py / "lib" / f"lib{minor}.so.1.0",
+        "vapoursynth": vs,
+        "vsscript": vs / "libvsscript.so",
+        "vspipe": vs / "vspipe",
+    }
+
+
+def point_at_appimage(
+    env: MutableMapping[str, str], root: Path, *, sep: str = os.pathsep
+) -> None:
+    """Linux AppImage: make ``env`` lead every child ButterEye starts to what the
+    AppImage carries. ``point_at_app`` is the macOS model; the differences are
+    Linux's:
+
+    - ``PATH`` starts with ``<root>/bin`` (mpv, ffmpeg, ffprobe). ButterEye
+      starts those by full path (``executable``); this is for ``shutil.which``
+      callers -- render's ffmpeg and ffprobe -- and a child's own children.
+    - ``VSSCRIPT_PATH``: the AppImage's ``libvsscript.so``. Its mpv 0.41 links
+      VSScript itself, found through its RUNPATH, and does not read the variable;
+      it is set for anything that does, as on the other two platforms.
+    - ``PYTHONNOUSERSITE=1``, no ``PYTHONHOME``/``PYTHONPATH``: VSScript starts
+      the AppImage's Python inside mpv and vspipe, and must import the
+      ``vapoursynth`` beside its own ``libvsscript.so``.
+    - no ``VAPOURSYNTH_EXTRA_PLUGIN_PATH``: an autoloaded system MVTools would
+      take the place of the AppImage's (``_load`` skips a loaded namespace).
+    - no ``LD_LIBRARY_PATH`` or ``LD_PRELOAD``. The loader searches
+      ``LD_LIBRARY_PATH`` before an ELF file's RUNPATH, so a value left in a
+      shell (a self-built FFmpeg in ``/opt``, say) would put that
+      ``libavcodec.so`` under the AppImage's mpv; ``LD_PRELOAD`` loads code into
+      every child. This also reaches the host programs ButterEye starts
+      (``vulkaninfo``, ``nvidia-smi``): a setup that needs either variable for
+      those is not served by the trial.
+
+    Nothing else is touched, deliberately: the host's GPU drivers, ``libva``
+    drivers and the Vulkan loader's manifests are found the host's own way.
+    Idempotent. Never touches anything outside ``env``.
+    """
+    rt = appimage_runtime(root)
+    first = os.fspath(root / APP_BIN)
+    rest = [p for p in env.get("PATH", "").split(sep) if p and p.rstrip("/") != first]
+    env["PATH"] = sep.join([first] + rest)
+    env["VSSCRIPT_PATH"] = os.fspath(rt["vsscript"])
+    env["PYTHONNOUSERSITE"] = "1"
+    for name in APPIMAGE_UNSET:
+        env.pop(name, None)
+
+
 #: VSScript's own configuration file, relative to ``$XDG_CONFIG_HOME`` (or
 #: ``~/.config``): VapourSynth R81 reads it on macOS and Linux to learn which
 #: Python to start (``readEnvConfig`` in src/vsscript/vsscript.cpp)
@@ -576,6 +707,14 @@ VSSCRIPT_CONFIG = Path("vapoursynth") / "vapoursynth.toml"
 _APP_VSSCRIPT_KEY = re.compile(
     r'^"(/[^"]*\.app/Contents/Resources/python/lib/python3\.\d+/site-packages/'
     r'vapoursynth/libvsscript\.dylib)"\s*='
+)
+#: the same for a ButterEye AppImage's VSScript: under the runtime's FUSE mount
+#: point (``.mount_<name><random>``, a new one every start) or its extraction
+#: folder (``appimage_extracted_<hash>``). Every start of a mounted AppImage
+#: writes one line and drops the lines of mounts that have gone.
+_APPIMAGE_VSSCRIPT_KEY = re.compile(
+    r'^"(/[^"]*/(?:\.mount_[^/"]+|appimage_extracted_[0-9a-f]+)/python/lib/python3\.\d+/'
+    r'site-packages/vapoursynth/libvsscript\.so)"\s*='
 )
 
 
@@ -615,16 +754,17 @@ def vsscript_entry(vsscript: Path, python: Path, libpython: Path, mtime: int) ->
 
 def merge_vsscript_config(text: str, line: str, *, exists: Callable[[str], bool]) -> str:
     """``text`` (the configuration as it is) with ``line`` in it: an older entry
-    for the same VSScript replaced, an entry for a ButterEye.app whose VSScript
-    no longer ``exists`` dropped (a copy moved, deleted, or run once from a
-    translocated path), and every other line -- other VapourSynth installations,
+    for the same VSScript replaced, an entry for a ButterEye.app (or AppImage)
+    whose VSScript no longer ``exists`` dropped (a copy moved, deleted, run once
+    from a translocated path, or an AppImage mount that has gone), and every
+    other line -- other VapourSynth installations,
     comments -- kept as it was. Pure."""
     key = line.split(" = ", 1)[0]
     out: list[str] = []
     for old in text.splitlines():
         if old.split(" = ", 1)[0].strip() == key:
             continue
-        m = _APP_VSSCRIPT_KEY.match(old)
+        m = _APP_VSSCRIPT_KEY.match(old) or _APPIMAGE_VSSCRIPT_KEY.match(old)
         if m is not None and not exists(m.group(1)):
             continue
         out.append(old)
@@ -632,10 +772,14 @@ def merge_vsscript_config(text: str, line: str, *, exists: Callable[[str], bool]
     return "\n".join(out) + "\n"
 
 
-def register_vsscript(env: Mapping[str, str], resources: Path) -> bool:
+def register_vsscript(
+    env: Mapping[str, str], resources: Path, rt: Mapping[str, Path] | None = None
+) -> bool:
     """macOS app: make sure VSScript's configuration names the app's Python for
     the app's VSScript, so that mpv's ``vapoursynth`` filter and ``vspipe`` can
-    start it. True when the entry is there (already, or now).
+    start it. True when the entry is there (already, or now). The Linux AppImage
+    asks the same with ``rt=appimage_runtime(root)``: R81's VSScript reads the
+    same file on Linux, and its manylinux wheel has no other way to find Python.
 
     This is the one file the app writes outside its own folders, and it is
     VapourSynth's design rather than ButterEye's: R81's VSScript has no other way
@@ -650,7 +794,8 @@ def register_vsscript(env: Mapping[str, str], resources: Path) -> bool:
     config = vsscript_config(env)
     if config is None:
         return False
-    rt = app_runtime(resources)
+    if rt is None:
+        rt = app_runtime(resources)
     line = vsscript_entry(
         rt["vsscript"], rt["python"], rt["libpython"], int(rt["python"].stat().st_mtime)
     )
@@ -685,13 +830,18 @@ def use_bundled_runtime() -> None:
     and nothing else (``point_at_app``), and VSScript's configuration line for
     the app's Python (``register_vsscript``).
 
+    Linux, running from the AppImage (``LINUX_APP``): everything it carries
+    (``point_at_appimage``) and VSScript's configuration line for its Python
+    (``register_vsscript``), as the macOS app does.
+
     macOS otherwise (Homebrew): there is no bundle to point at, because
     Homebrew's ``python@3.14`` already *is* an interpreter whose VapourSynth is
     the one ``vspipe`` uses. What mpv needs is the VSScript file, which it cannot
     find for itself (``point_at_vsscript``). A no-op when VapourSynth is not
     installed.
 
-    Nothing on Linux: it uses the distribution's, and mpv finds VSScript by name.
+    Nothing on Linux otherwise: it uses the distribution's, and mpv finds
+    VSScript by name.
     """
     if not IS_WINDOWS:
         # Windows is decided first and macOS inside the non-Windows branch, so
@@ -709,6 +859,10 @@ def use_bundled_runtime() -> None:
                 return
             with contextlib.suppress(OSError):
                 point_at_vsscript(os.environ, vsscript_library())
+        elif LINUX_APP is not None:
+            point_at_appimage(os.environ, LINUX_APP)
+            with contextlib.suppress(OSError):
+                register_vsscript(os.environ, LINUX_APP, appimage_runtime(LINUX_APP))
         return
     os.environ[NO_CWD_SEARCH] = "1"
     python_dir, vs_dir = runtime_dirs()
@@ -724,9 +878,12 @@ def install_root() -> str | None:
     """Windows: the folder the installer put this Python in (the parent of the
     ``python`` folder, with the install record), else None. macOS:
     ``Contents/Resources`` of the ButterEye.app this runs from (``MACOS_APP``),
-    which holds the same install record, else None."""
+    which holds the same install record, else None. The Linux AppImage: its root
+    (``LINUX_APP``), which holds it too."""
     if IS_MACOS and not IS_WINDOWS and MACOS_APP is not None:
         return os.fspath(MACOS_APP)
+    if LINUX_APP is not None:
+        return os.fspath(LINUX_APP)
     python_dir, _ = runtime_dirs()
     root = os.path.dirname(python_dir)
     return root if os.path.isfile(os.path.join(root, INSTALL_RECORD)) else None
@@ -739,6 +896,16 @@ def install_root() -> str | None:
 #: the app and Homebrew -- the programs, the plugins, the models, the doctor's
 #: package database and its advice -- asks this one value.
 MACOS_APP: Path | None = app_resources(sys.executable, __file__) if IS_MACOS else None
+
+#: Linux: the root of the ButterEye AppImage this process runs from, or None
+#: (Fedora's RPMs, a development venv, and every other platform). Decided once,
+#: at import, from where the interpreter and this file are (``appimage_root``),
+#: never from ``$APPDIR``. Every Linux answer that differs inside the AppImage --
+#: the programs, the plugins, the doctor's package database and its advice --
+#: asks this one value.
+LINUX_APP: Path | None = (
+    appimage_root(sys.executable, __file__) if sys.platform == "linux" else None
+)
 
 
 def install_mutex_name(folder: str) -> str:
@@ -763,14 +930,18 @@ def hold_install_mutex() -> None:
 def bundled_vspipe() -> str | None:
     """Windows: ``vspipe.exe`` of the running Python's VapourSynth package (the
     installer's), by its full path, else None. Never searched for by name. The
-    macOS app: its own ``vspipe``, the same way. Linux and Homebrew: None (the
-    vspipe on PATH)."""
+    macOS app and the Linux AppImage: their own ``vspipe``, the same way. Linux
+    and Homebrew: None (the vspipe on PATH)."""
     if not IS_WINDOWS:
         if IS_MACOS and MACOS_APP is not None:
             # the app's vspipe, from VapourSynth's wheel: it links the
             # libvsscript.dylib beside it by @loader_path
             app_vspipe = app_runtime(MACOS_APP)["vspipe"]
             return os.fspath(app_vspipe) if app_vspipe.is_file() else None
+        if LINUX_APP is not None:
+            # the AppImage's, from the manylinux wheel (RUNPATH $ORIGIN)
+            img_vspipe = appimage_runtime(LINUX_APP)["vspipe"]
+            return os.fspath(img_vspipe) if img_vspipe.is_file() else None
         return None
     _, vs_dir = runtime_dirs()
     if vs_dir is None:
@@ -823,7 +994,7 @@ def search_windows_path(
 def executable(name: str) -> str | None:
     """``shutil.which`` on Linux and macOS, except that ButterEye.app answers
     for the programs it carries (``APP_TOOLS``) with its own copy and nothing
-    else. On Windows a full path or None, never from the
+    else, and so does the AppImage (``APPIMAGE_TOOLS``). On Windows a full path or None, never from the
     current folder (``search_windows_path``), and preferring the windowed
     ``.exe``: mpv ships ``mpv.com`` (a console wrapper) next to ``mpv.exe``, and
     PATHEXT finds the ``.com`` first."""
@@ -831,6 +1002,11 @@ def executable(name: str) -> str | None:
         # the app's own, by full path and never from PATH: a Homebrew mpv
         # earlier on a user's PATH must not stand in for the one the app carries
         tool = MACOS_APP / APP_BIN / name
+        return os.fspath(tool) if tool.is_file() else None
+    if LINUX_APP is not None and name in APPIMAGE_TOOLS:
+        # the same rule for the AppImage: the distribution's mpv, which may lack
+        # the vapoursynth filter, never stands in for the one it carries
+        tool = LINUX_APP / APP_BIN / name
         return os.fspath(tool) if tool.is_file() else None
     if not IS_WINDOWS:
         return shutil.which(name)
@@ -987,17 +1163,31 @@ def spawn_detached(
                     raise
                 return DetachedChild(p.pid, p)
             raise AssertionError("unreachable")
-        pid = os.posix_spawnp(
-            argv[0],
-            list(argv),
-            dict(env) if env is not None else dict(os.environ),
-            file_actions=[
-                (os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0),
-                (os.POSIX_SPAWN_DUP2, fd, 1),
-                (os.POSIX_SPAWN_DUP2, fd, 2),
-            ],
-            setsid=True,
-        )
+        try:
+            pid = os.posix_spawnp(
+                argv[0],
+                list(argv),
+                dict(env) if env is not None else dict(os.environ),
+                file_actions=[
+                    (os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0),
+                    (os.POSIX_SPAWN_DUP2, fd, 1),
+                    (os.POSIX_SPAWN_DUP2, fd, 2),
+                ],
+                setsid=True,
+            )
+        except NotImplementedError:
+            # python-build-standalone's Linux CPython (the AppImage trial's) is
+            # built against glibc 2.17 headers, where POSIX_SPAWN_SETSID does not
+            # exist yet, so CPython raises this before starting anything. The
+            # same child, by fork+exec: its own session, the same descriptors,
+            # and a Popen that reaps it (the Windows shape). Fedora's Python
+            # never comes here.
+            p = subprocess.Popen(
+                list(argv), stdin=subprocess.DEVNULL, stdout=fd, stderr=fd,
+                env=dict(env) if env is not None else None, close_fds=True,
+                start_new_session=True,
+            )  # fmt: skip
+            return DetachedChild(p.pid, p)
         return DetachedChild(pid)
     finally:
         os.close(fd)
@@ -1077,8 +1267,11 @@ __all__ = [
     "APP_TOOLS",
     "APP_UNSET",
     "APP_VULKAN_ICD",
+    "APPIMAGE_TOOLS",
+    "APPIMAGE_UNSET",
     "INSTALL_RECORD",
     "IS_MACOS",
+    "LINUX_APP",
     "MACOS_APP",
     "VSSCRIPT_CONFIG",
     "IS_WINDOWS",
@@ -1093,6 +1286,8 @@ __all__ = [
     "app_quarantined",
     "app_resources",
     "app_runtime",
+    "appimage_root",
+    "appimage_runtime",
     "bundled_vspipe",
     "executable",
     "fsync_dir",
@@ -1114,6 +1309,7 @@ __all__ = [
     "plugin_file",
     "merge_vsscript_config",
     "point_at_app",
+    "point_at_appimage",
     "point_at_runtime",
     "point_at_vsscript",
     "prepare_endpoint",

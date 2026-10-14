@@ -195,6 +195,9 @@ def macos_plugin_dir() -> Path:
 
 
 def _packaged_plugin_dir() -> Path:
+    if osapi.LINUX_APP is not None:
+        # the AppImage trial: its own plugin folder, as the macOS app has
+        return osapi.LINUX_APP / "vapoursynth"
     return macos_plugin_dir() if osapi.IS_MACOS else _FEDORA_PLUGIN_DIR
 
 
@@ -202,7 +205,10 @@ def _packaged_data_dir() -> Path:
     """Where the RIFE models live. On macOS ``<brew prefix>/share/buttereye``, the
     analogue of Fedora's ``%{_datadir}/buttereye``: no fallback, because Homebrew
     has no models of its own to find, so nothing is there until a tap ships them.
-    ButterEye.app carries its own, in ``Contents/Resources/share``."""
+    ButterEye.app carries its own, in ``Contents/Resources/share``, and so would
+    the Linux AppImage, in ``<root>/share`` (the trial carries no models)."""
+    if osapi.LINUX_APP is not None:
+        return osapi.LINUX_APP / "share"
     if osapi.IS_MACOS:
         if osapi.MACOS_APP is not None:
             return osapi.MACOS_APP / "share"

@@ -85,6 +85,9 @@ def _default_plugin_dir() -> Path:
         # VapourSynth has already autoloaded -- so the plugin the doctor found
         # there is the plugin the clip goes through either way.
         return macos_plugin_dir()
+    if osapi.LINUX_APP is not None:
+        # the AppImage trial: the one folder its VapourSynth loads plugins from
+        return osapi.LINUX_APP / "vapoursynth"
     return Path("/usr/lib64/buttereye/vapoursynth")
 
 
@@ -130,6 +133,9 @@ def _default_ffms2() -> Path:
         return _default_plugin_dir() / "ffms2.dll"
     if osapi.IS_MACOS:
         return _macos_ffms2()
+    if osapi.LINUX_APP is not None:
+        # the AppImage carries FFMS2 with its other plugins, as Windows does
+        return _default_plugin_dir() / "libffms2.so"
     return Path("/usr/lib64/libffms2.so.5")
 
 

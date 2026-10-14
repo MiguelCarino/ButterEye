@@ -1,0 +1,32 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The ButterEye contributors
+#
+# The AppImage's entry point (the AppImage trial, docs/appimage-trial.md): the
+# Linux peer of packaging/macos/launcher.c, and a shell script because nothing on
+# Linux decides who a process is by the path of its main executable, so there is
+# no reason to embed Python the way the macOS launcher must.
+#
+# The runtime mounts (or extracts) the image and execs this file; where it is
+# comes from $0, never from $APPDIR. The runtime sets APPDIR too, but so can
+# anyone who starts this script by hand, and nothing here or in ButterEye reads
+# it (osapi.LINUX_APP decides "am I the AppImage" from where the interpreter
+# that runs ButterEye actually is).
+#
+# One file, two programs, as on macOS:
+#   - with no arguments (a double click, a desktop launcher) it runs the window:
+#     python -m buttereye.gui
+#   - with arguments it is the command line: python -m buttereye.cli ARGS, so
+#     `./ButterEye-x86_64.AppImage doctor` is the documented way in
+#
+# The interpreter runs isolated (-I: no PYTHON* variable, no user site-packages,
+# no current directory or script directory on sys.path), so nothing outside the
+# image chooses what code ButterEye runs, and writes no bytecode (-B): the image
+# is read-only and ships precompiled unchecked-hash .pyc files instead.
+set -eu
+here=$(dirname "$(readlink -f "$0")")
+python=$here/python/bin/python3.14
+if [ "$#" -eq 0 ]; then
+    exec "$python" -I -B -m buttereye.gui
+fi
+exec "$python" -I -B -m buttereye.cli "$@"

@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The ButterEye contributors
+#
+# The tools .github/workflows/appimage.yml installs to run the repository's tests
+# with the AppImage's own Python: pure-Python wheels only (py3-none-any), every
+# one pinned by its SHA-256 and installed with
+#   pip install --require-hashes --only-binary=:all: --no-deps --target <dir> -r <this>
+# The same versions and hashes as tests/windows/requirements.txt. No pytest-qt:
+# it needs QtTest, which the AppImage's trimmed PySide6 does not carry, so the
+# workflow leaves tests/gui out.
+iniconfig==2.3.1 \
+    --hash=sha256:9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7
+packaging==26.3 \
+    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+pluggy==1.6.0 \
+    --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
+pygments==2.21.0 \
+    --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
+pytest==9.1.1 \
+    --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
+pytest-asyncio==1.4.0 \
+    --hash=sha256:933ca923a23075a87fb7070c0ec272a6848489824d887c85c812670932835aa1

@@ -118,15 +118,21 @@ REPAIR = Msg("Run the ButterEye installer again and choose Repair.")
 
 #: ButterEye.app: the plugins and VapourSynth came inside the app
 APP_REPAIR = Msg("Download ButterEye again and replace ButterEye.app with the new copy.")
+APPIMAGE_REPAIR = Msg(
+    "Download the ButterEye AppImage again and replace the old file with it."
+)
 
 
 def _install_fix(fix: Msg, command: str) -> tuple[Msg, tuple[str, ...]]:
     """(fix, commands): the dnf line on Linux; on Windows the installer's Repair;
-    in ButterEye.app a fresh copy of the app."""
+    in ButterEye.app a fresh copy of the app, and in the AppImage a fresh copy
+    of that."""
     if osapi.IS_WINDOWS:
         return REPAIR, ()
     if osapi.MACOS_APP is not None:
         return APP_REPAIR, ()
+    if osapi.LINUX_APP is not None:
+        return APPIMAGE_REPAIR, ()
     return fix, (command,)
 
 
