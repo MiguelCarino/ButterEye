@@ -351,7 +351,7 @@ stagepy unwheel "$work/wheel/buttereye-$version-py3-none-any.whl" "$site"
 
 # the programs, FFmpeg's libraries (one file each, under its soname), the plugins
 cp "$deps/bin/mpv" "$deps/bin/ffmpeg" "$deps/bin/ffprobe" "$appdir/bin/"
-for so in "$deps"/lib/lib{avcodec,avformat,avutil,avfilter,avdevice,swscale,swresample,postproc}.so.*; do
+for so in "$deps"/lib/lib{avcodec,avformat,avutil,avfilter,avdevice,swscale,swresample}.so.*; do
     [[ -L $so ]] && continue
     soname=$(readelf -dW "$so" | sed -n 's/.*(SONAME).*\[\(.*\)\]/\1/p')
     cp "$so" "$appdir/lib/$soname"

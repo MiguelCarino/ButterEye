@@ -54,8 +54,10 @@ jobs:
       - name: Trust the checkout (owned by the runner, used as root)
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Cache the pinned downloads
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # restore and save apart, so that a build that fails after the downloads
+      # still keeps them (videolan.org and download.qt.io are not always quick)
+      - name: Restore the pinned downloads
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /github/home/.cache/buttereye/appimage-dl
           key: appimage-dl-${{ hashFiles('packaging/appimage/pins.sh') }}
@@ -65,6 +67,13 @@ jobs:
 
       - name: Build the AppImage and its sources tar
         run: JOBS=$(nproc) packaging/appimage/build-appimage.sh
+
+      - name: Save the pinned downloads
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /github/home/.cache/buttereye/appimage-dl
+          key: appimage-dl-${{ hashFiles('packaging/appimage/pins.sh') }}
 
       - name: Upload the AppImage
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
