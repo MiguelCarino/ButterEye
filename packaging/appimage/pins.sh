@@ -34,7 +34,7 @@
 #   mpv, MVTools  GitHub's tag archives: no published digest exists, so these
 #                 are the SHA-256 of the archive as downloaded on 2026-10-14
 #                 (MVTools' is the Source0 of packaging/plugins/buttereye-vs-mvtools.spec)
-#   glslang, wayland, wayland-protocols
+#   glslang, wayland, wayland-protocols, nv-codec-headers
 #                 no published digest either: as downloaded on 2026-10-14
 #   libplacebo    a git commit, not an archive: its 3rdparty/ submodules (glad,
 #                 jinja, markupsafe, fast_float) are part of the build and no
@@ -128,6 +128,17 @@ WAYLAND_SHA256=64176eaa46e4969903e286f8e5ef8331affc17fdf03ac9b58381d2b23162b7a3
 WAYLAND_PROTOCOLS_VER=1.49
 WAYLAND_PROTOCOLS_URL=https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/$WAYLAND_PROTOCOLS_VER/downloads/wayland-protocols-$WAYLAND_PROTOCOLS_VER.tar.xz
 WAYLAND_PROTOCOLS_SHA256=ec4c8f74942d6dff7ace8b4ce4764f0ef9ff618a935d974ea77edee2ad240b14
+
+# nv-codec-headers: the header-only NVIDIA interface FFmpeg's NVDEC (and mpv's
+# cuda hwdec) are compiled against; FFmpeg dlopens libcuda and libnvcuvid from
+# the host's driver, so nothing NVIDIA is linked or carried. n12.1.14.1 is the
+# oldest release FFmpeg 8.1 takes without falling back (configure:
+# "ffnvcodec >= 12.1.14.0"), which keeps the driver floor at its lowest: Linux
+# 530.41.03 (README of the tag). GitHub's tag archive, no published digest: the
+# SHA-256 as downloaded on 2026-10-14.
+NVCODEC_TAG=n12.1.14.1
+NVCODEC_URL=https://github.com/FFmpeg/nv-codec-headers/archive/$NVCODEC_TAG/nv-codec-headers-$NVCODEC_TAG.tar.gz
+NVCODEC_SHA256=f40c8a27417eb2688412da32985e382e811196311c4d103d1fcaafad2876cfc1
 
 # ---------------------------------------------------------------- the AppImage itself
 # the static type-2 runtime: no libfuse2 on the host, squashfuse built in; it

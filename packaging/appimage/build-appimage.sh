@@ -19,7 +19,7 @@
 # AlmaLinux 8 would have meant building the X11 stack too, for no wider reach.
 #
 #   1. build from pinned source (pins.sh): dav1d, FFmpeg (shared, GPL: x264,
-#      Vulkan decoding), glslang (static), libplacebo (static, OpenGL and
+#      Vulkan and NVDEC decoding), glslang (static), libplacebo (static, OpenGL and
 #      Vulkan), mpv with the vapoursynth filter on X11 and Wayland, FFMS2, and
 #      MVTools with the RPM's patch; libwayland and wayland-protocols for mpv's
 #      build only (the host's libwayland is the one that runs)
@@ -148,6 +148,7 @@ mvtools_tar=$(fetch "$MVTOOLS_URL" "$MVTOOLS_SHA256")
 glslang_tar=$(fetch "$GLSLANG_URL" "$GLSLANG_SHA256")
 wayland_tar=$(fetch "$WAYLAND_URL" "$WAYLAND_SHA256")
 wlprotos_tar=$(fetch "$WAYLAND_PROTOCOLS_URL" "$WAYLAND_PROTOCOLS_SHA256")
+nvcodec_tar=$(fetch "$NVCODEC_URL" "$NVCODEC_SHA256")
 runtime=$(fetch "$RUNTIME_URL" "$RUNTIME_SHA256")
 qt_srcs=("$(fetch "$QTBASE_URL" "$QTBASE_SHA256")" "$(fetch "$QTSVG_URL" "$QTSVG_SHA256")")
 pyside_src=$(fetch "$PYSIDE_SRC_URL" "$PYSIDE_SRC_SHA256")
@@ -219,14 +220,25 @@ Cflags: -I\${includedir}
 EOF
 echo "==> Vulkan headers $vkmm.$vkpatch (libplacebo's submodule)"
 
+# ---------------------------------------------------------------- 1. nv-codec-headers
+# Headers and ffnvcodec.pc only, into the build prefix: FFmpeg's NVDEC and mpv's
+# cuda hwdec compile against them and load the driver's libcuda/libnvcuvid at
+# run time (checked below: nothing links them).
+nv=$work/src/nv-codec-headers
+mkdir -p "$nv"
+tar -xzf "$nvcodec_tar" -C "$nv" --strip-components=1
+echo "==> nv-codec-headers $NVCODEC_TAG (headers only)"
+logged nvcodec-install make -C "$nv" PREFIX="$deps" LIBDIR=lib install
+
 # ---------------------------------------------------------------- 1. FFmpeg
 # Shared libraries, because mpv, ffmpeg, ffprobe and FFMS2 all link the same
 # ones. Nothing is auto-detected, so the result does not depend on what the
 # container happens to have: zlib, iconv, dav1d (AV1), x264 (the encoder render
 # falls back to without NVENC: --enable-gpl, which makes these libraries GPL),
 # VA-API through libdrm (the host's libva and drivers, never bundled), and
-# Vulkan video decoding (mpv's hwdec=vulkan), which needs only the headers:
-# FFmpeg dlopens the host's loader, so libavutil gains no DT_NEEDED for it.
+# Vulkan video decoding (mpv's hwdec=vulkan) and NVDEC (hwdec=nvdec), which
+# need only headers: FFmpeg dlopens the host's Vulkan loader and NVIDIA's
+# libcuda/libnvcuvid, so no library gains a DT_NEEDED for either.
 f=$work/src/ffmpeg
 mkdir -p "$f"
 tar -xJf "$ffmpeg_tar" -C "$f" --strip-components=1
@@ -234,12 +246,12 @@ ffmpeg_flags=(
     --prefix="$deps" --libdir="$deps/lib" --enable-shared --disable-static
     --enable-gpl --disable-autodetect --enable-pthreads
     --enable-zlib --enable-iconv --enable-libdav1d --enable-libx264
-    --enable-vaapi --enable-libdrm --enable-vulkan
+    --enable-vaapi --enable-libdrm --enable-vulkan --enable-ffnvcodec --enable-nvdec
     --disable-doc --disable-ffplay --disable-debug
 )
 echo "==> FFmpeg $FFMPEG_VER"
 (cd "$f" && logged ffmpeg-configure ./configure "${ffmpeg_flags[@]}")
-for want in CONFIG_GPL CONFIG_LIBX264 CONFIG_LIBDAV1D CONFIG_VAAPI CONFIG_VULKAN CONFIG_ZLIB; do
+for want in CONFIG_GPL CONFIG_LIBX264 CONFIG_LIBDAV1D CONFIG_VAAPI CONFIG_VULKAN CONFIG_FFNVCODEC CONFIG_NVDEC CONFIG_ZLIB; do
     grep -q "^$want=yes" "$f/ffbuild/config.mak" || { echo "FFmpeg: $want is not enabled" >&2; exit 1; }
 done
 if grep -Eq '^CONFIG_(NONFREE)=yes' "$f/ffbuild/config.mak"; then
@@ -248,6 +260,12 @@ if grep -Eq '^CONFIG_(NONFREE)=yes' "$f/ffbuild/config.mak"; then
 fi
 logged ffmpeg-build make -C "$f" -j"$jobs"
 logged ffmpeg-install make -C "$f" install
+for so in "$deps"/lib/libav*.so.*; do
+    if readelf -dW "$so" | grep -Eq 'Shared library: \[lib(cuda|nvcuvid|vulkan)\.so'; then
+        echo "${so##*/} links a GPU driver library; FFmpeg must dlopen those" >&2
+        exit 1
+    fi
+done
 
 # ---------------------------------------------------------------- 1. Wayland, for mpv's build only
 # libwayland 1.26 and wayland-protocols 1.49 into the build prefix: their
@@ -320,7 +338,9 @@ sed -i "s|^Libs: .*|& -Wl,--start-group $pl_private -Wl,--end-group -lstdc++|" \
 # wheel's own folder. The wheel is unpacked here for the build only; the AppDir
 # gets its own copy below. Everything else is off unless named: X11 and Wayland,
 # each with EGL (OpenGL) and Vulkan contexts, VA-API (copy-back; no DRM
-# interop) through X11, Vulkan decoding through FFmpeg, ALSA and PulseAudio, Lua
+# interop) through X11, Vulkan and NVDEC decoding through FFmpeg (nvdec and
+# nvdec-copy: cuda-interop hands NVDEC frames to OpenGL or Vulkan without a
+# copy), ALSA and PulseAudio, Lua
 # for the on-screen controller. Not vaapi-wayland: it links libva-wayland.so.2,
 # which Debian and Ubuntu ship in a package of its own that a desktop need not
 # have (measured: mpv would not start on Ubuntu 22.04 and 24.04 or Debian 12 and
@@ -354,12 +374,17 @@ logged mpv-setup meson setup "$m/build" "$m" --prefix="$deps" --libdir=lib \
     -Dlibavdevice=enabled \
     -Dx11=enabled -Dgl=enabled -Degl=enabled -Degl-x11=enabled \
     -Dwayland=enabled -Degl-wayland=enabled -Dvulkan=enabled \
+    -Dcuda-hwaccel=enabled -Dcuda-interop=enabled \
     -Dvaapi=enabled -Dvaapi-x11=enabled \
     -Dalsa=enabled -Dpulse=enabled
 logged mpv-build ninja -C "$m/build" -j"$jobs"
 logged mpv-install ninja -C "$m/build" install
 readelf -dW "$deps/bin/mpv" | grep -q 'Shared library: \[libvsscript.so\]' \
     || { echo "mpv was built without the vapoursynth filter" >&2; exit 1; }
+if readelf -dW "$deps/bin/mpv" | grep -Eq 'Shared library: \[lib(cuda|nvcuvid)\.so'; then
+    echo "mpv links NVIDIA's driver libraries; they must be loaded at run time" >&2
+    exit 1
+fi
 if readelf -dW "$deps/bin/mpv" | grep -qF 'Shared library: [libva-wayland.so.2]'; then
     echo "mpv links libva-wayland.so.2, which Debian and Ubuntu desktops may lack" >&2
     exit 1
@@ -482,7 +507,7 @@ stagepy closure "$appdir" "$work/closure.json"
 
 # ---------------------------------------------------------------- licences and the record
 lic=$appdir/licenses
-mkdir -p "$lic"/{buttereye/LICENSES,python,pyside6,vapoursynth,mpv,ffmpeg,dav1d,libplacebo,glslang,vulkan-headers,wayland,ffms2,buttereye-vs-mvtools,appimage-runtime}
+mkdir -p "$lic"/{buttereye/LICENSES,python,pyside6,vapoursynth,mpv,ffmpeg,dav1d,libplacebo,glslang,vulkan-headers,wayland,nv-codec-headers,ffms2,buttereye-vs-mvtools,appimage-runtime}
 cp "$repo/COPYING" "$repo/THIRD-PARTY.md" "$lic/buttereye/"
 cp "$repo"/LICENSES/*.txt "$lic/buttereye/LICENSES/"
 cp "$pystd/LICENSE.txt" "$lic/python/LICENSE.txt"
@@ -509,6 +534,12 @@ cp "$p"/3rdparty/Vulkan-Headers/LICENSES/*.txt "$lic/vulkan-headers/"
 # own wayland.xml and wayland-protocols' (both MIT)
 cp "$wl/COPYING" "$lic/wayland/COPYING.wayland"
 cp "$wp/COPYING" "$lic/wayland/COPYING.wayland-protocols"
+# nv-codec-headers has no licence file: each header opens with its own MIT notice
+for h in "$nv"/include/ffnvcodec/*.h; do
+    printf '== %s\n' "${h##*/}"
+    sed -n '1,/\*\//p' "$h"
+    echo
+done >"$lic/nv-codec-headers/NOTICES.txt"
 cp "$s/COPYING" "$lic/ffms2/COPYING"
 cp "$v/LICENSE" "$lic/buttereye-vs-mvtools/LICENSE"
 cp "$v/src/asm/include/x86inc.asm" "$lic/buttereye-vs-mvtools/x86inc.asm"
@@ -537,6 +568,7 @@ stagepy record "$work/components.json" "$appdir/buttereye-install.json" \
     "glslang=$GLSLANG_VER=BSD-3-Clause AND BSD-2-Clause AND MIT AND Apache-2.0 AND GPL-3.0-or-later WITH Bison-exception-2.2=$(files_of glslang)" \
     "vulkan-headers=$vkmm.$vkpatch=Apache-2.0 OR MIT=$(files_of vulkan-headers)" \
     "wayland-protocols=$WAYLAND_PROTOCOLS_VER=MIT=$(files_of wayland)" \
+    "nv-codec-headers=${NVCODEC_TAG#n}=MIT=$(files_of nv-codec-headers)" \
     "ffmpeg=$FFMPEG_VER=GPL-2.0-or-later=$(files_of ffmpeg)=bundled(dav1d)($DAV1D_VER)" \
     "dav1d=$DAV1D_VER=BSD-2-Clause=$(files_of dav1d)" \
     "ffms2=$FFMS2_VER=MIT=$(files_of ffms2)" \
@@ -548,6 +580,7 @@ stagepy sources-txt "$lic/SOURCES.txt" version="$version" repo=https://github.co
     ffmpeg="$FFMPEG_VER" dav1d="$DAV1D_VER" mpv="$MPV_VER" libplacebo="$LIBPLACEBO_VER" \
     libplacebo_commit="$LIBPLACEBO_COMMIT" ffms2="$FFMS2_VER" mvtools="$MVTOOLS_TAG" \
     glslang="$GLSLANG_VER" wayland="$WAYLAND_VER" wayland_protocols="$WAYLAND_PROTOCOLS_VER" \
+    nvcodec="$NVCODEC_TAG" \
     runtime="$RUNTIME_VER" debs="$work/deb-sources.txt"
 
 # bytecode, compiled now because the AppImage is read-only and AppRun passes
@@ -579,7 +612,7 @@ if ((sources)); then
     mkdir -p "$src/ubuntu"
     cp -R "$work/src/pristine" "$src/buttereye-$version"
     cp "$ffmpeg_tar" "$dav1d_tar" "$mpv_tar" "$ffms2_tar" "$mvtools_tar" "$vs_src" \
-        "$glslang_tar" "$wayland_tar" "$wlprotos_tar" \
+        "$glslang_tar" "$wayland_tar" "$wlprotos_tar" "$nvcodec_tar" \
         "${qt_srcs[@]}" "$pyside_src" "$lic/SOURCES.txt" "$src/"
     # libplacebo: the pinned commit with the submodules it was built with
     (cd "$p" && git ls-files -z --recurse-submodules) |

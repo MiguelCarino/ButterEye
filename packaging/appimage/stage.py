@@ -445,6 +445,10 @@ AppImage, holds the Corresponding Source of every part of it:
                               {wayland_protocols}: mpv carries the code
                               wayland-scanner generated from their protocol XML
                               (libwayland itself is the host's)
+  nv-codec-headers-{nvcodec}.tar.gz
+                              NVIDIA's codec headers (MIT), which FFmpeg's NVDEC
+                              and mpv's cuda hwdec were compiled against (the
+                              driver's libraries are the host's, loaded at run time)
   ffms2-{ffms2}.tar.gz          FFMS2 {ffms2}: vapoursynth/libffms2.so
   vapoursynth-mvtools-{mvtools}.tar.gz
                               MVTools {mvtools} with
