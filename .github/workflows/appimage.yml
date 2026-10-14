@@ -202,8 +202,10 @@ jobs:
             --no-deps --target "$RUNNER_TEMP/testdeps" -r packaging/appimage/test-requirements.txt
           tree=$(mktemp -d)
           (cd "$tree" && "$RUNNER_TEMP"/dist/ButterEye-*-x86_64.AppImage --appimage-extract >/dev/null)
-          "$tree/squashfs-root/python/bin/python3.14" -B -c "import sys; sys.path[:0] = [sys.argv.pop(1), '.']; import pytest; raise SystemExit(pytest.main(sys.argv[1:]))" \
-            "$RUNNER_TEMP/testdeps" -p no:cacheprovider -q -rs \
+          # PYTHONPATH rather than sys.path: tests/conftest.py re-runs pytest
+          # inside a memory-capped systemd scope, and the re-run must find both
+          PYTHONPATH="$RUNNER_TEMP/testdeps:$PWD" "$tree/squashfs-root/python/bin/python3.14" -B -m pytest \
+            -p no:cacheprovider -q -rs \
             --deselect tests/gui/test_bench_page.py::test_cancel_stops_the_run_and_keeps_old_results
 
       - name: Upload the results
