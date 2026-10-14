@@ -364,7 +364,7 @@ vsrel=python/lib/python$pymm/site-packages/vapoursynth
 patchelf --set-rpath "\$ORIGIN/../lib:\$ORIGIN/../$vsrel" "$appdir/bin/mpv"
 for b in ffmpeg ffprobe; do patchelf --set-rpath '$ORIGIN/../lib' "$appdir/bin/$b"; done
 for l in "$appdir"/lib/*.so*; do patchelf --set-rpath '$ORIGIN' "$l"; done
-for p in "$appdir"/vapoursynth/*.so; do patchelf --set-rpath '$ORIGIN/../lib' "$p"; done
+for plug in "$appdir"/vapoursynth/*.so; do patchelf --set-rpath '$ORIGIN/../lib' "$plug"; done
 
 install -m 755 "$here/AppRun" "$appdir/AppRun"
 cp "$repo/buttereye/gui/icons/buttereye.svg" "$appdir/buttereye.svg"
