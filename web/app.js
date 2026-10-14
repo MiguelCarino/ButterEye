@@ -12,15 +12,15 @@
 
 const REPO = 'MiguelCarino/ButterEye';
 const FALLBACK = {
-  tag: 'v0.0.3',
+  tag: 'v0.0.4',
   assets: [
-    'buttereye-0.0.3-1.fc44.noarch.rpm', 'buttereye-0.0.3-1.fc45.noarch.rpm',
+    'buttereye-0.0.4-1.fc44.noarch.rpm', 'buttereye-0.0.4-1.fc45.noarch.rpm',
     'buttereye-vs-mvtools-29.2-1.fc44.x86_64.rpm', 'buttereye-vs-mvtools-29.2-1.fc45.x86_64.rpm',
     'buttereye-vs-rife-ncnn-9.33-2.fc44.x86_64.rpm', 'buttereye-vs-rife-ncnn-9.33-2.fc45.x86_64.rpm',
     'buttereye-rife-ncnn-models-9.33-1.fc44.noarch.rpm', 'buttereye-rife-ncnn-models-9.33-1.fc45.noarch.rpm',
     'buttereye-vs-mvgpu-0.0.1-2.fc44.x86_64.rpm', 'buttereye-vs-mvgpu-0.0.1-2.fc45.x86_64.rpm',
-    'ButterEye-0.0.3-setup.exe', 'ButterEye-0.0.3-macos-arm64.dmg', 'SHA256SUMS',
-  ].map((name) => ({ name, url: `https://github.com/${REPO}/releases/download/v0.0.3/${name}` })),
+    'ButterEye-0.0.4-setup.exe', 'ButterEye-0.0.4-macos-arm64.dmg', 'SHA256SUMS',
+  ].map((name) => ({ name, url: `https://github.com/${REPO}/releases/download/v0.0.4/${name}` })),
 };
 const SETUP = /^ButterEye-.*-setup\.exe$/;
 const DMG = /^ButterEye-.*-macos-arm64\.dmg$/;
@@ -168,6 +168,6 @@ fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accep
     }
     if (install.open) fill();
   })
-  .catch(() => { /* offline or rate-limited: the built-in 0.0.3 list stays */ });
+  .catch(() => { /* offline or rate-limited: the built-in 0.0.4 list stays */ });
 
 fill();
