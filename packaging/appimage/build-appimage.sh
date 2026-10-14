@@ -453,8 +453,7 @@ stagepy scan "$appdir" "${needles[@]}"
 chmod -R u+rwX,go+rX,go-w "$appdir"
 find "$appdir" -exec touch -h -d "@$epoch" {} +
 mksquashfs "$appdir" "$work/AppDir.squashfs" -root-owned -noappend -no-xattrs \
-    -comp zstd -Xcompression-level 19 -b 1M -mkfs-time "$epoch" -all-time "$epoch" \
-    -quiet >/dev/null
+    -comp zstd -Xcompression-level 19 -b 1M -quiet >/dev/null  # times: SOURCE_DATE_EPOCH
 cat "$runtime" "$work/AppDir.squashfs" >"$out/$appimage"
 chmod 755 "$out/$appimage"
 echo "AppDir: $(du -sm "$appdir" | cut -f1) MiB in $(find "$appdir" -type f | wc -l) files;" \
