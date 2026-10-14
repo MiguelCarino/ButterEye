@@ -61,6 +61,7 @@ from buttereye.core.api import (
     SessionId,
     ShutdownReport,
     internal_error,
+    osapi,
 )
 
 T = TypeVar("T")
@@ -696,4 +697,12 @@ class CoreBridge(QObject):
         self._on_pong(0.0)
 
 
-__all__ = ["CoreBridge", "CoreThread", "Ticket", "Opener"]
+async def release_app(_core: ButterEye) -> bool:
+    """First-time setup on a Mac: clear the download mark from ButterEye.app
+    (``osapi.release_app``), off the core's loop. For ``CoreBridge.call``;
+    callers only make it when ``osapi.MACOS_APP`` is set."""
+    app = osapi.MACOS_APP
+    return app is not None and await asyncio.to_thread(osapi.release_app, app)
+
+
+__all__ = ["CoreBridge", "CoreThread", "Ticket", "Opener", "release_app"]

@@ -113,8 +113,11 @@ blocks it the first time; this is the one step to get past that:
 Without step 2, macOS refuses to start ButterEye and shows a warning instead. The
 route Apple documents for that — try to open it once, then **System Settings ▸ Privacy &
 Security ▸ Open Anyway** — has not been tried with this app, and the programs inside it
-are checked separately when they first run, so step 2 is the route to use;
-`buttereye doctor` names any program still held back, with the same command.
+are checked separately when they first run, so step 2 is the route to use.
+If ButterEye does start without it, its first-time setup runs the same command on the
+app itself, so mpv, ffmpeg and vspipe are not held back; when it can't (a copy macOS
+runs from a read-only place), `buttereye doctor` names any program still held back,
+with the same command.
 
 The command line is inside the app:
 

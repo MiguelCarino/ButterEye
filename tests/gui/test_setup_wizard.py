@@ -519,6 +519,35 @@ def test_cpu_only_engine_choices(make_wizard: Any, qtbot: Any) -> None:
     assert _next_btn(w).isEnabled()
 
 
+def test_mac_app_first_check_clears_the_download_mark_once(
+    make_wizard: Any, qtbot: Any, monkeypatch: Any, tmp_path: Path
+) -> None:
+    res = tmp_path / "ButterEye.app" / "Contents" / "Resources"
+    released: list[Path] = []
+    monkeypatch.setattr(osapi, "MACOS_APP", res)
+    monkeypatch.setattr(osapi, "release_app", lambda r: released.append(r) or True)
+    h = make_wizard()
+    w = h.wizard
+    assert released == []  # nothing runs on Welcome
+    _to_checks_done(h, qtbot)
+    assert released == [res]
+    assert h.core.fake_call_count("doctor") == 1
+    w.checks.again.click()
+    qtbot.waitUntil(lambda: not w.checks.busy, timeout=5000)
+    assert released == [res]  # once per wizard
+    assert h.core.fake_call_count("doctor") == 2
+
+
+def test_no_download_mark_outside_the_mac_app(
+    make_wizard: Any, qtbot: Any, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(osapi, "MACOS_APP", None)
+    monkeypatch.setattr(osapi, "release_app", lambda r: pytest.fail("xattr was run"))
+    h = make_wizard()
+    _to_checks_done(h, qtbot)
+    assert h.core.fake_call_count("doctor") == 1
+
+
 def test_shell_opens_wizard_on_first_run(make_window: Any, qtbot: Any) -> None:
     win = make_window("fresh_box", open_setup_when_missing=True)
     qtbot.waitUntil(lambda: win._setup_dialog is not None, timeout=3000)

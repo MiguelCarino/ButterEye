@@ -5,6 +5,18 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
+## Unreleased
+
+### Changed
+
+- **macOS: first-time setup clears the download mark itself.** On its first run from
+  ButterEye.app (the simple window's silent setup, the Setup wizard's first check, or
+  `buttereye setup`), ButterEye runs
+  `xattr -dr com.apple.quarantine <path to>/ButterEye.app` when any program inside the
+  app is still marked, so mpv, ffmpeg and vspipe are no longer held behind a prompt
+  after the app was opened with System Settings ▸ Open Anyway. It runs only when
+  something is marked; a failure is logged and the doctor still names the command.
+
 ## 0.0.4 — 2026-10-13
 
 Live smoothing no longer makes frames your screen can't show, which on a 60 Hz

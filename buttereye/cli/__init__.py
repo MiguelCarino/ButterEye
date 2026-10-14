@@ -231,6 +231,10 @@ async def cmd_doctor(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
 
 
 async def cmd_setup(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
+    if osapi.MACOS_APP is not None and await asyncio.to_thread(
+        osapi.release_app, osapi.MACOS_APP
+    ):
+        out.line("Cleared the download mark from ButterEye.app.")
     report = await core.doctor(trt=True if ns.trt_experimental else None).result()
     if report.blocking:
         out.line("Setup can't continue: run `buttereye doctor` to see what's blocking.")

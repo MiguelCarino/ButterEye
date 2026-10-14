@@ -90,11 +90,12 @@ from buttereye.core.api import (
     SourceFacts,
     Target,
     TargetKind,
+    osapi,
     render,
     unavailable_text,
 )
 from buttereye.gui import a11y, theme
-from buttereye.gui.bridge import CoreBridge
+from buttereye.gui.bridge import CoreBridge, release_app
 from buttereye.gui.convert_dialog import (
     Confirm,
     ConvertDialog,
@@ -1423,6 +1424,16 @@ class SimpleWindow(QMainWindow):
         if not load.exists and self.auto_setup and self._ok(Feature.SETUP):
             self._busy = "setup"
             self.set_status("busy", self.tr("Getting ready…"))
+            if osapi.MACOS_APP is not None:
+                # first run from ButterEye.app: clear the download mark first, or
+                # the doctor finds mpv and vspipe held and the setup stops there
+                self.bridge.call(
+                    release_app,
+                    owner=self,
+                    ok=lambda _cleared: self._run_doctor(self._setup_after_doctor),
+                    err=self._startup_failed,
+                )
+                return
             self._run_doctor(self._setup_after_doctor)
             return
         self._adopt()

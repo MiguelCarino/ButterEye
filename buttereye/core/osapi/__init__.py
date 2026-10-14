@@ -69,6 +69,7 @@ import asyncio
 import contextlib
 import hashlib
 import importlib.util
+import logging
 import ntpath
 import os
 import re
@@ -83,6 +84,8 @@ import time
 from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -571,6 +574,55 @@ def app_quarantined(
     contents = resources.parent
     programs = [contents / p for p in APP_PROGRAMS] + [app_runtime(resources)["vspipe"]]
     return tuple(p for p in programs if p.exists() and has_quarantine(p))
+
+
+#: the command that clears the whole app, the same one the README and the
+#: doctor's ``packages.app_quarantine`` give
+XATTR = "/usr/bin/xattr"
+
+
+def release_app(
+    resources: Path,
+    *,
+    has_quarantine: Callable[[Path], bool] | None = None,
+    run: Callable[..., Any] = subprocess.run,
+) -> bool:
+    """First-time setup on a Mac: clear ``com.apple.quarantine`` from the whole
+    ButterEye.app when any of its programs still carries it, so mpv, vspipe and
+    ffmpeg are not held at their first ``exec`` (``app_quarantined``) behind a
+    prompt nobody sees. That is the case after System Settings ▸ Open Anyway,
+    which lets the app start but leaves the programs inside it marked.
+
+    Runs ``xattr -dr com.apple.quarantine <app>``, nothing else, and only when
+    something is held. True when it ran and succeeded. Any failure (a
+    translocated read-only copy, an app owned by someone else) is False and
+    never raised: the doctor still names the same command for the user to run.
+    ``has_quarantine`` and ``run`` are for tests; off macOS nothing is read or run."""
+    if not app_quarantined(resources, has_quarantine=has_quarantine):
+        return False
+    app = resources.parent.parent
+    try:
+        done = run(
+            [XATTR, "-dr", "com.apple.quarantine", str(app)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _log.warning("could not clear the download mark from %s: %s", app, exc)
+        return False
+    if done.returncode != 0:
+        _log.warning(
+            "xattr could not clear the download mark from %s (exit %s): %s",
+            app,
+            done.returncode,
+            (done.stderr or b"").decode(errors="replace").strip(),
+        )
+        return False
+    _log.info("cleared the download mark from %s", app)
+    return True
 
 
 # ======================================================================== the Linux AppImage (trial)
@@ -1284,6 +1336,7 @@ __all__ = [
     "O_NOFOLLOW",
     "DetachedChild",
     "app_quarantined",
+    "release_app",
     "app_resources",
     "app_runtime",
     "appimage_root",

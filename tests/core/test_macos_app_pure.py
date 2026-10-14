@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -342,3 +343,39 @@ def test_a_quarantined_app_is_named_with_the_one_command_that_clears_it(
     assert f.commands == (f"xattr -dr com.apple.quarantine {res.parent.parent}",)
     monkeypatch.setattr(osapi, "app_quarantined", lambda r: ())
     assert pk.app_quarantine_finding(res) is None
+
+
+def test_first_time_setup_clears_the_whole_app_only_when_something_is_held(
+    tmp_path: Path,
+) -> None:
+    res = _res(tmp_path)
+    (res / "bin" / "mpv").write_bytes(b"")
+    app = res.parent.parent
+    ran: list[list[str]] = []
+
+    class Done:
+        def __init__(self, code: int) -> None:
+            self.returncode = code
+            self.stderr = b"xattr: [Errno 30] Read-only file system"
+
+    def run(code: int) -> Any:
+        def fake(argv: list[str], **_kw: Any) -> Done:
+            ran.append(argv)
+            return Done(code)
+
+        return fake
+
+    held = lambda p: p == res / "bin" / "mpv"  # noqa: E731
+    assert osapi.release_app(res, has_quarantine=held, run=run(0)) is True
+    assert ran == [["/usr/bin/xattr", "-dr", "com.apple.quarantine", str(app)]]
+    # nothing held: nothing run
+    ran.clear()
+    assert osapi.release_app(res, has_quarantine=lambda p: False, run=run(0)) is False
+    assert ran == []
+    # a translocated (read-only) copy: xattr fails, which is reported, never raised
+    assert osapi.release_app(res, has_quarantine=held, run=run(1)) is False
+
+    def broken(*_a: Any, **_kw: Any) -> Done:
+        raise OSError("no xattr")
+
+    assert osapi.release_app(res, has_quarantine=held, run=broken) is False

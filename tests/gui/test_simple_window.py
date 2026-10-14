@@ -42,6 +42,7 @@ from buttereye.core.api import (
     Severity,
     Target,
     TargetKind,
+    osapi,
 )
 from buttereye.core.testing import scenarios as sc
 from buttereye.gui import app as gui_app
@@ -700,6 +701,19 @@ def test_first_run_sets_up_silently_and_measures(make_simple: Make, qtbot: Any) 
     assert "apply_bench" not in names
     assert "add_include_to_mpv_conf" not in [c.name for c in fake_core(win.bridge).fake_calls]
     assert not win.problem.isVisible()
+
+
+def test_first_run_from_the_mac_app_clears_the_download_mark_first(
+    make_simple: Make, qtbot: Any, monkeypatch: Any, tmp_path: Path
+) -> None:
+    res = tmp_path / "ButterEye.app" / "Contents" / "Resources"
+    released: list[Path] = []
+    monkeypatch.setattr(osapi, "MACOS_APP", res)
+    monkeypatch.setattr(osapi, "release_app", lambda r: released.append(r) or True)
+    win = make_simple(_first_run(), ready=False)
+    qtbot.waitUntil(lambda: bool(calls(win, "setup_apply")), timeout=5000)
+    assert released == [res]
+    assert len(calls(win, "doctor")) == 1
 
 
 def test_no_bench_when_history_exists(make_simple: Make, qtbot: Any) -> None:

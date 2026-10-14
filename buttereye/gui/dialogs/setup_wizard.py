@@ -9,6 +9,9 @@ saved by Apply together with everything else. Cancelling before Apply leaves
 no files; cancelling during Apply cancels the operation ("Cancelled. Nothing
 was saved.").
 
+On a Mac, the first check clears ButterEye.app's download mark
+(``xattr -dr com.apple.quarantine``) so the programs inside it can run.
+
 Pages: 1 Welcome · 2 Checks · 3 Engine · 4 Packages (only when packages are
 missing) · 5 Downloads (only when the plan lists downloads) · 6 Apply ·
 7 Finish.
@@ -60,7 +63,7 @@ from buttereye.core.api import (
     unavailable_text,
 )
 from buttereye.gui.a11y import announce
-from buttereye.gui.bridge import Ticket
+from buttereye.gui.bridge import Ticket, release_app
 from buttereye.gui.context import GuiContext
 from buttereye.gui.dialogs.consent import DownloadTable
 from buttereye.gui.dialogs.fit import FitDialog
@@ -885,6 +888,8 @@ class SetupWizard(QWizard):
         self.include_dialog: QDialog | None = None
         self._checks: Ticket | None = None
         self._checks_gen = 0
+        #: the app's download mark was cleared (or tried) by this wizard
+        self.released = False
         self._apply: Ticket | None = None
 
         self.welcome = WelcomePage(self)
@@ -968,7 +973,9 @@ class SetupWizard(QWizard):
         ok: Callable[[SetupPlan], None],
         err: Callable[[ButterEyeError], None],
     ) -> None:
-        """doctor(trt) then setup_plan(report, trt); ``ok`` gets the new plan."""
+        """doctor(trt) then setup_plan(report, trt); ``ok`` gets the new plan. From
+        ButterEye.app, the first run clears the app's download mark before the
+        doctor (``bridge.release_app``)."""
         self.cancel_checks()
         self._checks_gen += 1
         gen = self._checks_gen
@@ -999,13 +1006,24 @@ class SetupWizard(QWizard):
             self._checks = None
             err(e)
 
-        self._checks = self.ctx.bridge.run_op(
-            lambda core: core.doctor(trt=trt),
-            owner=owner,
-            ok=reported,
-            err=failed,
-            progress=progress,
-        )
+        def check(_cleared: bool = False) -> None:
+            if gen != self._checks_gen:
+                return
+            self._checks = self.ctx.bridge.run_op(
+                lambda core: core.doctor(trt=trt),
+                owner=owner,
+                ok=reported,
+                err=failed,
+                progress=progress,
+            )
+
+        if osapi.MACOS_APP is not None and not self.released:
+            # first check from ButterEye.app: clear the download mark once, or
+            # mpv and vspipe stay held and the checks block on them
+            self.released = True
+            self._checks = self.ctx.bridge.call(release_app, owner=owner, ok=check, err=failed)
+            return
+        check()
 
     def cancel_checks(self) -> None:
         self._checks_gen += 1
