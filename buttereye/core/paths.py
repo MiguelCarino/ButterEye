@@ -282,12 +282,15 @@ def install_dir() -> Path:
     next to it, where Linux has /usr/lib64 and /usr/share). ``BUTTEREYE_HOME``
     overrides; otherwise the folder above the ``buttereye`` package. ButterEye.app
     on macOS: its ``Contents/Resources``, which holds the same install record
-    (``osapi.MACOS_APP``)."""
+    (``osapi.MACOS_APP``). The Linux AppImage: its root, likewise
+    (``osapi.LINUX_APP``)."""
     home = os.environ.get("BUTTEREYE_HOME", "")
     if home and os.path.isabs(home):
         return Path(home)
     if osapi.MACOS_APP is not None:
         return osapi.MACOS_APP
+    if osapi.LINUX_APP is not None:
+        return osapi.LINUX_APP
     return Path(__file__).resolve().parents[2]
 
 

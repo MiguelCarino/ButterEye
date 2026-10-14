@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The ButterEye contributors
+#
+# The AppImage trial's allow-list: the shared libraries ButterEye's AppImage
+# takes from the machine it runs on, and the ONLY ones. One regular expression
+# per line, matched against the whole file name (the soname, e.g. libEGL.so.1);
+# everything after a '#' is a comment.
+#
+# Read by both sides, so the two cannot drift apart:
+#   stage.py closure   at build time: a dependency matching a line here is left
+#                      to the host; any other is copied into the AppImage
+#   stage.py check     at build time, and libcheck.py in every test container:
+#                      every library an ELF file in the AppImage needs, and every
+#                      library a running mpv/vspipe/Python has mapped, is either
+#                      inside the AppImage, matches a line here, or is a
+#                      dependency of a host library that does (Mesa's libLLVM,
+#                      PulseAudio's libpulsecommon - the host's business, not
+#                      ours)
+#
+# Why each group is the host's (the reason is the same everywhere: these are the
+# libraries whose right version is the one the host's drivers, display server or
+# sound server were built against, or that every process on the desktop already
+# shares):
+
+# ---- glibc and the compiler runtime. Never bundled: the AppImage needs glibc
+# 2.34 or newer (the PySide6 wheel's floor), and libstdc++/libgcc_s must be the
+# host's because Mesa's drivers, loaded into the same process, were built with
+# the host's (newer) compiler.
+ld-linux-x86-64\.so\.2
+libc\.so\.6
+libm\.so\.6
+libmvec\.so\.1
+libdl\.so\.2
+libpthread\.so\.0
+librt\.so\.1
+libresolv\.so\.2
+libutil\.so\.1
+libanl\.so\.1
+libstdc\+\+\.so\.6
+libgcc_s\.so\.1
+
+# ---- the GPU stack: libglvnd's dispatch libraries, the Vulkan loader and
+# libdrm/GBM (the task's "do not bundle the Vulkan loader, Mesa/NVIDIA drivers,
+# libGL"). VA-API's libva is here too, because libva must be the one the host's
+# libva drivers (Mesa's radeonsi/nouveau, intel-media-driver) match.
+libGL\.so\.1
+libGLX\.so\.0
+libEGL\.so\.1
+libOpenGL\.so\.0
+libGLdispatch\.so\.0
+libvulkan\.so\.1
+libdrm\.so\.2
+libgbm\.so\.1
+libva\.so\.2
+libva-drm\.so\.2
+libva-x11\.so\.2
+libva-wayland\.so\.2
+
+# ---- the display server's client libraries: libX11, libxcb and every
+# extension library built from libxcb's own source package (Mesa links several
+# of them, so a second copy in the AppImage would be loaded beside the host's
+# under the same soname), Wayland's, and xkbcommon.
+libX11\.so\.6
+libX11-xcb\.so\.1
+libXext\.so\.6
+libXfixes\.so\.3
+libXau\.so\.6
+libXdmcp\.so\.6
+libxcb\.so\.1
+libxcb-(composite|damage|dbe|dpms|dri2|dri3|glx|present|randr|record|render|res|screensaver|shape|shm|sync|xf86dri|xfixes|xinerama|xinput|xkb|xtest|xv|xvmc)\.so\.0
+libwayland-(client|cursor|server)\.so\.0
+libwayland-egl\.so\.1
+libxkbcommon\.so\.0
+libxkbcommon-x11\.so\.0
+
+# ---- the rest of a desktop: fonts and text shaping (fontconfig's cache format
+# and configuration are the host's; FreeType and HarfBuzz link each other on
+# most distributions, so a bundled copy of either would meet the host's other
+# half), GLib and D-Bus (the session bus), the sound servers' client libraries,
+# and zlib, which every Linux system has.
+libfontconfig\.so\.1
+libfreetype\.so\.6
+libharfbuzz\.so\.0
+libglib-2\.0\.so\.0
+libgthread-2\.0\.so\.0
+libgobject-2\.0\.so\.0
+libgio-2\.0\.so\.0
+libdbus-1\.so\.3
+libasound\.so\.2
+libpulse\.so\.0
+libz\.so\.1

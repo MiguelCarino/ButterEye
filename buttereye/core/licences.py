@@ -109,8 +109,13 @@ def _source_link(
     Fedora, the repository on macOS, which has no SRPM to download.
 
     ``prefix``: Homebrew's, for a test with a planted keg."""
-    if windows or (macos and prefix is None and install is None and osapi.MACOS_APP is not None):
-        # ButterEye.app keeps its offer where the Windows installer does
+    if (
+        windows
+        or (macos and prefix is None and install is None and osapi.MACOS_APP is not None)
+        or (not windows and not macos and install is None and osapi.LINUX_APP is not None)
+    ):
+        # ButterEye.app and the AppImage keep their offer where the Windows
+        # installer does
         if install is None:
             from buttereye.core.paths import install_dir
 
@@ -619,6 +624,8 @@ def _reinstall(c: Component) -> tuple[Msg, tuple[str, ...]]:
         return pk.REPAIR, ()
     if osapi.MACOS_APP is not None:
         return pk.APP_REPAIR, ()
+    if osapi.LINUX_APP is not None:
+        return pk.APPIMAGE_REPAIR, ()
     if osapi.IS_MACOS:
         if c.package in _BREW_FORMULA_ROWS:
             return (
