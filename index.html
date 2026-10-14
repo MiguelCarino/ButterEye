@@ -6,7 +6,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ButterEye</title>
-  <meta name="description" content="ButterEye makes the videos you play in mpv smoother: new in-between frames, live or as a saved copy. Free software for Fedora Linux and Windows.">
+  <meta name="description" content="ButterEye makes the videos you play in mpv smoother: new in-between frames, live or as a saved copy. Free software for Fedora Linux, Windows and macOS.">
   <meta name="theme-color" content="#050505">
   <link rel="icon" type="image/svg+xml" href="web/buttereye.svg">
   <link rel="stylesheet" href="web/fonts/carino-fonts.css">
@@ -46,33 +46,34 @@
 
       <!-- Above the buttons: it is what they hand you. app.js rewrites it from the
            latest release so the line and the buttons never disagree. -->
-      <p class="version" id="version">Version <strong>0.0.2</strong> · Fedora Linux · Windows · AGPL-3.0</p>
+      <p class="version" id="version">Version <strong>0.0.3</strong> · Fedora Linux · Windows · macOS · AGPL-3.0</p>
 
       <!-- The hrefs are the no-JS path: the app's RPM for each Fedora. It needs
            its plugins (not in Fedora's repositories), so a click also opens the
            one-line install that brings them. Windows is one installer (mpv comes
-           from winget); a click also opens its three steps. macOS is a button:
-           there is nothing to download yet. -->
+           from winget); a click also opens its three steps. macOS is one disk
+           image with everything in it, mpv included; a click also opens the
+           steps past Gatekeeper, since it is not notarised. -->
       <div class="downloads" id="downloads">
-        <a class="dl-btn" data-platform="fc44" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.2/buttereye-0.0.2-1.fc44.noarch.rpm">
+        <a class="dl-btn" data-platform="fc44" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.3/buttereye-0.0.3-1.fc44.noarch.rpm">
           <span class="rec">for your system</span><b>🐧 Fedora 44</b><span class="fmt">.rpm · x86-64</span></a>
-        <a class="dl-btn" data-platform="fc45" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.2/buttereye-0.0.2-1.fc45.noarch.rpm">
+        <a class="dl-btn" data-platform="fc45" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.3/buttereye-0.0.3-1.fc45.noarch.rpm">
           <span class="rec">for your system</span><b>🐧 Fedora 45</b><span class="fmt">.rpm · x86-64</span></a>
-        <button class="dl-btn soon" data-platform="macos" type="button">
-          <b> macOS</b><span class="fmt">not yet</span></button>
-        <a class="dl-btn" data-platform="windows" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.2/ButterEye-0.0.2-setup.exe">
+        <a class="dl-btn" data-platform="macos" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.3/ButterEye-0.0.3-macos-arm64.dmg">
+          <span class="rec">for your system</span><b> macOS</b><span class="fmt">.dmg · Apple silicon</span></a>
+        <a class="dl-btn" data-platform="windows" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.3/ButterEye-0.0.3-setup.exe">
           <span class="rec">for your system</span><b>🪟 Windows</b><span class="fmt">.exe · 10 / 11</span></a>
       </div>
 
       <p class="dl-manual"><button class="btn ghost" type="button" id="installBtn"
          aria-haspopup="dialog" aria-controls="installDialog">⌨ Install in one command</button></p>
       <p class="dl-all"><a href="https://github.com/MiguelCarino/ButterEye/releases">All versions and changelogs →</a></p>
-      <p class="dl-note">On Fedora the one-line install brings everything. On Windows, install mpv with winget, then run the installer.</p>
+      <p class="dl-note">On Fedora the one-line install brings everything. On Windows, install mpv with winget, then run the installer. On a Mac, drag ButterEye to Applications.</p>
     </div>
   </header>
 
   <footer class="foot">
-    <span id="foot-version">ButterEye 0.0.2</span> · AGPL-3.0-or-later ·
+    <span id="foot-version">ButterEye 0.0.3</span> · AGPL-3.0-or-later ·
     <a href="https://github.com/MiguelCarino/ButterEye">Source</a> ·
     <a href="https://github.com/MiguelCarino/ButterEye/blob/main/CHANGELOG.md">Changelog</a>
   </footer>
@@ -95,7 +96,7 @@
       <details>
         <summary>Or download the files</summary>
         <ul class="files" id="files"></ul>
-        <p class="small">Check them against <a id="sums" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.1/SHA256SUMS">SHA256SUMS</a>. The minimum is <code>buttereye</code> and <code>buttereye-vs-mvtools</code>; the others add GPU smoothing.</p>
+        <p class="small">Check them against <a id="sums" href="https://github.com/MiguelCarino/ButterEye/releases/download/v0.0.3/SHA256SUMS">SHA256SUMS</a>. The minimum is <code>buttereye</code> and <code>buttereye-vs-mvtools</code>; the others add GPU smoothing.</p>
       </details>
     </div>
   </dialog>
@@ -115,14 +116,19 @@
     </div>
   </dialog>
 
-  <dialog class="modal" id="soonDialog" aria-labelledby="soonTitle">
+  <!-- macOS: the link downloads the disk image; this sheet says how to get past
+       Gatekeeper, because the app is signed ad hoc and not notarised -->
+  <dialog class="modal" id="macDialog" aria-labelledby="macTitle">
     <div class="modal-head">
-      <h2 class="modal-title" id="soonTitle">Not yet</h2>
+      <h2 class="modal-title" id="macTitle">ButterEye for macOS</h2>
       <form method="dialog"><button class="modal-x" aria-label="Close">✕</button></form>
     </div>
     <div class="modal-body">
-      <p id="soonText"></p>
-      <p><a href="https://github.com/MiguelCarino/ButterEye/blob/main/docs/PLATFORMS.md">Why, and what a port would take →</a></p>
+      <p><strong>1. Open the disk image</strong> you just downloaded and drag <strong>ButterEye</strong> onto <strong>Applications</strong>. Everything it needs is inside, mpv included; you don't need Homebrew.</p>
+      <p id="macStep2"><strong>2. Allow it once.</strong> ButterEye isn't notarised by Apple, so macOS refuses to open it until you clear the download mark. In Terminal:</p>
+      <div class="code"><pre><code id="maccmd">xattr -dr com.apple.quarantine /Applications/ButterEye.app</code></pre><button type="button" class="copy" id="maccopy">Copy</button></div>
+      <p><strong>3. Start ButterEye</strong> from Applications and drop a video on it. If anything is still marked, ButterEye's System page says so and shows the same command.</p>
+      <p class="small">macOS 27 or newer, Apple silicon (M1 or newer). This first macOS build is experimental: it has been measured on one Mac, not yet on others. <a id="macsums" href="https://github.com/MiguelCarino/ButterEye/releases/latest">Checksums and source code</a>.</p>
     </div>
   </dialog>
 

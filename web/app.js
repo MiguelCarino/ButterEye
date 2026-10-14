@@ -3,38 +3,36 @@
 // butter.carino.systems. A Fedora button is a plain link to the app's RPM (the
 // no-JS path) and also opens the install sheet, since the app's plugins are not
 // in Fedora's repositories. The Windows button links the installer and opens its
-// three steps (mpv from winget, SmartScreen, Microsoft's terms). macOS explains
-// why not yet. Linux readers see both Fedora buttons marked (the browser doesn't
-// say which Fedora), Windows readers the Windows one. The links follow the latest
+// three steps (mpv from winget, SmartScreen, Microsoft's terms). The macOS button
+// links the disk image and opens the steps past Gatekeeper (not notarised).
+// Linux readers see both Fedora buttons marked (the browser doesn't say which
+// Fedora), Windows and Mac readers their own. The links follow the latest
 // GitHub release when the API answers.
 'use strict';
 
 const REPO = 'MiguelCarino/ButterEye';
 const FALLBACK = {
-  tag: 'v0.0.2',
+  tag: 'v0.0.3',
   assets: [
-    'buttereye-0.0.2-1.fc44.noarch.rpm', 'buttereye-0.0.2-1.fc45.noarch.rpm',
+    'buttereye-0.0.3-1.fc44.noarch.rpm', 'buttereye-0.0.3-1.fc45.noarch.rpm',
     'buttereye-vs-mvtools-29.2-1.fc44.x86_64.rpm', 'buttereye-vs-mvtools-29.2-1.fc45.x86_64.rpm',
-    'buttereye-vs-rife-ncnn-9.33-1.fc44.x86_64.rpm', 'buttereye-vs-rife-ncnn-9.33-1.fc45.x86_64.rpm',
+    'buttereye-vs-rife-ncnn-9.33-2.fc44.x86_64.rpm', 'buttereye-vs-rife-ncnn-9.33-2.fc45.x86_64.rpm',
     'buttereye-rife-ncnn-models-9.33-1.fc44.noarch.rpm', 'buttereye-rife-ncnn-models-9.33-1.fc45.noarch.rpm',
-    'buttereye-vs-mvgpu-0.0.1-1.fc44.x86_64.rpm', 'buttereye-vs-mvgpu-0.0.1-1.fc45.x86_64.rpm',
-    'ButterEye-0.0.2-setup.exe', 'SHA256SUMS',
-  ].map((name) => ({ name, url: `https://github.com/${REPO}/releases/download/v0.0.2/${name}` })),
+    'buttereye-vs-mvgpu-0.0.1-2.fc44.x86_64.rpm', 'buttereye-vs-mvgpu-0.0.1-2.fc45.x86_64.rpm',
+    'ButterEye-0.0.3-setup.exe', 'ButterEye-0.0.3-macos-arm64.dmg', 'SHA256SUMS',
+  ].map((name) => ({ name, url: `https://github.com/${REPO}/releases/download/v0.0.3/${name}` })),
 };
 const SETUP = /^ButterEye-.*-setup\.exe$/;
+const DMG = /^ButterEye-.*-macos-arm64\.dmg$/;
 // install order in the command: the app first, then its plugins
 const ORDER = ['buttereye-', 'buttereye-vs-mvtools', 'buttereye-vs-rife-ncnn', 'buttereye-rife-ncnn-models', 'buttereye-vs-mvgpu'];
-const SOON = {
-  macos: ['macOS: not yet', 'ButterEye drives mpv over Unix sockets and loads Linux builds of its VapourSynth plugins; '
-    + 'macOS also lacks native Vulkan for the GPU engines. Not in this release.'],
-};
 
 let release = FALLBACK;
 let platform = 'fc44';
 
 const chips = Array.from(document.querySelectorAll('.dl-btn'));
 const install = document.getElementById('installDialog');
-const soon = document.getElementById('soonDialog');
+const mac = document.getElementById('macDialog');
 const windows = document.getElementById('windowsDialog');
 const seg = Array.from(install.querySelectorAll('.seg button'));
 
@@ -45,12 +43,14 @@ function detectOS() {
   if (/android/i.test(navigator.userAgent || '') || s.includes('android')) return null;  // a phone: no build
   if (/^win|windows/.test(s)) return 'windows';  // Win32, "Windows"; never "darwin"
   if (s.includes('linux') || s.includes('x11')) return 'linux';
-  return null;  // macOS has no build to point at
+  // an iPad asks for desktop pages as "MacIntel" too; it is the one with a touch screen
+  if (s.startsWith('mac') && !(navigator.maxTouchPoints > 1)) return 'macos';
+  return null;
 }
 const os = detectOS();
 for (const c of chips) {
   const p = c.dataset.platform;
-  if ((os === 'linux' && p.startsWith('fc')) || (os === 'windows' && p === 'windows')) {
+  if ((os === 'linux' && p.startsWith('fc')) || (os === p)) {
     c.classList.add('recommended');
   }
 }
@@ -104,10 +104,9 @@ chips.forEach((c) => c.addEventListener('click', () => {
   if (p === 'windows') {
     // the link downloads the installer; the sheet says what else to do
     windows.showModal();
-  } else if (SOON[p]) {
-    document.getElementById('soonTitle').textContent = SOON[p][0];
-    document.getElementById('soonText').textContent = SOON[p][1];
-    soon.showModal();
+  } else if (p === 'macos') {
+    // the link downloads the disk image; the sheet says how to open it the first time
+    mac.showModal();
   } else {
     // the link downloads the app's RPM; the sheet shows the command that brings its plugins
     openInstall(p);
@@ -115,7 +114,7 @@ chips.forEach((c) => c.addEventListener('click', () => {
 }));
 
 // close a sheet by clicking its backdrop
-for (const d of [install, soon, windows]) {
+for (const d of [install, mac, windows]) {
   d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
 }
 
@@ -138,6 +137,7 @@ async function copyFrom(button, source) {
 }
 document.getElementById('copy').addEventListener('click', (e) => copyFrom(e.currentTarget, 'cmd'));
 document.getElementById('wincopy').addEventListener('click', (e) => copyFrom(e.currentTarget, 'wincmd'));
+document.getElementById('maccopy').addEventListener('click', (e) => copyFrom(e.currentTarget, 'maccmd'));
 
 // ---------------------------------------------------------------- latest release
 fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } })
@@ -155,12 +155,19 @@ fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accep
         if (setup) c.href = setup.url;
         continue;
       }
+      if (c.dataset.platform === 'macos') {
+        const dmg = release.assets.find((a) => DMG.test(a.name));
+        if (dmg) c.href = dmg.url;
+        continue;
+      }
       const app = rpms(c.dataset.platform)[0];
       if (app && rank(app.name) === 0) c.href = app.url;
     }
-    document.getElementById('winsums').href = `https://github.com/${REPO}/releases/tag/${release.tag}`;
+    for (const id of ['winsums', 'macsums']) {
+      document.getElementById(id).href = `https://github.com/${REPO}/releases/tag/${release.tag}`;
+    }
     if (install.open) fill();
   })
-  .catch(() => { /* offline or rate-limited: the built-in 0.0.2 list stays */ });
+  .catch(() => { /* offline or rate-limited: the built-in 0.0.3 list stays */ });
 
 fill();
