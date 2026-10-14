@@ -5,9 +5,9 @@
 # with the AppImage's own Python: pure-Python wheels only (py3-none-any), every
 # one pinned by its SHA-256 and installed with
 #   pip install --require-hashes --only-binary=:all: --no-deps --target <dir> -r <this>
-# The same versions and hashes as tests/windows/requirements.txt, plus pytest-qt
-# and typing-extensions, which pytest-qt imports (PyPI's JSON API digests,
-# 2026-10-14).
+# The same versions and hashes as tests/windows/requirements.txt. No pytest-qt:
+# it needs QtTest, which the AppImage's trimmed PySide6 does not carry, so the
+# workflow leaves tests/gui out.
 iniconfig==2.3.1 \
     --hash=sha256:9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7
 packaging==26.3 \
@@ -20,7 +20,3 @@ pytest==9.1.1 \
     --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
 pytest-asyncio==1.4.0 \
     --hash=sha256:933ca923a23075a87fb7070c0ec272a6848489824d887c85c812670932835aa1
-pytest-qt==4.5.0 \
-    --hash=sha256:ed21ea9b861247f7d18090a26bfbda8fb51d7a8a7b6f776157426ff2ccf26eff
-typing-extensions==4.16.0 \
-    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8

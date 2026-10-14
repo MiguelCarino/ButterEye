@@ -208,7 +208,7 @@ jobs:
           # tests/gui is left out: it needs QtTest (pytest-qt), which the
           # AppImage's trimmed PySide6 does not carry
           PYTHONPATH="$RUNNER_TEMP/testdeps:$PWD" "$tree/squashfs-root/python/bin/python3.14" -B -m pytest \
-            -p no:cacheprovider -p no:pytestqt -q -rs --ignore=tests/gui
+            -p no:cacheprovider -q -rs --ignore=tests/gui
 
       - name: Upload the results
         if: always()
