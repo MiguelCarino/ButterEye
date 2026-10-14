@@ -208,9 +208,10 @@ logged ffmpeg-install make -C "$f" install
 
 # ---------------------------------------------------------------- 1. libplacebo
 # A git checkout at a pinned commit: the 3rdparty/ submodules it builds with
-# (glad for OpenGL, jinja and markupsafe for its shader templates, fast_float)
-# are in no release archive. Static, so mpv carries it; OpenGL only - the trial's
-# mpv has no Vulkan output (no shaderc/glslang, and no host Vulkan needed).
+# (glad for OpenGL, jinja and markupsafe for its shader templates, fast_float,
+# and Vulkan-Headers, which its stub of the Vulkan API includes even when Vulkan
+# is off) are in no release archive. Static, so mpv carries it; OpenGL only -
+# the trial's mpv has no Vulkan output (no shaderc/glslang, no host Vulkan needed).
 p=$work/src/libplacebo
 git init -q "$p"
 git -C "$p" fetch -q --depth 1 "$LIBPLACEBO_GIT" "$LIBPLACEBO_COMMIT"
@@ -219,7 +220,7 @@ git -C "$p" -c advice.detachedHead=false checkout -q FETCH_HEAD
 git -C "$p" config remote.origin.url "$LIBPLACEBO_GIT" 2>/dev/null \
     || git -C "$p" remote add origin "$LIBPLACEBO_GIT"
 logged libplacebo-submodules git -C "$p" submodule update --init --depth 1 \
-    3rdparty/glad 3rdparty/jinja 3rdparty/markupsafe 3rdparty/fast_float
+    3rdparty/glad 3rdparty/jinja 3rdparty/markupsafe 3rdparty/fast_float 3rdparty/Vulkan-Headers
 echo "==> libplacebo $LIBPLACEBO_VER (static, OpenGL)"
 logged libplacebo-setup meson setup "$p/build" "$p" --prefix="$deps" --libdir=lib \
     -Dbuildtype=release -Ddefault_library=static -Db_staticpic=true \
