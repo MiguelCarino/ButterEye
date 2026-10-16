@@ -31,6 +31,8 @@ def test_old_and_broken_records_are_ignored(tmp_path: Path) -> None:
         KEY.text(): {"factor": 0.5, "when": 0.0},  # expired
         "x": {"factor": 2.0, "when": 100.0},  # not a slowdown
         "y": "nonsense",
+        # learned before version 3: drops during a TensorRT build or near-total
+        "z": {"factor": 0.2, "when": 100.0, "v": 2},
     }))  # fmt: skip
     assert ll.load(path, now=ll.MAX_AGE_S + 1) == {}
     path.write_text("{not json")

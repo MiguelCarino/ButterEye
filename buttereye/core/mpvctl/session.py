@@ -155,6 +155,23 @@ UPSCALE_EXPONENT = 1.15
 #: of frames for HEAVY_HOLD_S is recorded as slower here (livelimits) and replaced
 HEAVY_DROP = 0.15
 HEAVY_HOLD_S = 10.0
+#: ... but at least this share means almost nothing reached the screen, which
+#: is not an engine's speed (a GPU engine that kept up a moment before went to
+#: 95-101 % on the dev box: a hidden window, another program on the GPU): every
+#: replacement would drop as much, so nothing is replaced and nothing learned.
+#: Drops while ButterEye builds a TensorRT engine on the same GPU (or built one
+#: within HEAVY_HOLD_S) are the build's: the engine is replaced for this video
+#: only (``Session.video_limits``)
+IMPLAUSIBLE_DROP = 0.9
+#: an engine Automatic chose that drops at least this share for STEADY_HOLD_S
+#: is replaced for this video only: a smaller share is often other programs'
+#: load (a 4K film on MVTools dropped 1-10 % for half a minute while other
+#: programs kept ten of 24 cores busy), which comes and goes
+STEADY_DROP = 0.04
+STEADY_HOLD_S = 30.0
+#: the live cap of an engine and size replaced for this video: reaches no target
+#: (0 would read as "no cap")
+EXCLUDED_FPS = 1e-3
 LIVE_LIMITS = "mpvctl.live_limits"  # livelimits records, loaded once per core
 #: The lite model must beat the full one by more than this in this machine's
 #: benchmark to be offered as a step down (§5.3 step 5).
@@ -244,6 +261,7 @@ class LiveOptions:
 
 
 TRT_BUILDS = "mpvctl.trt_builds"  # EngineKey -> "building" | "ready" | exception
+TRT_BUILT_AT = "mpvctl.trt_built_at"  # {"t": monotonic time the last build ended}
 TRT_IDENTITY = "mpvctl.trt_identity"  # Vulkan UUID -> (nvidia UUID, driver) | None
 #: Automatic engine order: TensorRT when set up and not turned off, RIFE-ncnn,
 #: mvgpu (GPU motion vectors: far faster than RIFE, a little less exact on fast
@@ -441,6 +459,10 @@ class _Session:
         self.run_flow = 1.0
         self.auto_chosen = False  # the running engine was Automatic's choice
         self.heavy_since: float | None = None  # heavy dropping since (monotonic)
+        self.steady_since: float | None = None  # STEADY_DROP or more since (monotonic)
+        #: engines and sizes replaced on this file without learning anything
+        #: (``livelimits.LimitKey.text``); cleared at the next file
+        self.video_limits: set[str] = set()
         self.run_block = False
         #: the last hold fill verdict logged, so a re-apply does not repeat it
         self.fill_logged: tuple[bool, str] | None = None
@@ -800,7 +822,13 @@ class _Session:
         Scaling up to a bigger picture divides by ``ratio ** UPSCALE_EXPONENT``;
         ``flow_scale`` 0.5 (TensorRT half-resolution flow) gains
         ``decide.HALF_FLOW_GAIN``; what live playback learned about this engine at
-        this size on this GPU (``livelimits``) multiplies the result."""
+        this size on this GPU (``livelimits``) multiplies the result. An engine
+        and size replaced on this video (``video_limits``) get ``EXCLUDED_FPS``,
+        with or without a benchmark."""
+        current = self.gpu_device(cfg)
+        size = (facts.width, facts.height)
+        if self.limit_key(backend, model, size, flow_scale, current).text() in self.video_limits:
+            return EXCLUDED_FPS
         history = capabilities.resolve(_BENCH_HISTORY)
         if history is None:
             return None
@@ -811,7 +839,6 @@ class _Session:
         video_px = facts.width * facts.height
         if video_px <= 0:
             return None
-        current = self.gpu_device(cfg)
         devices = self.vulkan_devices()
         # (-distance in log pixel count, measured at (s, -inf = undated), scaled fps)
         found: list[tuple[float, float, float]] = []
@@ -871,11 +898,27 @@ class _Session:
             flow_scale,
         )
 
-    async def live_fallback(self, drop_rate: float) -> None:
+    def trt_building(self) -> bool:
+        """A TensorRT engine is being built in this core (on the GPU), or one
+        ended within ``HEAVY_HOLD_S`` (the drops judged now began during it)."""
+        builds: dict[trt.EngineKey, object] = self.ctx.state(TRT_BUILDS, dict)
+        if any(state == "building" for state in builds.values()):
+            return True
+        built_at: dict[str, float] = self.ctx.state(TRT_BUILT_AT, dict)
+        ended = built_at.get("t")
+        return ended is not None and time.monotonic() - ended < HEAVY_HOLD_S
+
+    async def live_fallback(self, drop_rate: float, *, learn: bool = True) -> None:
         """Automatic's engine keeps dropping heavily: record that it is slower here
         than estimated (``livelimits``) and decide again, which moves to the next
-        engine or size that fits, or plays unsmoothed (§11.9)."""
+        engine or size that fits, or plays unsmoothed (§11.9).
+
+        Not learned, only replaced for this video (``video_limits``), when
+        ``learn`` is False (steady moderate drops) or when a GPU engine dropped
+        while a TensorRT engine was being built. Near-total drops
+        (``IMPLAUSIBLE_DROP``) never get here (``step``)."""
         self.heavy_since = None
+        self.steady_since = None
         src = self.source
         if self.backend is None or src is None:
             return
@@ -902,16 +945,29 @@ class _Session:
         cfg, _ = self.config()
         size = self.run_size or (src.width, src.height)
         key = self.limit_key(self.backend, self.model, size, self.run_flow, self.gpu_device(cfg))
-        limits = self.live_limits()
-        new = livelimits.lowered(livelimits.factor(limits, key), drop_rate)
-        livelimits.record(self.ctx.paths.state_dir / livelimits.FILE, limits, key, new)
         name = decide.BACKEND_NAMES.get(self.backend, self.backend.value)
-        self.log.info(
-            "%s: %s%s dropped %.0f%% of frames at %s × %s; it is slower here than the "
-            "speed test showed (estimate × %.2f from now on), choosing again",
-            self.title, name, f" {self.model}" if self.model else "", drop_rate * 100,
-            size[0], size[1], new,
-        )  # fmt: skip
+        engine = f"{name} {self.model}" if self.model else name
+        why: str | None = None
+        if not learn:
+            why = f"for {STEADY_HOLD_S:.0f} s"
+        elif self.backend in decide.GPU_BACKENDS and self.trt_building():
+            why = "while a TensorRT engine was being built on the GPU"
+        if why is not None:
+            self.video_limits.add(key.text())
+            self.log.info(
+                "%s: %s dropped %.0f%% of frames at %s × %s %s; choosing again for "
+                "this video (nothing learned)",
+                self.title, engine, drop_rate * 100, size[0], size[1], why,
+            )  # fmt: skip
+        else:
+            limits = self.live_limits()
+            new = livelimits.lowered(livelimits.factor(limits, key), drop_rate)
+            livelimits.record(self.ctx.paths.state_dir / livelimits.FILE, limits, key, new)
+            self.log.info(
+                "%s: %s dropped %.0f%% of frames at %s × %s; it is slower here than the "
+                "speed test showed (estimate × %.2f from now on), choosing again",
+                self.title, engine, drop_rate * 100, size[0], size[1], new,
+            )  # fmt: skip
         msg = Msg(
             "{engine} couldn't keep up at {w} × {h}, so ButterEye switched to what can.",
             {"engine": name, "w": size[0], "h": size[1]},
@@ -1209,6 +1265,8 @@ class _Session:
             except Exception as exc:  # recorded; the session keeps its fallback
                 self.log.warning("TensorRT engine %s failed: %s", key.folder_name(), exc)
                 builds[key] = exc
+            built_at: dict[str, float] = ctx.state(TRT_BUILT_AT, dict)
+            built_at["t"] = time.monotonic()
             for other in {*registry(ctx).sessions.values(), starter}:
                 other.trt_built = True
                 other.wake.set()
@@ -1585,6 +1643,7 @@ class _Session:
         # the user picked, nor "smooth at full size" (frames may drop by choice)
         self.auto_chosen = wanted is None and not forced_used
         self.heavy_since = None
+        self.steady_since = None
         self.run_block = bool(mv_block and backend is BackendId.MVTOOLS)
         self.run_fill = hold_fill
         params = FilterParams(
@@ -2044,6 +2103,8 @@ class _Session:
         self.step_down_to = None
         self.drop_rate = None
         self.heavy_since = None
+        self.steady_since = None
+        self.video_limits = set()
         self.start_notice = None
         self.file_started_mono = time.monotonic()
         if self.health is Health.DROPPING:
@@ -2221,22 +2282,27 @@ class _Session:
             self.drop_rate = verdict.drop_rate
             if verdict.flowing and self.filter is FilterState.PENDING:
                 self.filter = FilterState.ACTIVE
-            heavy = (
-                verdict.health is Health.DROPPING
-                and verdict.drop_rate is not None
-                and verdict.drop_rate >= HEAVY_DROP
-            )
+            rate = verdict.drop_rate if verdict.health is Health.DROPPING else None
+            if rate is not None and rate >= IMPLAUSIBLE_DROP:
+                rate = None  # nothing reaches the screen: not the engine (see above)
+            heavy = rate is not None and rate >= HEAVY_DROP
+            steady = rate is not None and rate >= STEADY_DROP and self.auto_chosen
             if not heavy:
                 self.heavy_since = None
             elif self.heavy_since is None:
                 self.heavy_since = now
-            elif (
-                now - self.heavy_since >= HEAVY_HOLD_S
-                and (self.auto_chosen or self.run_fill)
-                and not self.busy
+            if not steady:
+                self.steady_since = None
+            elif self.steady_since is None:
+                self.steady_since = now
+            replace = (self.auto_chosen or self.run_fill) and not self.busy and rate is not None
+            if replace and (
+                (self.heavy_since is not None and now - self.heavy_since >= HEAVY_HOLD_S)
+                or (self.steady_since is not None and now - self.steady_since >= STEADY_HOLD_S)
             ):
-                assert verdict.drop_rate is not None
-                await self.live_fallback(verdict.drop_rate)
+                assert rate is not None
+                learn = self.heavy_since is not None and now - self.heavy_since >= HEAVY_HOLD_S
+                await self.live_fallback(rate, learn=learn)
                 self.publish()
                 await self.send_status()
                 return

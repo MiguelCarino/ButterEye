@@ -1191,6 +1191,84 @@ async def test_drops_above_the_display_rate_are_not_learned_as_slowness(
     assert s.target == 30, "re-decided within the new display rate"
 
 
+async def test_near_total_drops_change_nothing(
+    tmp_path: Path, bench_history: list[BenchResult], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mvgpu, which had kept up seconds before, 'dropped' 95-101 % on the dev box
+    (a hidden window, another program on the GPU): that is not its speed, and
+    every replacement would drop as much. Nothing is replaced or written."""
+    bench_history.append(_devbox())
+    ctx, s = await _running(tmp_path, _simple())
+    assert _engine(s) is BackendId.RIFE_NCNN and s.auto_chosen
+    monkeypatch.setattr(s.detector, "update", lambda _sample: _heavy(0.98))
+    s.heavy_since = time.monotonic() - live.HEAVY_HOLD_S - 1
+    s.steady_since = time.monotonic() - live.STEADY_HOLD_S - 1
+    await s.step()
+    await _settle(ctx)
+    assert _engine(s) is BackendId.RIFE_NCNN
+    assert s.heavy_since is None and s.steady_since is None and not s.video_limits
+    assert not (ctx.paths.state_dir / live.livelimits.FILE).exists()
+
+
+async def test_drops_while_tensorrt_builds_are_not_learned(
+    tmp_path: Path, bench_history: list[BenchResult], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ButterEye's own TensorRT build shares the GPU with the engine that plays:
+    mvgpu at 1440p dropped 95 % while one ran, and that was stored for 30 days."""
+    bench_history.append(_devbox())
+    ctx, s = await _running(tmp_path, _simple())
+    ctx.state(live.TRT_BUILDS, dict)["engine"] = "building"
+    assert s.trt_building()
+    monkeypatch.setattr(s.detector, "update", lambda _sample: _heavy(0.6))
+    s.heavy_since = time.monotonic() - live.HEAVY_HOLD_S - 1
+    await s.step()
+    await _settle(ctx)
+    assert _engine(s) is BackendId.MVTOOLS
+    assert not (ctx.paths.state_dir / live.livelimits.FILE).exists()
+    assert any("rife-ncnn" in k and "1920x1080" in k for k in s.video_limits)
+    ctx.state(live.TRT_BUILDS, dict)["engine"] = "ready"
+    assert not s.trt_building()
+    # drops judged just after a build ended began during it
+    ctx.state(live.TRT_BUILT_AT, dict)["t"] = time.monotonic() - 2
+    assert s.trt_building()
+    await s.begin_new_file()
+    assert not s.video_limits
+
+
+async def test_steady_moderate_drops_replace_the_engine_for_this_video(
+    tmp_path: Path, bench_history: list[BenchResult], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 4K film on MVTools at 1080p dropped 1-10 % for half a minute while other
+    programs loaded the CPU, under the heavy threshold, so nothing changed. Now
+    STEADY_HOLD_S of it replaces the engine for this video, learning nothing."""
+    bench_history.append(_devbox())
+    ctx, s = await _running(tmp_path, _simple())
+    monkeypatch.setattr(s.detector, "update", lambda _sample: _heavy(0.06))
+    await s.step()
+    assert _engine(s) is BackendId.RIFE_NCNN and s.steady_since is not None
+    s.steady_since = time.monotonic() - live.STEADY_HOLD_S - 1
+    await s.step()
+    await _settle(ctx)
+    assert _engine(s) is BackendId.MVTOOLS
+    assert not (ctx.paths.state_dir / live.livelimits.FILE).exists()
+    assert s.steady_since is None
+
+
+async def test_an_engine_replaced_on_this_video_is_never_chosen_again_for_it(
+    tmp_path: Path, bench_history: list[BenchResult]
+) -> None:
+    """With or without a benchmark: MVTools has none here, and still reaches no
+    target at a size it was replaced at."""
+    s = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
+    facts = _facts(1920, 1080)
+    cfg = s.ctx.config()
+    assert await s.sustainable_fps(BackendId.MVTOOLS, None, facts, cfg) is None
+    key = s.limit_key(BackendId.MVTOOLS, None, (1920, 1080), 1.0, s.gpu_device(cfg))
+    s.video_limits.add(key.text())
+    assert await s.sustainable_fps(BackendId.MVTOOLS, None, facts, cfg) == live.EXCLUDED_FPS
+    assert await s.sustainable_fps(BackendId.MVTOOLS, None, _facts(1280, 720), cfg) is None
+
+
 async def test_double_on_a_display_that_cant_show_it(
     tmp_path: Path, bench_history: list[BenchResult]
 ) -> None:

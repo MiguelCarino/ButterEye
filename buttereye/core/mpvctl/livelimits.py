@@ -36,7 +36,12 @@ FLOOR = 0.2
 #: any engine, and the store held exactly ``(1 - 0.4) x MARGIN`` = 0.54 for
 #: MVTools at 1080p and at 720p, which ruled out sizes that measured real time.
 #: Such a record can't be told from a real one, and a new chance is cheap.
-VERSION = 2
+#: Version 3 (after 0.0.5): drops while ButterEye built a TensorRT engine on the
+#: same GPU, and near-total drops (a hidden window, another program on the GPU),
+#: were learned as slowness - the dev box held the floor (0.2) for mvgpu at
+#: 1080p, 1440p and 4K and for TensorRT at 1080p, which left a 4K film on CPU
+#: MVTools. Neither is learned now (``session.IMPLAUSIBLE_DROP``).
+VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)

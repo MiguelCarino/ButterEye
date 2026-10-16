@@ -208,6 +208,10 @@ def _ahead(clip):
     # filters reading it are given either the clip or the repeat. The repeat
     # reads as one drawing held to the end, longer than any hold fill re-times:
     # the fill, which reads the clip itself, never asks for a frame past it.
+    # Only the analysis' quarter-size clip goes through here (and full-size
+    # frames only for a still pair): each request waits for its frame, and a
+    # FrameEval on every full-size frame cost a quarter of MVTools' rate (4K
+    # 10-bit film smoothed at 1080p: 55 fps out of 74; here 70).
     if 'video_in' not in globals():
         return clip
     #: 'end': (the first frame past the end, the last one repeated), once found
@@ -252,7 +256,7 @@ def _analyse(clip, threshold):
     # than it has to.
     w = max(16, clip.width // 4 // 2 * 2)
     h = max(16, clip.height // 4 // 2 * 2)
-    small = core.resize.Bilinear(clip, w, h, format=vs.GRAY8)
+    small = _ahead(core.resize.Bilinear(clip, w, h, format=vs.GRAY8))
     stats = core.std.PlaneStats(core.std.Expr([small, _shift(small, 1)], 'x y - abs'))
 
     def dup(n, f):
@@ -388,12 +392,12 @@ def _prepare(clip, cfg, threshold, pairs=None, still=False):
     still = still and bool(cfg.get('still_skip'))
     if not (sc or fill or still):
         return clip, False
-    # what is read ahead of the engine's own frames comes from _ahead: near the
-    # end in mpv, a frame past it would end playback
-    ahead = _ahead(clip)
-    dups, cuts = _analyse(ahead, float(threshold) if sc else DEFAULT_SC_THRESHOLD)
+    # the analysis reads ahead of the engine's own frames through _ahead: near
+    # the end in mpv, a frame past it would end playback (hold fill reads the
+    # clip itself, but only inside a run the analysis found, never past the end)
+    dups, cuts = _analyse(clip, float(threshold) if sc else DEFAULT_SC_THRESHOLD)
     # still pairs confirmed on the source frames, not the filled ones
-    stills = _stills(ahead, dups) if still else dups
+    stills = _stills(_ahead(clip), dups) if still else dups
     hold = int(cfg.get('hold_max') or 3)
     hold = max(HOLD_RANGE[0], min(hold, HOLD_RANGE[1]))
     if fill:

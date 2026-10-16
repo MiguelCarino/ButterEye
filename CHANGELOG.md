@@ -61,6 +61,20 @@ between frames, and seeking with RIFE is about a second faster.
 - **8-bit offline renders were tagged with the wrong chroma location** (centre),
   so players shifted colour by half a pixel. The source's location is now kept.
 - **MVTools showed black frames at the start** of live playback.
+- **A film that kept dropping a few frames was left that way.** Automatic
+  replaced its engine only after 15 % of frames dropped for 10 s; a 4K film on
+  MVTools dropped up to 10 % for half a minute while other programs loaded the CPU,
+  and nothing changed. Now 4 % for 30 s moves that video to what keeps up (a
+  smaller size, block mode or another engine), without marking the engine as slow
+  for other videos.
+- **Engines were marked as slow for 30 days by drops that were not theirs.** Drops
+  while ButterEye built a TensorRT engine on the same GPU, and near-total drops
+  (95–101 %, from an engine that kept up seconds before: a hidden window or another
+  program on the GPU), were stored as the engine's speed. On the dev box that
+  ruled out GPU motion vectors at every size and TensorRT at 1080p, which left a
+  4K film on the CPU. Drops during a TensorRT build now move only that video to
+  another engine, near-total drops change nothing (any engine would drop them),
+  and what was stored before is forgotten once.
 - **The status badge used the theme's coloured icon** on desktops with no icon
   theme chosen (qt6ct, bare Hyprland) instead of the glyph in the text colour.
 
