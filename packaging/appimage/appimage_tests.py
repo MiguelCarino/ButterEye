@@ -163,7 +163,9 @@ def t_doctor() -> str:
     save("doctor.json", done.stdout)
     data = json.loads(done.stdout)["data"]
     rows = data["findings"]
-    table = "\n".join(f"{f['severity']:9s} {f['id']:32s} {json.dumps(f['title'])[:110]}" for f in rows)
+    table = "\n".join(
+        f"{f['severity']:9s} {f['id']:32s} {json.dumps(f['title'])[:110]}" for f in rows
+    )
     save("doctor-table.txt", table + f"\nexit code {done.returncode}\n")
     print(table)
     by_id = {f["id"]: f for f in rows}
@@ -196,12 +198,17 @@ def t_render() -> str:
     s = probe(out)
     check(s["r_frame_rate"] == "48/1", f"rate {s}")
     check(int(s["nb_read_frames"]) == 288, f"frames {s}")
-    return f"{s['codec_name']} {s['r_frame_rate']} {s['nb_read_frames']} frames, {out.stat().st_size} bytes"
+    return (
+        f"{s['codec_name']} {s['r_frame_rate']} {s['nb_read_frames']} frames, "
+        f"{out.stat().st_size} bytes"
+    )
 
 
 @test
 def t_mpv_filter() -> str:
-    clip = CLIPS / "clip.mkv" if (CLIPS / "clip.mkv").is_file() else make_clip(CLIPS / "clip.mkv", 6)
+    clip = CLIPS / "clip.mkv"
+    if not clip.is_file():
+        clip = make_clip(clip, 6)
     marker = HOME / "vpy-ran.txt"
     vpy = HOME / "mvtools.vpy"
     vpy.write_text(
@@ -243,7 +250,10 @@ def t_mpv_filter() -> str:
     s = probe(enc)
     check(s["r_frame_rate"] == "48/1", f"rate {s}")
     check(int(s["nb_read_frames"]) >= 280, f"frames {s}")
-    return f"VapourSynth {marker.read_text()} inside mpv; {s['nb_read_frames']} frames at {s['r_frame_rate']}"
+    return (
+        f"VapourSynth {marker.read_text()} inside mpv; "
+        f"{s['nb_read_frames']} frames at {s['r_frame_rate']}"
+    )
 
 
 def _ask(sock: str, *props: str) -> dict[str, object]:
@@ -364,7 +374,8 @@ def t_gui() -> str:
             for pid, exe, cmd in procs():
                 if exe.endswith("/python/bin/python3.14") and "buttereye.gui" in cmd:
                     m = maps_of(pid)
-                    if any("libqoffscreen.so" in x for x in m) and any("libQt6Widgets" in x for x in m):
+                    qt_up = any("libQt6Widgets" in x for x in m)
+                    if qt_up and any("libqoffscreen.so" in x for x in m):
                         py = pid
                         MAPS[f"gui ({exe})"] = m
             if py is not None:
@@ -383,7 +394,10 @@ def t_gui() -> str:
             out, err = proc.communicate()
     save("gui.log", f"exit {proc.returncode}\n--- stdout\n{out}\n--- stderr\n{err}")
     check("Traceback" not in err, f"a traceback: {err[-1500:]}")
-    return f"up with Qt Widgets and the offscreen platform loaded; ended by SIGTERM (exit {proc.returncode})"
+    return (
+        "up with Qt Widgets and the offscreen platform loaded; "
+        f"ended by SIGTERM (exit {proc.returncode})"
+    )
 
 
 # ---------------------------------------------------------------- libraries
@@ -464,7 +478,9 @@ def t_libs() -> str:
     runtime_host = {p for xs in MAPS.values() for p in xs
                     if not inside(p) and is_host_name(os.path.basename(p))}  # fmt: skip
     closure = host_closure(allowed | runtime_host)
-    bad_static = sorted(p for p in static if p not in allowed and os.path.realpath(p) not in closure)
+    bad_static = sorted(
+        p for p in static if p not in allowed and os.path.realpath(p) not in closure
+    )
     bad_runtime: dict[str, list[str]] = {}
     for who, libs in MAPS.items():
         for p in libs:

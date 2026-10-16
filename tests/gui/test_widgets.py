@@ -25,6 +25,7 @@ from PySide6.QtGui import (  # noqa: E402
     QColor,
     QDropEvent,
     QGuiApplication,
+    QIcon,
     QImage,
     QPainter,
     QPalette,
@@ -72,7 +73,7 @@ from buttereye.gui.widgets import (  # noqa: E402
 )
 from buttereye.gui.widgets.bench_plot import contrast_ratio  # noqa: E402
 from buttereye.gui.widgets.fraction_edit import FractionValidator, parse_rate  # noqa: E402
-from buttereye.gui.widgets.status_badge import badge_pixmap  # noqa: E402
+from buttereye.gui.widgets.status_badge import badge_pixmap, has_icon_theme  # noqa: E402
 
 # ----------------------------------------------------------------- helpers
 
@@ -228,6 +229,75 @@ def test_badge_follows_palette(qtbot: QtBot) -> None:
     ]
     assert opaque, "glyph has no solid pixels"
     assert all(c.rgb() == want.rgb() for c in opaque)
+
+
+def test_unconfigured_icon_theme_uses_the_tinted_glyph(qtbot: QtBot) -> None:
+    # Qt says "" or "hicolor" when no theme is set, and a platform theme (qt6ct)
+    # may then serve Breeze; those colour icons must not replace the tinted glyph.
+    old = QIcon.themeName()
+    try:
+        for name, real in (("", False), ("hicolor", False), ("Adwaita", True)):
+            QIcon.setThemeName(name)
+            assert has_icon_theme() is real, name
+        QIcon.setThemeName("hicolor")
+        pal = dark_palette()
+        img = badge_pixmap("degraded", pal, 24).toImage()
+        want = pal.color(QPalette.ColorRole.WindowText).rgb()
+        solid = [
+            img.pixelColor(x, y).rgb()
+            for x in range(img.width())
+            for y in range(img.height())
+            if img.pixelColor(x, y).alpha() == 255
+        ]
+        assert solid and all(c == want for c in solid)
+    finally:
+        QIcon.setThemeName(old)
+
+
+def _solid_pixels(img: QImage) -> list[int]:
+    return [
+        img.pixelColor(x, y).rgb()
+        for x in range(img.width())
+        for y in range(img.height())
+        if img.pixelColor(x, y).alpha() == 255
+    ]
+
+
+def test_hicolor_icon_found_on_disk_still_uses_the_tinted_glyph(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    # End to end: a "hicolor" theme that really holds a red dialog-warning (as
+    # qt6ct's fallback does on a desktop) must still give the tinted glyph,
+    # while the same icons under a chosen theme name are used as-is.
+    red = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">'
+    red += '<rect width="24" height="24" fill="#ff0000"/></svg>'
+    for theme in ("hicolor", "Chosen"):
+        d = tmp_path / theme / "scalable" / "status"
+        d.mkdir(parents=True)
+        (d / "dialog-warning.svg").write_text(red)
+        (tmp_path / theme / "index.theme").write_text(
+            f"[Icon Theme]\nName={theme}\nDirectories=scalable/status\n\n"
+            "[scalable/status]\nSize=24\nMinSize=8\nMaxSize=512\nType=Scalable\n"
+        )
+    old_name, old_paths = QIcon.themeName(), QIcon.themeSearchPaths()
+    old_fallback = QIcon.fallbackThemeName()
+    pal = dark_palette()
+    want = pal.color(QPalette.ColorRole.WindowText).rgb()
+    try:
+        QIcon.setThemeSearchPaths([str(tmp_path)])
+        QIcon.setFallbackThemeName("hicolor")
+        QIcon.setThemeName("Chosen")
+        assert QIcon.hasThemeIcon("dialog-warning")
+        chosen = _solid_pixels(badge_pixmap("degraded", pal, 24).toImage())
+        assert chosen and all(c == QColor("#ff0000").rgb() for c in chosen)
+        QIcon.setThemeName("hicolor")
+        assert QIcon.hasThemeIcon("dialog-warning")
+        tinted = _solid_pixels(badge_pixmap("degraded", pal, 24).toImage())
+        assert tinted and all(c == want for c in tinted)
+    finally:
+        QIcon.setThemeSearchPaths(old_paths)
+        QIcon.setFallbackThemeName(old_fallback)
+        QIcon.setThemeName(old_name)
 
 
 # ---------------------------------------------------------------- Banner

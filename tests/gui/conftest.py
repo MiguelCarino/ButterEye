@@ -3,8 +3,8 @@
 """Shared GUI-test fixtures (U4): offscreen Qt, the import guard, FakeCore
 bridges and main windows.
 
-Every GUI test runs with ``QT_QPA_PLATFORM=offscreen QT_ACCESSIBILITY=1`` and
-the meta-path import guard installed (docs/design/GUI.md §6, §8 risk 4). Core
+Every GUI test runs with ``QT_QPA_PLATFORM=offscreen QT_ACCESSIBILITY=1``, no
+platform theme, and the meta-path import guard installed (docs/design/GUI.md §6, §8 risk 4). Core
 loops run with asyncio debug and ``slow_callback_duration=0.1``; a slow-callback
 warning fails the test unless it opted out with ``allow_slow_callbacks``.
 """
@@ -20,6 +20,10 @@ from typing import Any
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_ACCESSIBILITY", "1")
+# The developer's platform theme (e.g. QT_QPA_PLATFORMTHEME=qt6ct) would swap in
+# its own font, icon theme and palette, so sizes and glyph colours would depend on
+# the desktop the suite runs on. Tests use Qt's built-in defaults.
+os.environ.pop("QT_QPA_PLATFORMTHEME", None)
 
 import pytest  # noqa: E402
 

@@ -509,7 +509,8 @@ Ask at {repo}/issues.
 
 def sources_txt(out: Path, values: list[str]) -> None:
     v = dict(item.split("=", 1) for item in values)
-    debs_list = [line.split("=", 1) for line in Path(v.pop("debs")).read_text().splitlines() if line]
+    debs_lines = Path(v.pop("debs")).read_text().splitlines()
+    debs_list = [line.split("=", 1) for line in debs_lines if line]
     v["deb_list"] = "\n".join(f"                                {s} {ver}" for s, ver in debs_list)
     out.write_text(SOURCES.format(**v), encoding="utf-8")
 

@@ -19,19 +19,19 @@ names the CI run it was measured in.
 
 ## Result in one paragraph
 
-It works, in the narrow sense this trial could measure. One 75 MiB file, built
-in 8.5 minutes on a GitHub runner, started in clean containers of Ubuntu 22.04
-and 24.04, Debian 12 and 13, Fedora 44 and Arch Linux - with nothing ButterEye
-needs installed, only a desktop's base libraries - and on the runner itself
-through a real FUSE mount, and on every one of them: the doctor found mpv,
-VapourSynth, MVTools and FFMS2 inside the AppImage with nothing blocking; an
-offline render doubled a clip's frame rate exactly; mpv's VapourSynth filter ran
-MVTools inside the AppImage's mpv; ButterEye's own live path played a clip at
-twice its frame rate in real time; the GUI came up on Qt's offscreen platform; and
-no library from outside the AppImage was loaded except those on an explicit
-allow-list (or loaded in turn by one of them). What it could not measure is
-everything a desktop adds: a GPU, a real X11 or Wayland session, sound, VA-API,
-and FUSE on a distribution's own setup.
+It works, in the narrow sense this trial could measure. One 75 MiB file (80 MiB
+by the 0.0.5 release), built in 8.5 minutes on a GitHub runner, started in clean
+containers of Ubuntu 22.04 and 24.04, Debian 12 and 13, Fedora 44 and Arch Linux -
+with nothing ButterEye needs installed, only a desktop's base libraries - and on
+the runner itself through a real FUSE mount, and on every one of them: the
+doctor found mpv, VapourSynth, MVTools and FFMS2 inside the AppImage with
+nothing blocking; an offline render doubled a clip's frame rate exactly; mpv's
+VapourSynth filter ran MVTools inside the AppImage's mpv; ButterEye's own live
+path played a clip at twice its frame rate in real time; the GUI came up on Qt's
+offscreen platform; and no library from outside the AppImage was loaded except
+those on an explicit allow-list (or loaded in turn by one of them). What it
+could not measure is everything a desktop adds: a GPU, a real X11 or Wayland
+session, sound, VA-API, and FUSE on a distribution's own setup.
 
 ## What was built, and how
 
@@ -231,8 +231,10 @@ is a lead for whoever adds Linux CI, not an AppImage result.
 
 ## Sizes
 
-- AppImage: **75 MiB** (78,490,104 bytes); the AppDir is 243 MiB in 1,652 files
-  (zstd level 19 SquashFS, 1 MiB blocks)
+- AppImage: **75 MiB** (78,490,104 bytes) in the trial; the AppDir is 243 MiB in
+  1,652 files (zstd level 19 SquashFS, 1 MiB blocks)
+- The 0.0.5 release AppImage (CI build of 106d535) is **80 MiB** (83,966,456
+  bytes); its AppDir is 264 MiB in 1,666 files
 - Corresponding Source tar: **107 MiB** (FFmpeg, dav1d, mpv, libplacebo with
   submodules, FFMS2, MVTools, VapourSynth, qtbase, qtsvg, pyside-setup, ButterEye
   itself, and the Ubuntu source package - `.dsc`, orig and Debian tarballs - of

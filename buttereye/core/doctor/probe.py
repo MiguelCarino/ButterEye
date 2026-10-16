@@ -46,6 +46,7 @@ from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
 from buttereye.core.paths import ensure_runtime_dir
 from buttereye.core.types import (
+    _BREW_AUTOLOAD_GLOB,
     Finding,
     Msg,
     Paths,
@@ -53,7 +54,6 @@ from buttereye.core.types import (
     ProbeResult,
     Section,
     Severity,
-    _BREW_AUTOLOAD_GLOB,
 )
 
 PROBE_VPY = Path(__file__).with_name("probe.vpy")

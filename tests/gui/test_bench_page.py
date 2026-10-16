@@ -213,7 +213,12 @@ def test_cancel_stops_the_run_and_keeps_old_results(make_window: Any, qtbot: Any
     page = _page(win, qtbot)
     before = page.shown_result()
     page.run()
-    qtbot.waitUntil(lambda: bool(page.op_rows()), timeout=3000)
+    # a row added to the visible page is shown by a queued event, so wait until it
+    # is on screen; under load the click could otherwise land before that event
+    qtbot.waitUntil(
+        lambda: bool(page.op_rows()) and all(r.isVisibleTo(page) for r in page.op_rows().values()),
+        timeout=3000,
+    )
     page.cancel_button.click()
     assert not page.is_running()
     assert page.run_button.isEnabled()

@@ -35,6 +35,19 @@ _THEME_NAMES: dict[BadgeKind, str | None] = {
 }
 
 
+def has_icon_theme() -> bool:
+    """True when the desktop chose an icon theme.
+
+    Qt reports ``""`` or ``hicolor`` when no icon theme is set (offscreen, a
+    bare Hyprland session, qt6ct with no theme chosen). A platform theme such
+    as qt6ct may then resolve names through its own fallback (Breeze), whose
+    full-colour light-scheme art the user never picked, so neither counts: the
+    tinted bundled glyph is used instead.
+    """
+    name = QIcon.themeName()
+    return bool(name) and name != "hicolor"
+
+
 def icon_path(kind: BadgeKind) -> Path:
     """Bundled SVG for ``kind``."""
     return ICON_DIR / f"{kind}.svg"
@@ -67,7 +80,7 @@ def badge_pixmap(
     """The glyph for ``kind``: theme icon when available, else the tinted bundled SVG."""
     theme_name = _THEME_NAMES[kind]
     mode = QIcon.Mode.Normal if enabled else QIcon.Mode.Disabled
-    if use_theme and theme_name and QIcon.themeName() and QIcon.hasThemeIcon(theme_name):
+    if use_theme and theme_name and has_icon_theme() and QIcon.hasThemeIcon(theme_name):
         icon = QIcon.fromTheme(theme_name)
         pm = icon.pixmap(QSize(size, size), dpr, mode)
         if not pm.isNull():
@@ -161,6 +174,7 @@ __all__ = [
     "ICON_DIR",
     "StatusBadge",
     "badge_pixmap",
+    "has_icon_theme",
     "icon_path",
     "tinted_pixmap",
 ]

@@ -515,11 +515,12 @@ $XDG_CACHE_HOME/buttereye/packaging/SOURCES (~/.cache/... by default), and run
 packaging/windows/build-plugins.sh on Fedora 44 with mock (packaging/README.md).
 The build still downloads the FFmpeg, dav1d, ffms2, Vulkan-Tools and volk
 sources (the pinned URLs and SHA-256 sums in packaging/windows/pins.sh), so the
-result is the same files; copies of them are also under sources/. ffms2.dll links FFmpeg statically: to use a
-modified FFmpeg, rebuild ffms2.dll from that source with
-packaging/windows/build-tools-in-chroot.sh (it records the exact FFmpeg
-configuration in licenses/ffms2/FFMPEG-CONFIGURATION.txt) and put your build in
-place of vapoursynth\\ffms2.dll.
+result is the same files; copies of them are also under sources/.
+
+ffms2.dll links FFmpeg statically: to use a modified FFmpeg, rebuild ffms2.dll
+from that source with packaging/windows/build-tools-in-chroot.sh (it records
+the exact FFmpeg configuration in licenses/ffms2/FFMPEG-CONFIGURATION.txt) and
+put your build in place of vapoursynth\\ffms2.dll.
 
 2. Included unchanged from their publishers
 -------------------------------------------

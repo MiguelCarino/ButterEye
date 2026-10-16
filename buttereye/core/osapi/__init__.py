@@ -625,7 +625,7 @@ def release_app(
     return True
 
 
-# ======================================================================== the Linux AppImage (trial)
+# ======================================================================= the Linux AppImage (trial)
 #: Linux AppImage: the programs it carries in ``<root>/bin``, which are never
 #: looked for anywhere else while ButterEye runs from it (``executable``)
 APPIMAGE_TOOLS = frozenset({"mpv", "ffmpeg", "ffprobe"})
@@ -1046,10 +1046,10 @@ def search_windows_path(
 def executable(name: str) -> str | None:
     """``shutil.which`` on Linux and macOS, except that ButterEye.app answers
     for the programs it carries (``APP_TOOLS``) with its own copy and nothing
-    else, and so does the AppImage (``APPIMAGE_TOOLS``). On Windows a full path or None, never from the
-    current folder (``search_windows_path``), and preferring the windowed
-    ``.exe``: mpv ships ``mpv.com`` (a console wrapper) next to ``mpv.exe``, and
-    PATHEXT finds the ``.com`` first."""
+    else, and so does the AppImage (``APPIMAGE_TOOLS``). On Windows a full path
+    or None, never from the current folder (``search_windows_path``), and
+    preferring the windowed ``.exe``: mpv ships ``mpv.com`` (a console wrapper)
+    next to ``mpv.exe``, and PATHEXT finds the ``.com`` first."""
     if MACOS_APP is not None and name in APP_TOOLS:
         # the app's own, by full path and never from PATH: a Homebrew mpv
         # earlier on a user's PATH must not stand in for the one the app carries

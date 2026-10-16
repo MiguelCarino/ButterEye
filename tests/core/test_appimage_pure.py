@@ -48,8 +48,9 @@ def _plant(root: Path, *, record: bool = True, apprun: bool = True) -> tuple[Pat
 
 
 def test_the_appimage_is_recognised_by_where_its_python_is(tmp_path: Path) -> None:
-    exe, mod = _plant(tmp_path / "appimage_extracted_0123abcd")
-    assert osapi.appimage_root(str(exe), str(mod)) == (tmp_path / "appimage_extracted_0123abcd").resolve()
+    root = tmp_path / "appimage_extracted_0123abcd"
+    exe, mod = _plant(root)
+    assert osapi.appimage_root(str(exe), str(mod)) == root.resolve()
 
 
 @pytest.mark.parametrize("missing", ["record", "apprun"])
@@ -66,7 +67,9 @@ def test_another_checkout_run_by_its_python_is_not_the_appimage(tmp_path: Path) 
     assert osapi.appimage_root(str(exe), str(other)) is None
 
 
-def test_appdir_alone_makes_nothing_an_appimage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_appdir_alone_makes_nothing_an_appimage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # the runtime exports APPDIR, and so can anyone: pointing it at a perfect
     # planted tree changes nothing, because the answer comes from where the
     # interpreter running this code is, and that is not in the tree
@@ -103,14 +106,17 @@ def test_the_children_get_the_appimage_s_programs_and_vsscript(tmp_path: Path) -
 
 
 def test_stale_appimage_vsscript_lines_go_and_others_stay() -> None:
-    gone = '"/tmp/.mount_ButterAbCdEf/python/lib/python3.14/site-packages/vapoursynth/libvsscript.so" = ["a","b","1"]'
-    kept = '"/home/u/venv/lib/python3.14/site-packages/vapoursynth/libvsscript.so" = ["a","b","1"]'
-    new = '"/tmp/.mount_ButterXyZ123/python/lib/python3.14/site-packages/vapoursynth/libvsscript.so" = ["c","d","2"]'
+    vss = "lib/python3.14/site-packages/vapoursynth/libvsscript.so"
+    gone = f'"/tmp/.mount_ButterAbCdEf/python/{vss}" = ["a","b","1"]'
+    kept = f'"/home/u/venv/{vss}" = ["a","b","1"]'
+    new = f'"/tmp/.mount_ButterXyZ123/python/{vss}" = ["c","d","2"]'
     out = osapi.merge_vsscript_config(f"{gone}\n{kept}\n", new, exists=lambda p: False)
     assert out.splitlines() == [kept, new]
 
 
-def test_inside_the_appimage_the_doctor_offers_no_dnf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_inside_the_appimage_the_doctor_offers_no_dnf(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(osapi, "IS_WINDOWS", False)
     monkeypatch.setattr(osapi, "IS_MACOS", False)
     monkeypatch.setattr(osapi, "LINUX_APP", None)

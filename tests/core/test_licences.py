@@ -14,7 +14,6 @@ from buttereye.core.doctor.checks_pkgs import RpmDb, RpmInfo
 from buttereye.core.errors import ErrorCode
 from buttereye.core.types import Severity
 
-
 #: The COPR table, named rather than taken from the running platform: ``COMPONENTS``
 #: is the Windows table on Windows and the Homebrew-tap one on macOS, and these tests
 #: are about the Fedora rows wherever they run.
