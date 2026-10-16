@@ -25,6 +25,8 @@ from buttereye.core.api import (
     BackendStatus,
     CapState,
     Config,
+    ConfigIssue,
+    ContentKind,
     ErrorCode,
     Feature,
     GeneralSettings,
@@ -563,6 +565,73 @@ def test_external_change_while_editing_keeps_edits(make_window: Any, qtbot: Any)
     assert page.has_unsaved_changes()
     local = page.config()
     assert local is not None and "custom" in {p.id for p in local.profiles}
+
+
+def test_content_combo_saves_loads_and_resets(make_window: Any, qtbot: Any) -> None:
+    anime = dataclasses.replace(CUSTOM, content=ContentKind.ANIMATION)
+    sc = custom_scenario()
+    cfg = sc.config_load.config
+    cfg = dataclasses.replace(
+        cfg, profiles=tuple(anime if p.id == "anime" else p for p in cfg.profiles)
+    )
+    sc = dataclasses.replace(sc, config_load=dataclasses.replace(sc.config_load, config=cfg))
+    win, page = open_page(make_window, qtbot, sc)
+    combo = page.content_combo
+    assert combo.accessibleName() == "Content"
+    assert "two or three frames" in combo.toolTip()
+    assert combo.focusPolicy() & Qt.FocusPolicy.TabFocus
+    # loaded from the profile
+    select_profile(page, "anime")
+    assert combo.currentData() == ContentKind.ANIMATION.value and combo.isEnabled()
+    select_profile(page, "spare")
+    assert combo.currentData() == ContentKind.AUTO.value
+    # edited and saved like any other field
+    i = combo.findData(ContentKind.LIVE.value)
+    combo.setCurrentIndex(i)
+    combo.activated.emit(i)
+    edited = page.config()
+    assert edited is not None
+    assert next(p for p in edited.profiles if p.id == "spare").content is ContentKind.LIVE
+    page.save()
+    qtbot.waitUntil(lambda: not page.has_unsaved_changes(), timeout=3000)
+    saved = saves(win)[-1].args[0]
+    assert next(p for p in saved.profiles if p.id == "spare").content is ContentKind.LIVE
+    # a built-in is read-only here, and Reset to default brings back automatic
+    select_profile(page, "quality")
+    assert not combo.isEnabled() and combo.currentData() == ContentKind.AUTO.value
+
+
+def test_content_description_survives_validation(make_window: Any, qtbot: Any) -> None:
+    _win, page = open_page(make_window, qtbot, custom_scenario())
+    select_profile(page, "spare")
+    combo = page.content_combo
+    tip = combo.accessibleDescription()
+    assert "two or three frames" in tip
+    page.validate_now()  # no issues: the row keeps its description
+    assert combo.accessibleDescription() == tip
+    # an issue on the row replaces it, and fixing the issue brings it back
+    field = f"profiles[{page._current}].content"
+    page._issues = (ConfigIssue(ErrorCode.CONFIG_VALUE, Msg("Bad content."), field=field),)
+    page._show_issues()
+    assert combo.accessibleDescription() == "Bad content."
+    page._issues = ()
+    page._show_issues()
+    assert combo.accessibleDescription() == tip
+
+
+def test_content_reset_to_default(make_window: Any, qtbot: Any) -> None:
+    sc = scenarios.get("all_ready")
+    cfg = sc.config_load.config
+    changed = dataclasses.replace(cfg.profiles[0], content=ContentKind.ANIMATION)
+    cfg = dataclasses.replace(cfg, profiles=(changed,) + cfg.profiles[1:])
+    sc = dataclasses.replace(sc, config_load=dataclasses.replace(sc.config_load, config=cfg))
+    _win, page = open_page(make_window, qtbot, sc)
+    select_profile(page, "quality")
+    assert page.content_combo.currentData() == ContentKind.ANIMATION.value
+    page.reset_button.click()
+    new = page.config()
+    assert new is not None and new.profiles[0].content is ContentKind.AUTO
+    assert page.content_combo.currentData() == ContentKind.AUTO.value
 
 
 def test_ctrl_s_saves_and_title_marker(make_window: Any, qtbot: Any) -> None:

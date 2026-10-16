@@ -30,6 +30,11 @@ USER_DATA_VERSION = 1
 MATRICES = ('709', '170m', '470bg', '240m', '2020ncl', '2020cl', 'fcc', 'ycgco')
 MATRIX_PROP = {1: '709', 4: 'fcc', 5: '470bg', 6: '170m', 7: '240m', 8: 'ycgco',
                9: '2020ncl', 10: '2020cl'}
+#: zimg names, in _ChromaLocation order (0..5)
+CHROMA_LOCS = ('left', 'center', 'top_left', 'top', 'bottom_left', 'bottom')
+#: the profile default scene threshold (profiles/defaults.py), for what needs
+#: cuts even when the core sends none: MVTools, and hold fill on every engine
+DEFAULT_SC_THRESHOLD = 0.12
 
 
 def _settings():
@@ -90,6 +95,35 @@ def _range(cfg, props):
     return 'limited'
 
 
+def _chromaloc(cfg, props):
+    # Where the chroma samples sit: 1. from user_data (the core passes mpv's
+    # video-params); 2. the _ChromaLocation frame property (ffms2 sets it);
+    # 3. left, the MPEG-2/H.264/HEVC default. Every conversion of the frame
+    # names it both ways, or zimg writes left and interpolated frames shift
+    # half a pixel against the source frames between them.
+    name = cfg.get('chromaloc')
+    if name in CHROMA_LOCS:
+        return name
+    if props is not None:
+        loc = props.get('_ChromaLocation')
+        if isinstance(loc, int) and 0 <= loc < len(CHROMA_LOCS):
+            return CHROMA_LOCS[loc]
+    return 'left'
+
+
+def _to_rgb(clip, fmt, matrix, rng, loc):
+    # Spline36 both ways: ~2.5 dB better chroma than Bicubic through the round
+    # trip, at the same cost; interpolated frames alternate with source frames,
+    # so softer chroma would pulse
+    return core.resize.Spline36(clip, format=fmt, matrix_in_s=matrix, range_in_s=rng,
+                                chromaloc_in_s=loc)
+
+
+def _to_yuv(rgb, fmt, matrix, rng, loc, cfg):
+    return core.resize.Spline36(rgb, format=fmt.id, matrix_s=matrix, range_s=rng,
+                                chromaloc_s=loc, dither_type=_dither(fmt, cfg))
+
+
 def _source(cfg):
     if 'video_in' in globals():
         clip = globals()['video_in']
@@ -124,18 +158,264 @@ def _source(cfg):
     return clip, clip.get_frame(0).props
 
 
-def _mark_scene_changes(clip, threshold):
-    # PlaneStats difference between each frame and the next; sets
-    # _SceneChangeNext, which RIFE (sc=True) uses to repeat instead of blending.
-    nxt = clip[1:] + clip[-1]
-    stats = core.std.PlaneStats(clip, nxt, plane=0)
+# ---- what changes between frames: scene cuts, held drawings, still pairs ----
+# Measured on quarter-size 8-bit luma: d[n] is the mean absolute difference of
+# frames n and n+1 (0..1), dmax[n] the largest one in code values. Thresholds
+# from 2D and live-action test clips (synthetic ones/twos/threes/mixed, cuts,
+# a flash, a fade; three real clips).
+#: a relative cut: above CUT_MIN and CUT_RATIO x the largest change among the
+#: neighbours CUT_BACK before to CUT_AHEAD after (held ones count as CUT_FLOOR).
+#: Dark and same-backdrop cuts in animation stay far below the absolute
+#: threshold; fades, flashes and drawings on twos/threes/fours stay unmarked.
+#: It also marks a large pose change after a long hold inside a shot (12 on one
+#: real clip: a mouth, an eye, an arm): that slot then shows the source frame,
+#: as without interpolation, instead of a morph between the two poses.
+CUT_MIN, CUT_RATIO, CUT_FLOOR = 0.02, 5.0, 0.003
+CUT_BACK, CUT_AHEAD = 4, 3
+#: a held drawing: below DUP_ABS, or (noisy sources) below DUP_NOISY and under a
+#: DUP_RATIO-th of the change around it (two frames each side)
+DUP_ABS, DUP_NOISY, DUP_RATIO = 0.0015, 0.012, 4.0
+#: a still pair, copied instead of interpolated: no visible difference at all.
+#: The largest-difference test keeps a small moving object out (its mean is tiny);
+#: a pair that passes is confirmed at full size on every plane (STILL_FULL, 8-bit
+#: code values), where a 2 px object moving 2 px can vanish at quarter size.
+#: Real still pairs differ by 2-9 there (compression noise)
+STILL_MEAN, STILL_MAX, STILL_FULL = 0.0003, 4, 12
+#: hold fill re-times drawings held 2..hold_max frames; longer is a deliberate hold
+HOLD_RANGE = (2, 4)
 
-    def mark(n, f):
-        out = f[0].copy()
-        out.props['_SceneChangeNext'] = 1 if f[1].props['PlaneStatsDiff'] > threshold else 0
+
+def _shift(clip, k):
+    # frame n of the result is clip[n + k], clamped at both ends
+    k = max(-clip.num_frames + 1, min(k, clip.num_frames - 1))
+    if k > 0:
+        return clip[k:] + clip[-1] * k
+    if k < 0:
+        return clip[0] * (-k) + clip[:k]
+    return clip
+
+
+def _ahead(clip):
+    # The clip as the frame analysis looks ahead in it. Offline it is the clip:
+    # its length is real and _shift repeats the last frame past it. In mpv the
+    # length is a placeholder (134217727), and a request past the real end fails
+    # ("EOF or filter EOF/reinit"); the output frame that needs it fails with it
+    # and playback ends there, up to 6 source frames early. Here such a frame is
+    # the last one repeated, as offline. Not a frame count from the core: mpv
+    # numbers frames from 0 again at every seek and start, so only a request
+    # can tell where the end is. Each frame is asked for here first (on a
+    # VapourSynth thread, which the core sets free while it waits), and the
+    # filters reading it are given either the clip or the repeat. The repeat
+    # reads as one drawing held to the end, longer than any hold fill re-times:
+    # the fill, which reads the clip itself, never asks for a frame past it.
+    if 'video_in' not in globals():
+        return clip
+    #: 'end': (the first frame past the end, the last one repeated), once found
+    state = {}
+
+    def real(n):
+        try:
+            clip.get_frame(n)
+        except vs.Error as e:
+            if 'EOF' not in str(e):
+                raise
+            return False
+        return True
+
+    def probe(n):
+        end = state.get('end')
+        if end is not None and n >= end[0]:
+            return end[1]
+        if real(n):
+            return clip
+        # threads ask out of order: the end may be a few frames further back.
+        # Each candidate is asked for again, never assumed: while it starts, mpv
+        # serves a few frames that a short file doesn't have once it plays
+        last = n - 1
+        while last >= 0 and not real(last):
+            last -= 1
+        if last < 0:
+            raise vs.Error('ButterEye: no source frames')
+        if 'end' not in state:
+            state['end'] = (last + 1, core.std.Loop(clip[last], clip.num_frames))
+        return state['end'][1]
+
+    return core.std.FrameEval(clip, probe)
+
+
+def _analyse(clip, threshold):
+    # Two small clips whose frames carry the flags of the source frame: ``dups``
+    # _BEDup (n+1 repeats the drawing of n) and _BEStill (n and n+1 are the same
+    # picture), ``cuts`` _BECut (a cut between n and n+1: above ``threshold`` or
+    # by the relative rule). A dups frame reads source frames n-2..n+3, a cuts
+    # frame n-CUT_BACK..n+CUT_AHEAD+1; kept apart so nothing reaches further back
+    # than it has to.
+    w = max(16, clip.width // 4 // 2 * 2)
+    h = max(16, clip.height // 4 // 2 * 2)
+    small = core.resize.Bilinear(clip, w, h, format=vs.GRAY8)
+    stats = core.std.PlaneStats(core.std.Expr([small, _shift(small, 1)], 'x y - abs'))
+
+    def dup(n, f):
+        lo2, lo, here, hi, hi2 = (x.props['PlaneStatsAverage'] for x in f)
+        motion = max(min(lo, hi), min(lo2, hi2), min(lo, hi2), min(lo2, hi))
+        out = f[2].copy()
+        out.props['_BEDup'] = int(here < DUP_ABS
+                                  or (here < DUP_NOISY and here * DUP_RATIO < motion))
+        out.props['_BEStill'] = int(here < STILL_MEAN and f[2].props['PlaneStatsMax'] <= STILL_MAX)
         return out
 
-    return core.std.ModifyFrame(clip, [clip, stats], mark)
+    def cut(n, f):
+        d = [x.props['PlaneStatsAverage'] for x in f]
+        here = d[CUT_BACK]
+        around = max([CUT_FLOOR] + d[:CUT_BACK] + d[CUT_BACK + 1:])
+        out = f[CUT_BACK].copy()
+        out.props['_BECut'] = int(here > threshold
+                                  or (here > CUT_MIN and here > CUT_RATIO * around))
+        return out
+
+    dups = core.std.ModifyFrame(stats, [_shift(stats, k) for k in range(-2, 3)], dup)
+    cuts = core.std.ModifyFrame(stats, [_shift(stats, k) for k in range(-CUT_BACK, CUT_AHEAD + 1)],
+                                cut)
+    return dups, cuts
+
+
+def _stills(clip, dups):
+    # dups with _BEStill confirmed at full size, on all three planes. Lazy: the
+    # full-size difference of frames n and n+1 is computed only for a pair that
+    # passed the quarter-size test
+    if clip.format.sample_type == vs.FLOAT:
+        limit = STILL_FULL / 255
+    else:
+        limit = STILL_FULL << max(0, clip.format.bits_per_sample - 8)
+    diff = core.std.Expr([clip, _shift(clip, 1)], 'x y - abs')
+    planes = [core.std.PlaneStats(diff, plane=p, prop='_BEP%d' % p)
+              for p in range(clip.format.num_planes)]
+
+    def check(n, f):
+        out = f[0].copy()
+        out.props['_BEStill'] = int(all(x.props['_BEP%dMax' % p] <= limit
+                                        for p, x in enumerate(f[1:])))
+        return out
+
+    full = core.std.ModifyFrame(dups, [dups] + planes, check)
+
+    def pick(n, f):
+        return full if f.props['_BEStill'] else dups
+
+    return core.std.FrameEval(dups, pick, prop_src=dups)
+
+
+def _window(dups, cuts, hold):
+    # The flags _run reads for frame n, as a prop_src list: dups of
+    # n-hold .. n+hold-2, then cuts of n .. n+hold-2
+    return ([_shift(dups, k) for k in range(-hold, hold - 1)]
+            + [_shift(cuts, k) for k in range(hold - 1)])
+
+
+def _split(f, hold):
+    # the props of a _window list's frames, as (dups, cuts)
+    props = [x.props for x in f]
+    return props[:2 * hold - 1], props[2 * hold - 1:]
+
+
+def _run(n, dups, cuts, hold, last):
+    # The held drawing frame n is part of, as (p, q): frames p..q-1 show one
+    # drawing, q the next. None when frame n starts a drawing, or the drawing is
+    # held longer than ``hold`` frames (a deliberate hold), ends in a cut
+    # (filling would morph one shot into the next) or at the end of the clip.
+    # dups[k]: the flags of frame n-hold+k; cuts[k]: of frame n+k.
+    def dup(k):
+        return dups[hold + k]['_BEDup']
+
+    back = 0
+    while back < hold and n - back > 0 and dup(-back - 1):
+        back += 1
+    if back == 0 or back == hold:
+        return None
+    ahead = 0
+    while back + ahead < hold and dup(ahead):
+        ahead += 1
+    p, q = n - back, n + ahead + 1
+    if q - p > hold or q > last or cuts[ahead]['_BECut']:
+        return None
+    return p, q
+
+
+def _hold_fill(clip, dups, cuts, hold, pairs):
+    # Animation drawn on twos or threes repeats each drawing 2-3 frames; every
+    # engine interpolates frame to frame, so at 2x it plays still, still, still,
+    # jump. Replace frame p+k of a drawing held p..q-1 by the in-between of
+    # drawings p and q at k/(q-p): the engine then interpolates smooth motion.
+    # Frames that are not in such a hold (live action, motion on ones, long
+    # holds, cuts) are passed on untouched. ``pairs(P, K)`` interpolates each
+    # pair (P[2i], P[2i+1]) at j/K for j = 1..K-1 and returns {j: clip}.
+    # A filled frame n reads source frames n-hold-2 .. n+hold+2.
+    steps = {2: 2, 3: 6, 4: 12}[hold]  # lcm(2..hold): every k/(q-p) is j/steps
+    last = clip.num_frames - 1
+    window = _window(dups, cuts, hold)
+    near = {k: _shift(clip, k) for k in range(-hold + 1, hold)}
+
+    def end(i):
+        def pick(n, f):
+            r = _run(n, *_split(f, hold), hold, last)
+            return near[r[i] - n] if r else clip
+        return core.std.FrameEval(clip, pick, prop_src=window)
+
+    between = pairs(core.std.Interleave([end(0), end(1)]), steps)
+
+    def fill(n, f):
+        r = _run(n, *_split(f, hold), hold, last)
+        if r is None:
+            return clip
+        p, q = r
+        return between[(n - p) * steps // (q - p)]
+
+    return core.std.FrameEval(clip, fill, prop_src=window)
+
+
+def _prepare(clip, cfg, threshold, pairs=None, still=False):
+    # The clip an engine interpolates: held drawings filled in (hold_fill, when
+    # the engine gives ``pairs``), and _SceneChangeNext on each frame that ends a
+    # shot (threshold > 0) or, with still_skip, an identical pair, so the engine
+    # repeats the frame instead of blending across the cut or computing a copy.
+    # Returns (clip, marked). Hold fill needs cuts even with scene detection off.
+    # One output frame between source frames n and n+1 then reads source frames
+    # n-CUT_BACK .. n+CUT_AHEAD+2 (-4..+5), with hold fill n-hold-2 .. n+hold+3
+    # where that is further (-5..+6 at hold 3); MVTools one more on each side
+    # (measured). Before this, n..n+1 (MVTools n-1..n+2).
+    sc = isinstance(threshold, (int, float)) and threshold > 0
+    fill = bool(cfg.get('hold_fill')) and pairs is not None
+    still = still and bool(cfg.get('still_skip'))
+    if not (sc or fill or still):
+        return clip, False
+    # what is read ahead of the engine's own frames comes from _ahead: near the
+    # end in mpv, a frame past it would end playback
+    ahead = _ahead(clip)
+    dups, cuts = _analyse(ahead, float(threshold) if sc else DEFAULT_SC_THRESHOLD)
+    # still pairs confirmed on the source frames, not the filled ones
+    stills = _stills(ahead, dups) if still else dups
+    hold = int(cfg.get('hold_max') or 3)
+    hold = max(HOLD_RANGE[0], min(hold, HOLD_RANGE[1]))
+    if fill:
+        clip = _hold_fill(clip, dups, cuts, hold, pairs)
+    if not (sc or still):
+        return clip, False
+    # A still pair with hold fill on: only inside a hold already longer than
+    # ``hold`` (never filled), which needs no flags beyond frame n; asking
+    # whether frame n+1 is filled would reach further ahead than the fill does
+    head = [cuts] if sc else []
+    held = [_shift(stills, k) for k in range(-hold + 1, 1)] if fill else [stills]
+
+    def mark(n, f):
+        change = sc and f[1].props['_BECut']
+        flags = f[1 + len(head):]  # dups up to frame n
+        if still and not change and flags[-1].props['_BEStill']:
+            change = not fill or (n >= hold - 1 and all(x.props['_BEDup'] for x in flags))
+        out = f[0].copy()
+        out.props['_SceneChangeNext'] = int(bool(change))
+        return out
+
+    return core.std.ModifyFrame(clip, [clip] + head + held, mark), True
 
 
 def _output_format(clip, cfg):
@@ -154,19 +434,28 @@ def _dither(fmt, cfg):
     return name if name in ('none', 'ordered', 'random', 'error_diffusion') else 'ordered'
 
 
-def _passthrough(clip, interpolated, target):
+def _passthrough(clip, interpolated, target, marked=False):
     # At an integer multiplier m every m-th output frame is a source frame: take
     # it from the source untouched (no YUV->RGB->YUV round trip, no dither) and
-    # only the others from RIFE. Evaluation is lazy, so the RIFE output frames at
-    # source positions are never requested. Same format and length, or no change.
+    # only the others from the engine. Evaluation is lazy, so the engine's output
+    # frames at source positions are never requested. ``marked``: the slots after
+    # a frame with _SceneChangeNext (a cut or a still pair) repeat that source
+    # frame too, which is what the engine would give, minus the round trip.
+    # Same format and length, or no change.
     ratio = target / Fraction(clip.fps_num, clip.fps_den) if clip.fps_num else None
     if ratio is None or ratio.denominator != 1 or ratio.numerator < 2:
         return interpolated
     if clip.format.id != interpolated.format.id:
         return interpolated
     m = ratio.numerator
-    out = core.std.Interleave([clip] + [core.std.SelectEvery(interpolated, m, i)
-                                        for i in range(1, m)])
+    slots = [core.std.SelectEvery(interpolated, m, i) for i in range(1, m)]
+    if marked:
+        def repeat(slot):
+            def pick(n, f):
+                return clip if f.props.get('_SceneChangeNext') else slot
+            return core.std.FrameEval(slot, pick, prop_src=clip)
+        slots = [repeat(s) for s in slots]
+    out = core.std.Interleave([clip] + slots)
     if out.num_frames != interpolated.num_frames:
         return interpolated
     return out
@@ -176,22 +465,31 @@ def _rife(clip, cfg, props, target):
     _load('rife', 'librife.so')
     matrix = _matrix(cfg, clip, props)
     rng = _range(cfg, props)
-    threshold = cfg.get('sc_threshold')
-    sc = isinstance(threshold, (int, float)) and threshold > 0
-    if sc:
-        clip = _mark_scene_changes(clip, float(threshold))
-    rgb = core.resize.Bicubic(clip, format=vs.RGBS, matrix_in_s=matrix, range_in_s=rng)
+    loc = _chromaloc(cfg, props)
     # uhd is read by RIFE v1-v3 models only; v4.x ignore it (SCOPE 5.3)
-    opts = {'model_path': cfg['model_path'], 'fps_num': target.numerator,
-            'fps_den': target.denominator, 'gpu_thread': int(cfg.get('gpu_thread') or 4),
-            'uhd': bool(cfg.get('uhd')), 'sc': sc}
+    opts = {'model_path': cfg['model_path'], 'gpu_thread': int(cfg.get('gpu_thread') or 4),
+            'uhd': bool(cfg.get('uhd'))}
     if cfg.get('gpu_id') is not None:
         opts['gpu_id'] = int(cfg['gpu_id'])
-    rgb = core.rife.RIFE(rgb, **opts)
+
+    def pairs(pair_clip, steps):
+        # Hold fill: a second RIFE at fixed steps of 1/steps between the pairs.
+        # Not one instance for both: the single pass would ask RIFE for t = 1/12
+        # or 5/6 across a whole drawing's motion, where it snaps to an end
+        # (threes at 2x: step_cv 0.62 against 0.16 in two passes). Half the
+        # threads: same speed, half the extra VRAM (720p: +0.8 GB, not +1.7)
+        half = dict(opts, gpu_thread=max(1, opts['gpu_thread'] // 2))
+        rgb = core.rife.RIFE(_to_rgb(pair_clip, vs.RGBS, matrix, rng, loc), factor_num=steps,
+                             factor_den=1, sc=False, **half)
+        out = _to_yuv(rgb, pair_clip.format, matrix, rng, loc, cfg)
+        return {j: core.std.SelectEvery(out, 2 * steps, j) for j in range(1, steps)}
+
+    clip, marked = _prepare(clip, cfg, cfg.get('sc_threshold'), pairs, still=True)
+    rgb = core.rife.RIFE(_to_rgb(clip, vs.RGBS, matrix, rng, loc), fps_num=target.numerator,
+                         fps_den=target.denominator, sc=marked, **opts)
     fmt = _output_format(clip, cfg)
-    out = core.resize.Bicubic(rgb, format=fmt.id, matrix_s=matrix, range_s=rng,
-                              dither_type=_dither(fmt, cfg))
-    return _passthrough(clip, out, target)
+    out = _to_yuv(rgb, fmt, matrix, rng, loc, cfg)
+    return _passthrough(clip, out, target, marked)
 
 
 def _fp16_model(network_path, target_network_path, fp16=False, bf16=False,
@@ -330,12 +628,11 @@ def _rife_trt(clip, cfg, props, target):
     vsmlrt.convert_model = _fp16_model
     matrix = _matrix(cfg, clip, props)
     rng = _range(cfg, props)
-    threshold = cfg.get('sc_threshold')
-    if isinstance(threshold, (int, float)) and threshold > 0:
-        clip = _mark_scene_changes(clip, float(threshold))  # vsmlrt reads _SceneChangeNext
+    loc = _chromaloc(cfg, props)
+    # cuts only: vsmlrt reads _SceneChangeNext; no hold fill, no still skip here
+    clip, marked = _prepare(clip, cfg, cfg.get('sc_threshold'))
     half = bool(trt.get('half_io'))
-    rgb = core.resize.Bicubic(clip, format=vs.RGBH if half else vs.RGBS,
-                              matrix_in_s=matrix, range_in_s=rng)
+    rgb = _to_rgb(clip, vs.RGBH if half else vs.RGBS, matrix, rng, loc)
     backend = vsmlrt.Backend.TRT(fp16=bool(trt.get('fp16')), num_streams=int(trt.get('streams') or 2),
                                  output_format=1 if half else 0, engine_folder=engine_dir,
                                  device_id=int(cfg.get('gpu_id') or 0))
@@ -344,25 +641,43 @@ def _rife_trt(clip, cfg, props, target):
                       model=vsmlrt.RIFEModel[trt['model']], backend=backend,
                       video_player=True, _implementation=2)
     fmt = _output_format(clip, cfg)
-    out = core.resize.Bicubic(rgb, format=fmt.id, matrix_s=matrix, range_s=rng,
-                              dither_type=_dither(fmt, cfg))
-    return _passthrough(clip, out, target)
+    out = _to_yuv(rgb, fmt, matrix, rng, loc, cfg)
+    return _passthrough(clip, out, target, marked)
 
 
 def _mvtools(clip, cfg, target):
     _load('mv', 'mvtools.so')
-    # pel 1 (full-pixel search) from 720p up: ~20-30 % less CPU, and vectors are
-    # already fine-grained at that size; offline renders ask for pel 2
+    # pel 2 (half-pixel vectors) up to 1080p: at pel 1 a pan of 1 px per frame
+    # comes out as exact repeats (judder) and 3 px as uneven steps. Above 1080p
+    # pel 1, where a pixel is small and pel 2 costs ~1.35x the CPU. Offline
+    # renders ask for 2 (mv_pel)
     pel = cfg.get('mv_pel')
     if pel not in (1, 2, 4):
-        pel = 1 if clip.width >= 1280 or clip.height >= 720 else 2
-    sup = core.mv.Super(clip, pel=pel)
-    bv = core.mv.Analyse(sup, isb=True, blksize=16, overlap=4)
-    fv = core.mv.Analyse(sup, isb=False, blksize=16, overlap=4)
+        pel = 1 if clip.width > 1920 or clip.height > 1080 else 2
+
+    def vectors(c):
+        sup = core.mv.Super(c, pel=pel)
+        return (sup, core.mv.Analyse(sup, isb=True, blksize=16, overlap=4),
+                core.mv.Analyse(sup, isb=False, blksize=16, overlap=4))
+
+    def pairs(pair_clip, steps):
+        sup, bv, fv = vectors(pair_clip)
+        return {j: core.std.SelectEvery(core.mv.FlowInter(pair_clip, sup, bv, fv,
+                                                          time=100.0 * j / steps), 2, 0)
+                for j in range(1, steps)}
+
+    # MVTools has its own scene detection, which blends across the cut: the
+    # marks repeat the frame instead (integer multipliers), as the other engines do
+    threshold = cfg.get('sc_threshold')
+    if threshold is None:
+        threshold = DEFAULT_SC_THRESHOLD
+    clip, marked = _prepare(clip, cfg, threshold, pairs, still=True)
+    sup, bv, fv = vectors(clip)
     # BlockFPS: ~2.2x faster in mpv with the same fidelity; blocks show only in very
     # fast motion, so live play uses it only when FlowFPS can't keep up (M0(p))
     fps = core.mv.BlockFPS if cfg.get('mv_mode') == 'block' else core.mv.FlowFPS
-    return fps(clip, sup, bv, fv, num=target.numerator, den=target.denominator)
+    out = fps(clip, sup, bv, fv, num=target.numerator, den=target.denominator)
+    return _passthrough(clip, out, target, marked) if marked else out
 
 
 def _mvgpu(clip, cfg, target):
@@ -371,17 +686,23 @@ def _mvgpu(clip, cfg, target):
     # frames untouched; a frame marked _SceneChangeNext is repeated instead of
     # interpolated across the cut, like RIFE.
     _load('mvgpu', 'libmvgpu.so')
-    threshold = cfg.get('sc_threshold')
-    if isinstance(threshold, (int, float)) and threshold > 0:
-        clip = _mark_scene_changes(clip, float(threshold))
     if clip.format.subsampling_w != 1 or clip.format.subsampling_h != 1:
         # mpv hands over what it decoded; 4:2:2 and 4:4:4 go to 4:2:0 here
         fmt = core.query_video_format(vs.YUV, vs.INTEGER, clip.format.bits_per_sample, 1, 1)
-        clip = core.resize.Bicubic(clip, format=fmt.id)
-    opts = {'fps_num': target.numerator, 'fps_den': target.denominator}
+        loc = _chromaloc(cfg, None)
+        clip = core.resize.Bicubic(clip, format=fmt.id, chromaloc_in_s=loc, chromaloc_s=loc)
+    opts = {}
     if cfg.get('gpu_id') is not None:
         opts['device'] = int(cfg['gpu_id'])
-    return core.mvgpu.Interpolate(clip, **opts)
+
+    def pairs(pair_clip, steps):
+        out = core.mvgpu.Interpolate(pair_clip, fps_num=pair_clip.fps_num * steps,
+                                     fps_den=pair_clip.fps_den, **opts)
+        return {j: core.std.SelectEvery(out, 2 * steps, j) for j in range(1, steps)}
+
+    clip, _ = _prepare(clip, cfg, cfg.get('sc_threshold'), pairs, still=True)
+    return core.mvgpu.Interpolate(clip, fps_num=target.numerator, fps_den=target.denominator,
+                                  **opts)
 
 
 def _shrink(clip, cfg):
@@ -393,12 +714,20 @@ def _shrink(clip, cfg):
     width, height = int(size[0]), int(size[1])
     if width <= 0 or height <= 0 or (width, height) == (clip.width, clip.height):
         return clip
-    return core.resize.Spline36(clip, width=width, height=height)
+    opts = {}
+    if clip.format.color_family == vs.YUV:
+        loc = _chromaloc(cfg, None)
+        opts = {'chromaloc_in_s': loc, 'chromaloc_s': loc}
+    return core.resize.Spline36(clip, width=width, height=height, **opts)
 
 
 def build():
     cfg = _settings()
     clip, props = _source(cfg)
+    # settled once for every conversion, and stamped on the frames: zimg takes
+    # a frame's _ChromaLocation over a chromaloc_in_s argument
+    cfg['chromaloc'] = _chromaloc(cfg, props)
+    clip = core.std.SetFrameProps(clip, _ChromaLocation=CHROMA_LOCS.index(cfg['chromaloc']))
     clip = _shrink(clip, cfg)
     target = _rate(cfg.get('target_fps'))
     backend = cfg.get('backend')
@@ -412,7 +741,13 @@ def build():
         out = _mvgpu(clip, cfg, target)
     else:
         raise vs.Error('ButterEye: unknown backend')
-    return core.std.AssumeFPS(out, fpsnum=target.numerator, fpsden=target.denominator)
+    out = core.std.AssumeFPS(out, fpsnum=target.numerator, fpsden=target.denominator)
+    # MVTools reads frames 0 and 1 while the graph is built, before mpv can serve
+    # any: mpv hands over black ones, and every filter between the source and
+    # MVTools (the analysis, hold fill, Super) would keep what it made of them,
+    # half a second of black output at each start. Built: forget all of it
+    core.clear_cache()
+    return out
 
 
 build().set_output()

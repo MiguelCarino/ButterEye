@@ -79,6 +79,7 @@ from buttereye.core.mpvctl.ipc import (
     check_socket_path,
 )
 from buttereye.core.scriptgen.generator import (
+    BUFFERED_FRAMES_DEFAULT,
     FilterParams,
     ScriptConstants,
     default_frames,
@@ -93,6 +94,7 @@ from buttereye.core.types import (
     BypassReason,
     CandidateId,
     Config,
+    ContentKind,
     Counters,
     DetachPolicy,
     FilterState,
@@ -247,6 +249,26 @@ TRT_IDENTITY = "mpvctl.trt_identity"  # Vulkan UUID -> (nvidia UUID, driver) | N
 #: mvgpu (GPU motion vectors: far faster than RIFE, a little less exact on fast
 #: objects), MVTools. The target decides among them (``decide.pick_engine``).
 LIVE_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVGPU, BackendId.MVTOOLS)
+#: The same for a 2D animation profile: MVTools before mvgpu, which loses large
+#: flat shapes and has to find twice the step on drawings held on twos.
+#: TensorRT has no hold fill: RIFE-ncnn goes before it when RIFE-ncnn keeps up
+#: with hold fill's extra work (``Session.apply``)
+ANIMATION_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVTOOLS, BackendId.MVGPU)
+#: Hold fill re-times drawings held up to this many frames (``FilterParams.hold_max``)
+HOLD_MAX = 3
+
+
+def hold_fill_buffer(hold_max: int) -> int:
+    """mpv buffered-frames for hold fill. mpv refuses a request further back than
+    its buffer from the newest frame asked for ("Frame N requested, but only have
+    frames starting from M"). With nothing cached one output frame reads source
+    frames -9..+8 around its own with MVTools (-7..+7 with mvgpu; -4..+4 without
+    hold fill, which runs on mpv's default of 4) at ``hold_max`` 3, but
+    VapourSynth's cache keeps what was read: 4 survived seeking at 16 frames in
+    parallel on the dev box. This leaves room above that measurement."""
+    return 2 * hold_max + 4
+
+
 #: GPU engines that MVTools replaces once after a stall, a lost device or a GPU
 #: fault (§11.9), and whose runs are followed by the Xid scan (F1). TensorRT has
 #: its own fallback while its engine builds and is not switched.
@@ -420,6 +442,11 @@ class _Session:
         self.auto_chosen = False  # the running engine was Automatic's choice
         self.heavy_since: float | None = None  # heavy dropping since (monotonic)
         self.run_block = False
+        #: the last hold fill verdict logged, so a re-apply does not repeat it
+        self.fill_logged: tuple[bool, str] | None = None
+        self.run_fill = False  # the running filter re-times held drawings
+        #: hold fill dropped frames on this file: off until the next file
+        self.fill_dropped = False
         self.proc = proc
         self.pid: int | None = proc.pid
         self.ipc = ipc
@@ -858,6 +885,20 @@ class _Session:
             # engine's speed, so nothing is learned - only decided again
             await self.apply(raise_on_fail=False)
             return
+        if self.run_fill:
+            # hold fill's extra work, not the engine: turn it off for this file
+            # and learn nothing, so the engine's estimate stays right for every
+            # other video (live-action ones never re-time)
+            self.fill_dropped = True
+            self.log.info(
+                "%s: dropped %.0f%% of frames while re-timing held drawings; "
+                "playing on without re-timing",
+                self.title, drop_rate * 100,
+            )  # fmt: skip
+            if self.health is Health.DROPPING:
+                self.health, self.step_down_to = Health.OK, None
+            await self.apply(raise_on_fail=False)
+            return
         cfg, _ = self.config()
         size = self.run_size or (src.width, src.height)
         key = self.limit_key(self.backend, self.model, size, self.run_flow, self.gpu_device(cfg))
@@ -980,6 +1021,7 @@ class _Session:
         self.step_down_to = None
         self.drop_rate = None
         self.run_size, self.run_flow, self.run_block = None, 1.0, False
+        self.run_fill = False
 
     async def bypass_with(self, reason: BypassReason, *, display_hz: float | None = None) -> None:
         """Bypass; ``display_hz`` when the verdict depends on the display rate, so a
@@ -1031,6 +1073,58 @@ class _Session:
                 "choice": decide.BACKEND_NAMES.get(override, override.value),
             },
         )
+
+    async def hold_fill_choice(
+        self,
+        profile: Profile,
+        backend: BackendId,
+        facts: SourceFacts,
+        size: tuple[int, int] | None,
+        target: Fraction,
+        cfg: Config | None,
+        *,
+        model: str | None,
+        forced: bool,
+        block: bool,
+    ) -> tuple[bool, str]:
+        """Whether held drawings are re-timed (``FilterParams.hold_fill``), and why
+        (for the log).
+
+        A live-action profile never has it. Otherwise it is on only when this
+        engine's live cap at the size it runs absorbs the worst case it adds
+        (``decide.hold_fill_fits``: 1.67× the work at 2× on threes), and never
+        when the engine already can't keep up - smoothing forced past the speed
+        test, MVTools in block mode - or it dropped frames on this file
+        (``live_fallback``): held drawings then judder as before, which beats
+        dropping frames, and the engine's estimate is not lowered for its sake.
+        Without a benchmark a 2D animation profile has it (the user asked) and
+        Automatic does not. TensorRT has no hold fill."""
+        if backend is BackendId.RIFE_TRT:
+            return False, "TensorRT does not support it"
+        if profile.content is ContentKind.LIVE:
+            return False, "the profile is set to live action"
+        if self.fill_dropped:
+            return False, "frames dropped with it on this video"
+        if forced:
+            return False, "smoothing runs past the speed test"
+        if block:
+            return False, "MVTools is in block mode to keep up"
+        w, h = size or (facts.width, facts.height)
+        cap = await self.sustainable_fps(
+            backend, model, dataclasses.replace(facts, width=w, height=h), cfg
+        )
+        if size is not None:
+            cap = decide.shrink_cap(cap, facts.width, facts.height)
+        if cap is None:
+            if profile.content is ContentKind.ANIMATION:
+                return True, "the profile is set to 2D animation (no speed test to check)"
+            return False, "no speed test measured this engine, so it may not keep up"
+        need = float(decide.load_rate(facts.fps, target)) * decide.hold_fill_factor(
+            facts.fps, target
+        )
+        if not decide.hold_fill_fits(facts.fps, target, cap):
+            return False, f"it needs about {need:.0f} fps of capacity and {cap:.0f} is measured"
+        return True, f"capacity {cap:.0f} fps covers the worst case of {need:.0f}"
 
     # ---- TensorRT (experimental, SCOPE §5.2) ----
     def trt_setup(
@@ -1216,8 +1310,10 @@ class _Session:
         notes = [n for n in (profile_note, pinned_note) if n is not None]
         # §11.9: candidate engines in preference order; the target decides among them
         order: list[BackendId]
+        animation = profile.content is ContentKind.ANIMATION
         if wanted is None:
-            order = [b for b in LIVE_RANKING if b in installed]
+            ranking = ANIMATION_RANKING if animation else LIVE_RANKING
+            order = [b for b in ranking if b in installed]
         else:
             choice = decide.resolve_backend(wanted, installed)
             if choice.notice is not None:
@@ -1226,10 +1322,14 @@ class _Session:
             # fallbacks, used only if the chosen engine can't reach the target
             if choice.backend is BackendId.RIFE_TRT and BackendId.RIFE_NCNN in installed:
                 order.append(BackendId.RIFE_NCNN)
+            fallbacks: list[BackendId] = []
             if choice.backend in decide.RIFE_BACKENDS and BackendId.MVGPU in installed:
-                order.append(BackendId.MVGPU)
+                fallbacks.append(BackendId.MVGPU)
             if choice.backend in decide.GPU_BACKENDS and BackendId.MVTOOLS in installed:
-                order.append(BackendId.MVTOOLS)
+                fallbacks.append(BackendId.MVTOOLS)
+            if animation:
+                fallbacks.sort(key=ANIMATION_RANKING.index)  # MVTools before mvgpu
+            order += fallbacks
         model: str | None = None
         model_path: Path | None = None
         model_note: Msg | None = None
@@ -1268,6 +1368,7 @@ class _Session:
                 profile.target.fps,
                 auto=wanted is None,
                 forced=forced,
+                animation=animation,
             )
 
         full_size = cfg is not None and cfg.general.full_size
@@ -1334,6 +1435,7 @@ class _Session:
                     profile.target.fps,
                     auto=wanted is None,
                     forced=self.forced,
+                    animation=animation,
                 )
                 if found is not None:
                     pick, size = found
@@ -1355,6 +1457,27 @@ class _Session:
                             return bp, None, False, [decide.blockfps_notice()], True
             return pick, size, forced_used, extra, False
 
+        if (
+            animation
+            and wanted is None
+            and not self.fill_dropped
+            and BackendId.RIFE_TRT in order
+            and BackendId.RIFE_NCNN in order
+        ):
+            # TensorRT has no hold fill: RIFE-ncnn first when it doubles the
+            # rate at full size with room for hold fill's extra work
+            (ncnn,) = await engine_options(facts, [BackendId.RIFE_NCNN])
+            rife = choose([ncnn], forced=False)
+            t = rife.target.target
+            if (
+                rife.backend is BackendId.RIFE_NCNN
+                and rife.target.bypass is None
+                and t is not None
+                and t >= facts.fps * 2 * decide.AUTO_DOUBLING_TOLERANCE
+                and decide.hold_fill_fits(facts.fps, t, ncnn.sustainable_fps)
+            ):
+                order.remove(BackendId.RIFE_NCNN)
+                order.insert(order.index(BackendId.RIFE_TRT), BackendId.RIFE_NCNN)
         self.flow_scale = 1.0
         pick, size, forced_used, extra, mv_block = await decide_with(order)
         trt_key: trt.EngineKey | None = None
@@ -1430,6 +1553,30 @@ class _Session:
             buffered = profile.buffered_frames
         if profile.concurrent_frames:
             concurrent = profile.concurrent_frames
+        hold_fill, fill_why = await self.hold_fill_choice(
+            profile,
+            backend,
+            facts,
+            size,
+            tc.target,
+            cfg,
+            model=model_for(backend),
+            forced=forced_used,
+            block=bool(mv_block and backend is BackendId.MVTOOLS),
+        )
+        # the script's frame analysis (cuts, still pairs) reads up to 4 frames
+        # back: a profile's smaller buffer would make mpv refuse those requests
+        buffered = max(buffered, BUFFERED_FRAMES_DEFAULT)
+        if hold_fill:
+            buffered = max(buffered, hold_fill_buffer(HOLD_MAX))
+        if (hold_fill, fill_why) != self.fill_logged:
+            self.fill_logged = (hold_fill, fill_why)
+            self.log.info(
+                "%s: re-timing held drawings %s: %s",
+                self.title,
+                "on" if hold_fill else "off",
+                fill_why,
+            )
         h = facts.height
         gen = self.next_gen()
         self.run_size = size
@@ -1439,6 +1586,7 @@ class _Session:
         self.auto_chosen = wanted is None and not forced_used
         self.heavy_since = None
         self.run_block = bool(mv_block and backend is BackendId.MVTOOLS)
+        self.run_fill = hold_fill
         params = FilterParams(
             gen=gen,
             backend=backend,
@@ -1448,13 +1596,20 @@ class _Session:
             concurrent_frames=concurrent,
             matrix=decide.matrix_name(vp.get("colormatrix"), h),
             range=decide.range_name(vp.get("colorlevels")),
+            chroma_loc=decide.chroma_loc_name(vp.get("chroma-location")),
             model_path=model_path if backend is BackendId.RIFE_NCNN else None,
             gpu_id=(
                 self.gpu_index(cfg) if backend in (BackendId.RIFE_NCNN, BackendId.MVGPU) else None
             ),
             gpu_thread=rife_gpu_thread() if backend is BackendId.RIFE_NCNN else None,
             uhd=decide.uhd_mode(*(size or (facts.width, facts.height))),
-            sc_threshold=profile.sc_threshold if backend in decide.GPU_BACKENDS else None,
+            # every engine: the template also blocks hold fill and MVTools'
+            # vectors across cuts with it
+            sc_threshold=profile.sc_threshold,
+            hold_fill=hold_fill,
+            hold_max=HOLD_MAX,
+            # identical frames are copied, not interpolated: speed only
+            still_skip=True,
             title=self.title,
             size=size,
             mv_mode="block" if mv_block and backend is BackendId.MVTOOLS else None,
@@ -1879,6 +2034,8 @@ class _Session:
             await self.remove_filter()  # never run the old filter on the new file
         self.detector.filter_stopped()
         self.source = None
+        self.fill_logged = None
+        self.fill_dropped = False
         self.target = self.multiplier = None
         self.backend, self.model = None, None
         self.profile_id = None
@@ -2073,7 +2230,11 @@ class _Session:
                 self.heavy_since = None
             elif self.heavy_since is None:
                 self.heavy_since = now
-            elif now - self.heavy_since >= HEAVY_HOLD_S and self.auto_chosen and not self.busy:
+            elif (
+                now - self.heavy_since >= HEAVY_HOLD_S
+                and (self.auto_chosen or self.run_fill)
+                and not self.busy
+            ):
                 assert verdict.drop_rate is not None
                 await self.live_fallback(verdict.drop_rate)
                 self.publish()

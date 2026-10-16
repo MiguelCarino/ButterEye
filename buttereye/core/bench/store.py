@@ -7,6 +7,10 @@ The file is JSON ``{"schema": 1, "results": [...]}``, oldest first, at most
 fsync, rename). A file that cannot be parsed is moved aside to
 ``bench.json.bad-<timestamp>`` before a new result is written, so nothing is
 silently overwritten. Results stay local (SCOPE §2 non-goals: no telemetry).
+
+Each result carries ``"bench": BENCH``, the version of ``bench.vpy`` that measured
+it; measurements an older script took differently from playback are dropped on
+read, and so from the file at the next write (once).
 """
 
 from __future__ import annotations
@@ -26,6 +30,12 @@ from buttereye.core.types import BackendId, BenchMeasurement, BenchRequest, Benc
 
 SCHEMA = 1
 MAX_RESULTS = 50
+#: ``bench.vpy``'s version, stored with each result. Version 2: before it the
+#: script timed MVTools at pel 1 from 720p up while playback (template.vpy) runs
+#: pel 2 up to 1080p, ~1.35x the CPU, so those speeds were too high to cap live
+#: playback with. A result without it loses its MVTools measurements (4K ones were
+#: right, but cannot be told apart without the label; a new run is cheap).
+BENCH = 2
 
 _log = logging.getLogger(__name__)
 
@@ -79,6 +89,7 @@ def encode_result(r: BenchResult) -> dict[str, Any]:
         "recommended": r.recommended,
         "when": r.when.isoformat(),
         "gpu_uuid": r.gpu_uuid,
+        "bench": BENCH,
     }
 
 
@@ -115,6 +126,8 @@ def decode_result(d: object) -> BenchResult:
         user_file=Path(user_file) if user_file is not None else None,
     )
     ms: list[BenchMeasurement] = []
+    script = d.get("bench")
+    current = isinstance(script, int) and not isinstance(script, bool) and script >= BENCH
     for m in _get(d, "measurements", list):
         if not isinstance(m, dict):
             raise HistoryCorrupt("measurement is not an object")
@@ -138,6 +151,8 @@ def decode_result(d: object) -> BenchResult:
                 gpu_faults=_get(m, "gpu_faults", _OPT_INT),
             )
         )
+        if not current and backend is BackendId.MVTOOLS:
+            ms.pop()  # validated, then dropped: an old script timed it at pel 1
     try:
         when = datetime.fromisoformat(_get(d, "when", str))
     except ValueError as exc:
@@ -212,6 +227,7 @@ def append(path: Path, result: BenchResult, *, now: datetime | None = None) -> N
 __all__ = [
     "SCHEMA",
     "MAX_RESULTS",
+    "BENCH",
     "HistoryCorrupt",
     "encode_result",
     "decode_result",

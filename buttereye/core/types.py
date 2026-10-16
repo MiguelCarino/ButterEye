@@ -262,6 +262,21 @@ class BackendId(StrEnum):
     MVGPU = "mvgpu"  # GPU block motion vectors (Vulkan), mvgpu/
 
 
+class ContentKind(StrEnum):
+    """What a profile's videos are drawn as (``Profile.content``).
+
+    ``ANIMATION``: hand-drawn 2D, where a drawing is usually held for 2 or 3
+    frames ("on twos/threes"); held drawings are re-timed so motion is even, and
+    the automatic engine choice prefers RIFE. ``LIVE``: camera footage and 3D,
+    never re-timed. ``AUTO``: re-timing is decided frame by frame (live action
+    never triggers it), when there is speed to spare for it.
+    """
+
+    AUTO = "auto"
+    LIVE = "live"
+    ANIMATION = "animation"
+
+
 class HdrClass(StrEnum):
     SDR = "sdr"
     HDR10 = "hdr10"
@@ -430,6 +445,7 @@ class Profile:
     concurrent_frames: int | None
     hdr: Literal["skip", "passthrough"] = "skip"
     builtin: bool = False
+    content: ContentKind = ContentKind.AUTO
 
 
 @dataclass(frozen=True, slots=True)
@@ -948,6 +964,7 @@ __all__ = [
     "Severity",
     "Section",
     "BackendId",
+    "ContentKind",
     "HdrClass",
     "TargetKind",
     "Origin",

@@ -65,6 +65,7 @@ from buttereye.core.types import (
     BenchRequest,
     BenchResult,
     Config,
+    ContentKind,
     Msg,
     Paths,
     Profile,
@@ -299,6 +300,10 @@ async def _trt_prepare(
         concurrent_frames=c.concurrent_frames,
         matrix="709" if height >= 720 else "170m",
         range="limited",
+        # the blank clip is nothing but identical frames: either would turn the
+        # timed run into copies and measure nothing
+        hold_fill=False,
+        still_skip=False,
         trt=trt.script_settings(
             inst, key, folder, streams=trt.streams_for(width, height), build=False
         ),
@@ -853,6 +858,7 @@ def bench_config(cfg: Config, result: BenchResult, label: str) -> Config:
         ),
         hdr=old.hdr if old is not None else "skip",
         builtin=False,
+        content=old.content if old is not None else ContentKind.AUTO,
     )
     profiles = tuple(p for p in cfg.profiles if p.id != BENCH_PROFILE_ID) + (profile,)
     rule = Rule(

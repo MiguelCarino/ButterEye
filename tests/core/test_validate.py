@@ -145,6 +145,7 @@ def test_fps_target_needs_fraction() -> None:
         ({"concurrent_frames": 65}, "concurrent_frames"),
         ({"buffered_frames": True}, "buffered_frames"),
         ({"hdr": "on"}, "hdr"),
+        ({"content": "cartoon"}, "content"),
         ({"backend": "warp"}, "backend"),
     ],
 )

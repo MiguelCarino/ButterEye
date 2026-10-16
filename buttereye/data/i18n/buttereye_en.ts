@@ -2203,6 +2203,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>2D animation</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
         <source>Added profile {name}.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2284,6 +2289,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
         <source>Concu&amp;rrent frames</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>Content</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2378,6 +2388,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>Hand-drawn animation often holds each drawing for two or three frames. 2D animation re-times those held drawings so motion is even, when your computer has the speed for it, and prefers RIFE. Automatic does this only where the video holds drawings and your computer has speed to spare. Live action and 3D never re-times frames.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
         <source>He&amp;ight</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2404,6 +2419,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
         <source>Interlaced</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>Live action and 3D</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

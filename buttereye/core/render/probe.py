@@ -93,7 +93,7 @@ class SourceInfo:
     codec: str
     bits: int  # 8 or 10+
     hdr_class: HdrClass
-    color: Mapping[str, str]  # ffmpeg -color_* values that ffprobe reported
+    color: Mapping[str, str]  # ffmpeg -color_* values (and chroma_location) ffprobe reported
     start_s: float  # video start time relative to the file (0 for most files)
     streams: tuple[StreamInfo, ...]
     chapters: int
@@ -232,8 +232,9 @@ def source_info(
             ("color_trc", "color_transfer"),
             ("colorspace", "color_space"),
             ("color_range", "color_range"),
+            ("chroma_location", "chroma_location"),
         )
-        if video.get(name) and video.get(name) != "unknown"
+        if video.get(name) and video.get(name) not in ("unknown", "unspecified")
     }
     streams = tuple(
         StreamInfo(
@@ -275,6 +276,27 @@ def vs_matrix(info: SourceInfo) -> str | None:
 
 def vs_range(info: SourceInfo) -> str | None:
     return {"tv": "limited", "pc": "full"}.get(info.color.get("color_range", ""))
+
+
+#: ffprobe ``chroma_location`` → zimg name (``FilterParams.chroma_loc``)
+_VS_CHROMALOC: Mapping[str, str] = {
+    "left": "left", "center": "center", "topleft": "top_left", "top": "top",
+    "bottomleft": "bottom_left", "bottom": "bottom",
+}  # fmt: skip
+
+
+def vs_chromaloc(info: SourceInfo) -> str | None:
+    """Where the source's chroma samples sit, when ffprobe knows it."""
+    return _VS_CHROMALOC.get(info.color.get("chroma_location", ""))
+
+
+def chroma_sample_location(info: SourceInfo) -> str:
+    """ffmpeg's ``-chroma_sample_location`` for the render: the source's siting
+    (interpolated frames are written with it, source frames keep it), else left,
+    the MPEG-2/H.264/HEVC default. Never left to the y4m pipe: ``C420`` there
+    reads as center."""
+    loc = info.color.get("chroma_location", "")
+    return loc if loc in _VS_CHROMALOC else "left"
 
 
 def first_video_frame(data: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -455,6 +477,8 @@ __all__ = [
     "first_video_frame",
     "vs_matrix",
     "vs_range",
+    "vs_chromaloc",
+    "chroma_sample_location",
     "renders_as_hdr10",
     "x265_hdr_params",
     "svtav1_hdr_params",

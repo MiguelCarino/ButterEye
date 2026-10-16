@@ -63,6 +63,7 @@ from buttereye.core.types import (
     BackendId,
     BenchResult,
     Config,
+    ContentKind,
     Finding,
     HdrClass,
     JobId,
@@ -371,6 +372,17 @@ def _config(ctx: ProviderContext) -> Config | None:
         return None
 
 
+def _hold_fill(engine: BackendId, profile: Profile | None) -> bool:
+    """Whether a copy re-times held drawings (``FilterParams.hold_fill``).
+
+    On unless the profile is set to live action: a copy has no real-time limit,
+    so Automatic can afford the extra work, and the per-frame detection never
+    fires on live action anyway. TensorRT has no hold fill."""
+    if engine is BackendId.RIFE_TRT:
+        return False
+    return profile is None or profile.content is not ContentKind.LIVE
+
+
 def _profile(cfg: Config | None, profile_id: str | None) -> Profile | None:
     if cfg is None or not cfg.profiles:
         return None
@@ -435,7 +447,22 @@ def _engine(
     ctx: ProviderContext, profile: Profile | None
 ) -> tuple[BackendId | None, decide.ModelChoice | None]:
     backend = profile.backend if profile is not None else "auto"
-    engine = rprobe.engine_for(backend, _installed(ctx, profile))
+    installed = _installed(ctx, profile)
+    p = ctx.paths
+    model = profile.model if profile is not None else None
+    models = (p.rpm_data_dir / MODEL_SUBDIR, (p.data_dir / USER_MODEL_SUBDIR,))
+    # 2D animation on Automatic: RIFE-ncnn before TensorRT, which has no hold fill
+    # (_hold_fill), as live playback ranks it (session.ANIMATION_RANKING + apply)
+    if (
+        backend == "auto"
+        and profile is not None
+        and profile.content is ContentKind.ANIMATION
+        and BackendId.RIFE_NCNN in installed
+    ):
+        mc = decide.find_model(model, *models)
+        if mc.path is not None:
+            return BackendId.RIFE_NCNN, mc
+    engine = rprobe.engine_for(backend, installed)
     if engine is BackendId.RIFE_TRT:
         found = _trt(ctx, profile)
         if found is not None:
@@ -443,12 +470,7 @@ def _engine(
         engine = rprobe.engine_for("auto", _installed(ctx, None) - {BackendId.RIFE_TRT})
     if engine is not BackendId.RIFE_NCNN:
         return engine, None
-    p = ctx.paths
-    mc = decide.find_model(
-        profile.model if profile is not None else None,
-        p.rpm_data_dir / MODEL_SUBDIR,
-        (p.data_dir / USER_MODEL_SUBDIR,),
-    )
+    mc = decide.find_model(model, *models)
     if mc.path is None:
         return (BackendId.MVTOOLS if BackendId.MVTOOLS in _installed(ctx) else None), None
     return engine, mc
@@ -875,9 +897,9 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
             gpu_id=_gpu_index(ctx) if engine in (BackendId.RIFE_NCNN, BackendId.MVGPU) else None,
             gpu_thread=rife_gpu_thread() if engine is BackendId.RIFE_NCNN else None,
             uhd=decide.uhd_mode(w, h),
-            sc_threshold=(profile.sc_threshold if profile is not None else 0.12)
-            if engine in decide.GPU_BACKENDS
-            else None,
+            sc_threshold=profile.sc_threshold if profile is not None else 0.12,
+            hold_fill=_hold_fill(engine, profile),
+            still_skip=True,
             title=src.name,
             size=(w, h) if (w, h) != (info.width, info.height) else None,
             # offline keeps the finest settings: no real-time limit (§4.4)

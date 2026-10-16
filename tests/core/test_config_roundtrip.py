@@ -22,6 +22,7 @@ from buttereye.core.testing.scenarios import fake_paths
 from buttereye.core.types import (
     BackendId,
     Config,
+    ContentKind,
     GeneralSettings,
     HdrClass,
     Paths,
@@ -65,10 +66,12 @@ def _custom(pid: str = "anime", **changes: object) -> Profile:
 def _rich_config() -> Config:
     """Every field set somewhere, unknown keys at every level."""
     builtins = list(defaults.builtin_profiles())
-    builtins[2] = dataclasses.replace(builtins[2], sc_threshold=0.3, buffered_frames=6)
+    builtins[2] = dataclasses.replace(
+        builtins[2], sc_threshold=0.3, buffered_frames=6, content=ContentKind.LIVE
+    )
     profiles = (
         *builtins,
-        _custom(),
+        _custom(content=ContentKind.ANIMATION),
         _custom(
             "trt-4k",
             name='TRT "4K" \\ night',
@@ -553,6 +556,35 @@ def test_wrong_types_report_field_and_position(paths: Paths) -> None:
     # the rule with a bad profile is kept (so positions stay aligned) and flagged by validate
     assert load.config.rules[0].profile == ""
     assert any(i.field == "rules[0].profile" for i in load.issues)
+
+
+def test_content_reads_writes_and_tolerates_old_files(paths: Paths) -> None:
+    # a file from before ``content`` existed reads as automatic
+    _write(paths, 'schema_version = 1\n[[profiles]]\nid = "old"\nbackend = "mvtools"\n')
+    load = config.load(paths)
+    assert load.issues == ()
+    old = next(p for p in load.config.profiles if p.id == "old")
+    assert old.content is ContentKind.AUTO
+    # automatic is not written (older ButterEye versions read the file unchanged)
+    rev = config.save(paths, load.config, expected_revision=load.revision)
+    assert "content" not in paths.config_file.read_text()
+    anime = dataclasses.replace(old, content=ContentKind.ANIMATION)
+    cfg = dataclasses.replace(
+        load.config, profiles=tuple(anime if p.id == "old" else p for p in load.config.profiles)
+    )
+    config.save(paths, cfg, expected_revision=rev)
+    assert 'content = "animation"' in paths.config_file.read_text()
+    assert config.load(paths).config == cfg
+
+
+def test_bad_content_is_reported_and_falls_back(paths: Paths) -> None:
+    _write(paths, 'schema_version = 1\n[[profiles]]\nid = "x"\ncontent = "cartoon"\n')
+    load = config.load(paths)
+    (issue,) = load.issues
+    assert issue.code is ErrorCode.CONFIG_VALUE and issue.field == "profiles[4].content"
+    assert issue.line == 4
+    x = next(p for p in load.config.profiles if p.id == "x")
+    assert x.content is ContentKind.AUTO
 
 
 def test_semantic_issues_get_file_positions(paths: Paths) -> None:

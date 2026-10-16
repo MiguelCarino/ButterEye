@@ -76,6 +76,7 @@ from buttereye.core.api import (
     ConfigConflict,
     ConfigIssue,
     ConfigLoad,
+    ContentKind,
     DoctorReport,
     ErrorCode,
     Event,
@@ -424,6 +425,30 @@ class ProfilesPage(Page):
         self._row(self.tr("Target"), self.target_box, "target", focus=self.target_display)
         self.target_group.idClicked.connect(lambda _i: self._on_target_kind())
         self.target_fps.valueChanged.connect(lambda _v: self._on_form_edited())
+
+        # Content: how held drawings are timed (ContentKind)
+        self.content_combo = QComboBox(fb)
+        self.content_combo.setObjectName("field.content")
+        for text, kind in (
+            (self.tr("Automatic"), ContentKind.AUTO),
+            (self.tr("Live action and 3D"), ContentKind.LIVE),
+            (self.tr("2D animation"), ContentKind.ANIMATION),
+        ):
+            self.content_combo.addItem(text, kind.value)
+        self._row(self.tr("Content"), self.content_combo, "content")
+        self.content_combo.setAccessibleName(self.tr("Content"))
+        content_tip = self.tr(
+            "Hand-drawn animation often holds each drawing for two or three frames. "
+            "2D animation re-times those held drawings so motion is even, when your "
+            "computer has the speed for it, and prefers RIFE. Automatic does this only "
+            "where the video holds drawings and your computer has speed to spare. "
+            "Live action and 3D never re-times frames."
+        )
+        self.content_combo.setToolTip(content_tip)
+        self.content_combo.setAccessibleDescription(content_tip)
+        # what a row's description goes back to when its issue is fixed (_show_issues)
+        self._field_desc: dict[str, str] = {"content": content_tip}
+        self.content_combo.activated.connect(lambda _i: self._on_form_edited())
 
         # Scene-cut sensitivity: slider + spin, both expose the value
         self.sc_box = QWidget(fb)
@@ -1256,6 +1281,8 @@ class ProfilesPage(Page):
                 self._set_frames(self.buffered_spin, self.buffered_auto, p.buffered_frames)
                 self._set_frames(self.concurrent_spin, self.concurrent_auto, p.concurrent_frames)
                 (self.hdr_pass if p.hdr == "passthrough" else self.hdr_skip).setChecked(True)
+                i = self.content_combo.findData(str(p.content))
+                self.content_combo.setCurrentIndex(max(i, 0))
         finally:
             self._populating = False
         self._update_frames_text(p)
@@ -1421,6 +1448,7 @@ class ProfilesPage(Page):
             self.target_display_max,
             self.target_2x,
             self.target_fixed,
+            self.content_combo,
             self.sc_slider,
             self.sc_spin,
             self.buffered_auto,
@@ -1481,6 +1509,7 @@ class ProfilesPage(Page):
             if self.concurrent_auto.isChecked()
             else self.concurrent_spin.value(),
             hdr="passthrough" if self.hdr_pass.isChecked() else "skip",
+            content=ContentKind(self.content_combo.currentData() or ContentKind.AUTO),
         )
 
     def _on_form_edited(self) -> None:
@@ -1614,7 +1643,7 @@ class ProfilesPage(Page):
             else:
                 badge.hide()
                 if key not in ("backend", "model", "scale"):
-                    target.setAccessibleDescription("")
+                    target.setAccessibleDescription(self._field_desc.get(key, ""))
         for old in self.general_issues:
             self._general_lay.removeWidget(old)
             old.hide()

@@ -16,7 +16,8 @@ Schema v1 layout (keys are the ``types.py`` field names)::
     [render]                        # container = "mkv", audio = "copy"
     [render.encoder_by_vendor]      # vendor = "encoder"
     [[profiles]]                    # id, name, backend, model, scale, target,
-                                    # sc_threshold, buffered_frames, concurrent_frames, hdr
+                                    # sc_threshold, buffered_frames, concurrent_frames, hdr,
+                                    # content
     [[rules]]                       # profile = "<id>", match = { fps_max = 30, ... }
 
 - ``target`` is ``"display"``, ``"display-max"``, ``"2x"`` or ``"fps:<n>/<d>"`` (``"fps:60"`` and
@@ -27,7 +28,8 @@ Schema v1 layout (keys are the ``types.py`` field names)::
   when it differs from the shipped one (or carries unknown keys), so "Reset to
   default" removes the entry and shipped updates keep reaching the user.
 - ``None`` values are omitted (TOML has no null), as are ``trt_experimental = false``
-  ``upscaling = "standard"``, ``deband = false`` and ``full_size = false``.
+  ``upscaling = "standard"``, ``deband = false``, ``full_size = false`` and a
+  profile's ``content = "auto"`` (older configs have no ``content`` key).
   Exception: a built-in override whose optional engine field is ``None`` while
   the shipped value is not writes an explicit "automatic" marker, because an
   absent key on a built-in means "the shipped value": ``model = ""``,
@@ -69,6 +71,7 @@ from buttereye.core.types import (
     BackendId,
     Config,
     ConfigIssue,
+    ContentKind,
     GeneralSettings,
     HdrClass,
     Msg,
@@ -858,6 +861,7 @@ class _Reader:
                 ),
                 hdr=g("hdr", _hdr_mode, '"skip" or "passthrough"', base.hdr),
                 builtin=True,
+                content=g("content", _content, _CONTENT_CHOICES, base.content),
             )
         return Profile(
             id=pid,
@@ -871,6 +875,7 @@ class _Reader:
             concurrent_frames=opt("concurrent_frames", _int, "a whole number", None),
             hdr=g("hdr", _hdr_mode, '"skip" or "passthrough"', "skip"),
             builtin=False,
+            content=g("content", _content, _CONTENT_CHOICES, ContentKind.AUTO),
         )
 
     def rules(self, raw: object) -> tuple[Rule, ...]:
@@ -926,6 +931,7 @@ _BACKEND_CHOICES = ", ".join(f'"{b.value}"' for b in BackendId)
 _BACKEND_OR_AUTO = '"auto", ' + _BACKEND_CHOICES
 _TARGET_CHOICES = '"display", "display-max", "2x" or "fps:<n>/<d>"'
 _HDR_CHOICES = ", ".join(f'"{h.value}"' for h in HdrClass)
+_CONTENT_CHOICES = '"auto", "live" or "animation"'
 _FPS_EXPECTED = 'a frame rate such as 30, 59.94 or "24000/1001"'
 
 
@@ -1017,6 +1023,13 @@ def _hdr_mode(v: object) -> Literal["skip", "passthrough"] | None:
     return None
 
 
+def _content(v: object) -> ContentKind | None:
+    try:
+        return ContentKind(v) if isinstance(v, str) else None
+    except ValueError:
+        return None
+
+
 def _hdr_class(v: object) -> HdrClass | None:
     try:
         return HdrClass(v) if isinstance(v, str) else None
@@ -1059,6 +1072,10 @@ def _profile_doc(p: Profile) -> dict[str, object]:
         "concurrent_frames", p.concurrent_frames, shipped.concurrent_frames if shipped else None
     )
     d["hdr"] = p.hdr
+    # Written only when it is not what an absent key reads back as (automatic,
+    # or the shipped value on a built-in), so older configs stay byte-identical.
+    if p.content != (shipped.content if shipped else ContentKind.AUTO):
+        d["content"] = str(p.content)
     return d
 
 

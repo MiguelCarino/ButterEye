@@ -40,6 +40,7 @@ from buttereye.core.types import (
     BenchResult,
     Config,
     ConfigLoad,
+    ContentKind,
     Feature,
     HdrClass,
     Msg,
@@ -248,6 +249,33 @@ def test_store_failed_measurement_roundtrips(tmp_path: Path) -> None:
     )
     store.append(path, _result(measurements=(failed,)))
     assert store.read(path)[0].measurements == (failed,)
+
+
+def test_store_forgets_old_script_mvtools_once(tmp_path: Path) -> None:
+    # bench.vpy before version 2 timed MVTools at pel 1 from 720p up (playback runs
+    # pel 2 to 1080p): those speeds are dropped, everything else is kept
+    path = tmp_path / "bench.json"
+    r = _result()
+    store.write_atomic(path, [r])
+    doc = json.loads(path.read_text())
+    assert doc["results"][0]["bench"] == store.BENCH
+    assert store.read(path) == (r,)
+    del doc["results"][0]["bench"]
+    path.write_text(json.dumps(doc))
+    old = store.read(path)[0]
+    assert [m.backend for m in old.measurements] == [BackendId.RIFE_NCNN] * 3
+    kept = tuple(m for m in r.measurements if m.backend is not BackendId.MVTOOLS)
+    assert old.measurements == kept
+    assert old.recommended == r.recommended
+    store.append(path, _result(gpu_uuid="new"))  # the rewrite tags it: dropped once
+    doc = json.loads(path.read_text())
+    assert [x["bench"] for x in doc["results"]] == [store.BENCH] * 2
+    assert store.read(path)[0] == old
+
+
+def test_bench_script_times_mvtools_as_template_plays() -> None:
+    bench = (BENCH_DIR / "bench.vpy").read_text()
+    assert "pel=1 if clip.width > 1920 or clip.height > 1080 else 2" in bench
 
 
 @pytest.mark.parametrize(
@@ -527,7 +555,41 @@ async def test_user_data_reaches_vspipe(env: Env) -> None:
     )
     assert rife["uhd"] is False and rife["matrix"] == "709"
     assert args[args.index("-e") + 1] == "191"
+    # the blank clip is all identical frames: never re-timed or copied
+    assert not any(d.get("hold_fill") or d.get("still_skip") for d in data)
     await core.close(cancel_jobs=True)
+
+
+async def test_trt_speed_test_never_fills_or_skips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TensorRT is timed through the playback template, on a blank clip: hold fill
+    and still skip must both be off there, or the run times copies."""
+    from buttereye.core.backends import trt
+
+    async def identity(uuid: str | None) -> tuple[str, str]:
+        return "GPU-1", "615.71"
+
+    async def build(paths: Any, inst: Any, key: Any, *, script: Path) -> Path:
+        return tmp_path / "engine"
+
+    monkeypatch.setattr(trt, "nvidia_identity", identity)
+    monkeypatch.setattr(trt, "build_engine", build)
+    inst = trt.TrtInstall(
+        tmp_path / "vstrt", tmp_path / "vstrt", (tmp_path / "py",), tmp_path / "onnx",
+        Path("/usr/bin/trtexec"), "v16.3.test1", "11.3.0",
+    )  # fmt: skip
+    c = runner.Candidate(
+        "rife-v4.26 trt", BackendId.RIFE_TRT, "rife-v4.26_ensembleFalse", None, 2, inst
+    )
+    ctx = pytypes.SimpleNamespace(paths=sc.fake_paths(tmp_path))
+    data, _ = await runner._trt_prepare(
+        ctx,  # type: ignore[arg-type]
+        c, None, width=1920, height=1080, source=REQ.source_fps,
+        target=REQ.source_fps * 2, src_frames=97,
+    )  # fmt: skip
+    assert data["hold_fill"] is False and data["still_skip"] is False
+    assert data["source"]["kind"] == "blank"
 
 
 async def test_gpu_fault_is_never_recommended(env: Env) -> None:
@@ -749,6 +811,19 @@ async def test_apply_writes_benchmark_profile_and_first_rule(env: Env) -> None:
     with pytest.raises(ConfigConflict):
         await core.apply_bench(result, "mvtools", expected_revision="stale")
     await core.close(cancel_jobs=True)
+
+
+def test_bench_config_keeps_the_profiles_own_content() -> None:
+    # re-applying a measured configuration keeps what the user set on it
+    result = _result()
+    cfg = runner.bench_config(sc.default_config(), result, "rife-v4.22-lite")
+    prof = next(p for p in cfg.profiles if p.id == runner.BENCH_PROFILE_ID)
+    assert prof.content is ContentKind.AUTO
+    anime = dataclasses.replace(prof, content=ContentKind.ANIMATION)
+    cfg = dataclasses.replace(cfg, profiles=tuple(anime if p is prof else p for p in cfg.profiles))
+    cfg2 = runner.bench_config(cfg, result, "mvtools")
+    prof2 = next(p for p in cfg2.profiles if p.id == runner.BENCH_PROFILE_ID)
+    assert prof2.backend is BackendId.MVTOOLS and prof2.content is ContentKind.ANIMATION
 
 
 async def test_apply_refusals(env: Env) -> None:

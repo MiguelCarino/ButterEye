@@ -126,6 +126,35 @@ def test_user_data_fields() -> None:
     assert "model_path" not in mv and "gpu_thread" not in mv
 
 
+def test_user_data_motion_and_siting_keys() -> None:
+    plain = json.loads(g.user_data(_params()))
+    assert plain["hold_fill"] is False and plain["hold_max"] == 3
+    assert plain["still_skip"] is False and "chromaloc" not in plain
+    for backend in BackendId:
+        trt = {"engine_dir": "/e"} if backend is BackendId.RIFE_TRT else None
+        data = json.loads(g.user_data(_params(
+            backend=backend, trt=trt, hold_fill=True, hold_max=2, still_skip=True,
+            chroma_loc="top_left",
+        )))  # fmt: skip
+        assert (data["hold_fill"], data["hold_max"], data["still_skip"]) == (True, 2, True)
+        assert data["chromaloc"] == "top_left"
+
+
+def test_template_mvtools_pel_by_size() -> None:
+    # pel 2 up to 1080p (pel 1 turns 1 px/frame pans into repeats), 1 above
+    text = g.template_text()
+    assert "pel = 1 if clip.width > 1920 or clip.height > 1080 else 2" in text
+
+
+def test_template_names_the_chroma_siting_on_every_conversion() -> None:
+    text = g.template_text()
+    assert "chromaloc_in_s=loc" in text and "chromaloc_s=loc" in text
+    assert "core.resize.Bicubic(clip, format=vs.RGBS" not in text  # Spline36 both ways
+    # every YUV<->RGB conversion goes through the two helpers
+    assert text.count("format=vs.RGB") == 0
+    assert text.count("_to_rgb(") >= 4 and text.count("_to_yuv(") >= 4
+
+
 def test_default_frames_per_backend() -> None:
     assert g.default_frames(BackendId.RIFE_NCNN) == (4, 8)  # mpv concurrent-frames 8 (§4.4)
     assert g.default_frames(BackendId.MVTOOLS, cpu_count=24) == (4, 16)

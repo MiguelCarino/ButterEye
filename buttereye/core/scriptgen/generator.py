@@ -161,13 +161,31 @@ class FilterParams:
     #: 8-bit RIFE output dither (zimg name); None = "ordered" (10-bit: none).
     #: Offline renders ask for "error_diffusion" (§4.4).
     dither: str | None = None
-    #: MVTools Super pel; None = 1 from 720p up, else 2 (renders ask for 2)
+    #: MVTools Super pel; None = 2 up to 1080p, 1 above (renders ask for 2)
     mv_pel: int | None = None
     #: MVTools "block" = BlockFPS (live fallback when FlowFPS can't keep up, M0(p))
     mv_mode: str | None = None
     #: TensorRT settings (``backends.trt.script_settings``): folders, model,
     #: precision, streams, build mode. Data only, never code (§4.4).
     trt: Mapping[str, Any] | None = None
+    #: animation on twos/threes: re-time drawings held 2..``hold_max`` frames so
+    #: motion is spread evenly instead of still, still, jump. Decided per frame,
+    #: so live action never triggers it. RIFE-ncnn, MVTools and mvgpu (not
+    #: TensorRT). Reach of one output frame between source frames n and n+1
+    #: (measured, hold_max 3): with scene detection or still skip on, n-4..n+5;
+    #: with hold fill n-hold_max-2..n+hold_max+3 (-5..+6); MVTools one more on
+    #: each side. buffered-frames: at least 2 * hold_max + 4 with hold fill; mpv's
+    #: default 4 otherwise (VapourSynth's frame cache serves the rest: no "frame
+    #: too far back" in mpv seek tests at 4; a profile's 1 failed 2 runs in 14).
+    hold_fill: bool = False
+    hold_max: int = 3
+    #: copy instead of interpolating identical frame pairs (speed only, nothing
+    #: visible). Off for speed tests: their blank source is all identical pairs.
+    still_skip: bool = False
+    #: chroma siting, zimg name ("left", "center", "top_left", "top",
+    #: "bottom_left", "bottom"), from mpv's video-params; None = what the source
+    #: frames say when the script reads them itself (offline), else left
+    chroma_loc: str | None = None
 
 
 def default_frames(backend: BackendId, *, cpu_count: int | None = None) -> tuple[int, int]:
@@ -217,7 +235,12 @@ def user_data(params: FilterParams) -> str:
         "range": params.range,
         "sc_threshold": params.sc_threshold,
         "title": params.title,
+        "hold_fill": bool(params.hold_fill),
+        "hold_max": int(params.hold_max),
+        "still_skip": bool(params.still_skip),
     }
+    if params.chroma_loc is not None:
+        data["chromaloc"] = params.chroma_loc
     if params.size is not None:
         data["size"] = [int(params.size[0]), int(params.size[1])]
     if params.backend is BackendId.RIFE_NCNN:

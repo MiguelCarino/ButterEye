@@ -21,7 +21,9 @@ from buttereye.core.types import (
     BenchMeasurement,
     BenchRequest,
     BenchResult,
+    ContentKind,
     HdrClass,
+    Profile,
     Target,
     TargetKind,
 )
@@ -393,3 +395,64 @@ def test_engine_for() -> None:
     # ... but never to TensorRT unless the profile asked for it
     assert rp.engine_for(BackendId.MVTOOLS, frozenset({BackendId.RIFE_TRT})) is None
     assert rp.engine_for("auto", frozenset()) is None
+
+
+@pytest.mark.parametrize(
+    ("engine", "content", "on"),
+    [
+        (BackendId.RIFE_NCNN, ContentKind.ANIMATION, True),
+        # a copy has no real-time limit: Automatic re-times held drawings too
+        (BackendId.MVTOOLS, ContentKind.AUTO, True),
+        (BackendId.MVGPU, ContentKind.AUTO, True),
+        (BackendId.RIFE_NCNN, ContentKind.LIVE, False),
+        (BackendId.RIFE_TRT, ContentKind.ANIMATION, False),  # TensorRT has none
+    ],
+)
+def test_hold_fill_for_a_copy(engine: BackendId, content: ContentKind, on: bool) -> None:
+    p = Profile(
+        id="p", name="P", backend="auto", model=None, scale=None,
+        target=Target(TargetKind.X2), sc_threshold=0.12, buffered_frames=None,
+        concurrent_frames=None, content=content,
+    )  # fmt: skip
+    assert jobs._hold_fill(engine, p) is on
+    assert jobs._hold_fill(BackendId.RIFE_NCNN, None) is True
+
+
+@pytest.mark.parametrize(
+    ("backend", "content", "engine"),
+    [
+        # TensorRT has no hold fill: 2D animation on Automatic takes RIFE-ncnn
+        ("auto", ContentKind.ANIMATION, BackendId.RIFE_NCNN),
+        ("auto", ContentKind.AUTO, BackendId.RIFE_TRT),  # time is the cost offline
+        (BackendId.RIFE_TRT, ContentKind.ANIMATION, BackendId.RIFE_TRT),  # pinned
+    ],
+)
+def test_animation_copy_prefers_an_engine_with_hold_fill(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, backend: Any, content: ContentKind,
+    engine: BackendId,
+) -> None:  # fmt: skip
+    from types import SimpleNamespace
+
+    from buttereye.core.mpvctl import decide
+
+    installed = frozenset({BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVTOOLS})
+    monkeypatch.setattr(jobs, "_installed", lambda ctx, profile=None: installed)
+    monkeypatch.setattr(jobs, "_trt", lambda ctx, profile: (object(), "rife-trt-model"))
+    model = decide.ModelChoice("rife-v4.26", tmp_path / "rife-v4.26", None)
+    monkeypatch.setattr(decide, "find_model", lambda *a, **k: model)
+    ctx = SimpleNamespace(paths=SimpleNamespace(rpm_data_dir=tmp_path, data_dir=tmp_path))
+    p = Profile(
+        id="p", name="P", backend=backend, model=None, scale=None,
+        target=Target(TargetKind.X2), sc_threshold=0.12, buffered_frames=None,
+        concurrent_frames=None, content=content,
+    )  # fmt: skip
+    got, mc = jobs._engine(ctx, p)  # type: ignore[arg-type]
+    assert got is engine
+    trt_model = got is BackendId.RIFE_TRT
+    assert mc is not None and mc.name == ("rife-trt-model" if trt_model else "rife-v4.26")
+    assert jobs._hold_fill(got, p) is (got is not BackendId.RIFE_TRT)
+    # no RIFE-ncnn model: the usual order
+    none = decide.ModelChoice(None, None, None)
+    monkeypatch.setattr(decide, "find_model", lambda *a, **k: none)
+    if backend == "auto":
+        assert jobs._engine(ctx, p)[0] is BackendId.RIFE_TRT  # type: ignore[arg-type]

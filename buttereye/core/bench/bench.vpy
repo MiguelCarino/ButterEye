@@ -91,8 +91,8 @@ if backend == 'rife':
                               dither_type='none' if clip.format.bits_per_sample > 8 else 'ordered')
 elif backend == 'mvtools':
     load('mv', 'mvtools.so')
-    # as template.vpy plays it: pel 1 from 720p up
-    sup = core.mv.Super(clip, pel=1 if clip.width >= 1280 or clip.height >= 720 else 2)
+    # as template.vpy plays it: pel 2 up to 1080p, pel 1 above
+    sup = core.mv.Super(clip, pel=1 if clip.width > 1920 or clip.height > 1080 else 2)
     bv = core.mv.Analyse(sup, isb=True, blksize=16, overlap=4)
     fv = core.mv.Analyse(sup, isb=False, blksize=16, overlap=4)
     out = core.mv.FlowFPS(clip, sup, bv, fv, num=out_num, den=out_den)

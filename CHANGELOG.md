@@ -5,6 +5,65 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
+## Unreleased
+
+Hand-drawn 2D animation now plays smoothly instead of still-still-still-jump.
+Scene cuts in dark or similar-looking shots are caught, colours no longer shift
+between frames, and seeking with RIFE is about a second faster.
+
+### New: 2D animation is treated differently from live action and 3D
+
+- **Held drawings are re-timed.** Animation is usually drawn "on twos" or "on
+  threes": each drawing is shown for 2 or 3 frames. Every engine smoothed that as
+  if each frame were new motion, so at 2× the picture stood still for three frames
+  and then jumped (half of all output steps did not move at all). ButterEye now
+  finds drawings held 2–3 frames and replaces the repeats with in-between frames
+  before smoothing, so the motion is even. On test clips the motion steps went from
+  very uneven to even (step variation 1.00 → 0.05 on twos with RIFE, 1.00 → 0.01
+  with MVTools). Live action, motion on ones, long deliberate holds and scene cuts
+  are left as they were: output for those is byte-identical.
+- **A "Content" setting per profile:** Automatic, Live action and 3D, or 2D
+  animation. Automatic re-times held drawings only when the speed test shows room
+  for the extra work (up to about 1.7× at 2×). 2D animation always does, and the
+  automatic engine choice prefers RIFE, then MVTools, then GPU motion vectors.
+  Offline renders re-time unless the profile says live action. If frames drop
+  badly while re-timing, it is switched off for the rest of that video. Not on the
+  TensorRT engine yet.
+
+### Improved
+
+- **Scene cuts found by contrast with their surroundings,** not only by a fixed
+  threshold. Cuts in dark scenes and between shots on the same backdrop (which
+  showed a frame with the character missing) are now found. Fades, flashes and
+  drawings on twos/threes are not marked. MVTools now honours cuts too.
+- **GPU motion vectors (mvgpu) on flat colours and line art:** motion of 1, 3 or 5
+  pixels a frame can now be followed (only even counts before), with a sub-pixel
+  step, sharper Catmull-Rom sampling, a median that no longer erases the vectors of
+  thin edges, and better handling of uncovered areas. Flat shapes went from about
+  25–45 dB to 60–99 dB, and the three real test clips got slightly better too. The
+  cost is about 10–35 % more GPU time per frame, depending on the content.
+- **MVTools uses half-pixel vectors up to 1080p,** so slow pans and credit rolls no
+  longer judder (a 1 px-per-frame pan came out as exact repeats). The speed test
+  measures it the same way, and MVTools results from earlier speed tests are
+  forgotten once.
+- **Identical frames are copied instead of computed:** about 15 % faster on
+  animation (more on screen recordings), with no visible difference.
+- **Faster seeking with RIFE (Fedora).** The RIFE plugin keeps its GPU instance and
+  its model across mpv's seeks: seek to playback 1.5–1.9 s → about 0.3–0.4 s.
+  When nothing is playing it holds about 116 MiB of video memory.
+
+### Fixed
+
+- **Chroma shifted half a pixel on interpolated frames** of video whose colour
+  samples are centred or top-left (most UHD and HDR10 files), so colour edges
+  wobbled between source and in-between frames. Every conversion now uses the
+  source's chroma location, with a sharper Spline36 kernel.
+- **8-bit offline renders were tagged with the wrong chroma location** (centre),
+  so players shifted colour by half a pixel. The source's location is now kept.
+- **MVTools showed black frames at the start** of live playback.
+- **The status badge used the theme's coloured icon** on desktops with no icon
+  theme chosen (qt6ct, bare Hyprland) instead of the glyph in the text colour.
+
 ## 0.0.5 — 2026-10-14
 
 On a Mac, ButterEye now gets the programs inside it past Gatekeeper on its own the

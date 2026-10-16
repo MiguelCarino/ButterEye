@@ -261,6 +261,12 @@ class TargetKind(StrEnum):
     FPS = "fps"
 
 
+class ContentKind(StrEnum):
+    AUTO = "auto"  # held drawings re-timed frame by frame when there is speed to spare
+    LIVE = "live"  # camera footage and 3D: never re-timed
+    ANIMATION = "animation"  # hand-drawn 2D on twos/threes: re-timed, RIFE preferred
+
+
 class Origin(StrEnum):
     LAUNCHED = "launched"
     ATTACHED = "attached"
@@ -414,6 +420,7 @@ class Profile:
     concurrent_frames: int | None
     hdr: Literal["skip", "passthrough"] = "skip"
     builtin: bool = False
+    content: ContentKind = ContentKind.AUTO
 
 
 @dataclass(frozen=True, slots=True)

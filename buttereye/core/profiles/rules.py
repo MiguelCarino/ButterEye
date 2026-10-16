@@ -40,6 +40,7 @@ from buttereye.core.types import (
     BackendId,
     Config,
     ConfigIssue,
+    ContentKind,
     HdrClass,
     Msg,
     Profile,
@@ -172,6 +173,8 @@ def _validate_profiles(profiles: tuple[Profile, ...], out: _Issues, trt_on: bool
                 )
         if p.hdr not in ("skip", "passthrough"):
             out.add(f"{f}.hdr", "HDR must be skip or passthrough.")
+        if not isinstance(p.content, ContentKind):
+            out.add(f"{f}.content", "Content must be auto, live or animation.")
     return ids
 
 

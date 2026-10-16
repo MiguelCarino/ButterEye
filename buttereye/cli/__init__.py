@@ -401,7 +401,8 @@ async def cmd_profiles(core: ButterEye, ns: argparse.Namespace, out: Out) -> int
     for p in cfg.profiles:
         backend = p.backend if isinstance(p.backend, str) else p.backend.value
         out.line(f"{p.id:16s} {p.name:28s} {backend:10s} {p.model or '':30s} "
-                 f"{p.target.kind.value}{' builtin' if p.builtin else ''}")  # fmt: skip
+                 f"{p.target.kind.value:11s} {p.content.value:9s}"
+                 f"{' builtin' if p.builtin else ''}")  # fmt: skip
     out.document("profiles", {"profiles": cfg.profiles, "rules": cfg.rules}, ok=True)
     return EXIT_OK
 

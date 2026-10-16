@@ -4,8 +4,8 @@
 
 ``vspipe -c y4m -p`` (the live script with a file source) | ``ffmpeg`` encode to a
 video-only MKV, then ``mkvmerge`` (or ``ffmpeg``) copies every other stream of the
-source next to it. The y4m header carries no colour, so colour flags are always
-passed from ffprobe's answer.
+source next to it. The y4m header carries no colour, so colour flags (and the
+chroma siting) are always passed from ffprobe's answer.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from typing import Any
 from buttereye.core.render.probe import (
     TEN_BIT_ENCODERS,
     SourceInfo,
+    chroma_sample_location,
     renders_as_hdr10,
     svtav1_hdr_params,
     x265_hdr_params,
@@ -84,6 +85,8 @@ def encode_argv(
         value = src.color.get(key)
         if value:
             argv += [f"-{key}", value]
+    # the y4m header says C420 for 8 bits, which ffmpeg reads as center
+    argv += ["-chroma_sample_location", chroma_sample_location(src)]
     argv += ["-c:v", encoder, *_ENCODER_ARGS.get(encoder, ())]
     hdr10 = renders_as_hdr10(src)
     if hdr10 and encoder == "libx265":

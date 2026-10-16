@@ -159,6 +159,31 @@ def range_name(colorlevels: object) -> str | None:
     return colorlevels if colorlevels in ("limited", "full") else None
 
 
+#: mpv ``video-params/chroma-location`` → zimg ``chromaloc_s``. mpv 0.41 names
+#: them as listed by ``--vf=format=chroma-location=help``; libplacebo's own
+#: spellings are read too. "unknown" (or anything else) leaves zimg's default.
+MPV_CHROMA_LOC: Mapping[str, str] = {
+    "mpeg2/4/h264": "left",
+    "left": "left",
+    "mpeg1/jpeg": "center",
+    "center": "center",
+    "uhd": "top_left",
+    "top-left": "top_left",
+    "top_left": "top_left",
+    "top": "top",
+    "bottom-left": "bottom_left",
+    "bottom_left": "bottom_left",
+    "bottom": "bottom",
+}
+
+
+def chroma_loc_name(chroma_location: object) -> str | None:
+    """zimg chroma location for mpv's ``chroma-location``; None = unknown."""
+    if isinstance(chroma_location, str):
+        return MPV_CHROMA_LOC.get(chroma_location)
+    return None
+
+
 def hdr_class(video_params: Mapping[str, Any]) -> HdrClass:
     gamma = video_params.get("gamma")
     if gamma == "pq":
@@ -262,6 +287,38 @@ def load_rate(src: Fraction, target: Fraction) -> Fraction:
     dev box (RTX 4090, v4.26) 1080p 2× ran 53.7 output fps untimed and 3.75×
     only 30.1, both about 27-28 inferences per second."""
     return 2 * interp_rate(src, target)
+
+
+#: Hold fill (``FilterParams.hold_fill``) is costed for drawings held this many
+#: frames, the longest hold it re-times (the session's ``HOLD_MAX``): every held
+#: frame is then inferred too, 1.67x the work at 2x (1.5x on twos). A run longer
+#: than ``hold_max`` is left alone, so no content costs more.
+HOLD_FILL_GROUP = 3
+
+
+def hold_fill_factor(src: Fraction, target: Fraction, group: int = HOLD_FILL_GROUP) -> float:
+    """How much more interpolation work hold fill can add at ``src`` → ``target``.
+
+    With multiplier ``m = target / src`` the engines infer ``1 - 1/m`` of the
+    output frames; when every drawing is held ``group`` frames and each is
+    re-timed, only one output frame in ``group × m`` is a real one:
+    ``(1 - 1/(g·m)) / (1 - 1/m)``. 2× on twos is 1.5×, on threes 1.67×. The
+    per-frame detection never fires on live action, so this is a worst case, not
+    the usual cost."""
+    if src <= 0 or target <= src or group < 2:
+        return 1.0
+    m = float(Fraction(target) / Fraction(src))
+    return (1 - 1 / (group * m)) / (1 - 1 / m)
+
+
+def hold_fill_fits(src: Fraction, target: Fraction, cap: float | None) -> bool:
+    """Whether a live cap (``load_rate`` units) absorbs hold fill's worst case.
+
+    No cap (no benchmark, or smoothing forced past it) answers False: there is
+    nothing to say the extra work would keep up."""
+    if cap is None or cap <= 0:
+        return False
+    return float(load_rate(src, target)) * hold_fill_factor(src, target) <= cap
 
 
 def as_2x_rate(fps: float, src: object, target: object = None) -> float:
@@ -598,6 +655,7 @@ def pick_engine(
     *,
     auto: bool,
     forced: bool = False,
+    animation: bool = False,
 ) -> EnginePick:
     """§11.9: the engine is chosen after the target, against each engine's live cap.
 
@@ -621,6 +679,11 @@ def pick_engine(
       option that can for this file: mvgpu (after RIFE) with
       ``gpu_fallback_notice``, MVTools with ``cpu_fallback_notice``.
 
+    ``animation`` (a profile for 2D animation, ``ContentKind.ANIMATION``): the
+    caller ranks MVTools before mvgpu, and mvgpu no longer takes over from a RIFE
+    that misses the display rate - mvgpu loses large flat shapes, and drawings
+    held on twos double each step it has to find.
+
     Nothing reaches a target → ``NO_REALTIME`` with ``no_realtime_notice``;
     with ``forced`` (the user asked to smooth anyway) the first engine then runs
     uncapped instead, with ``forced_notice``.
@@ -628,7 +691,7 @@ def pick_engine(
     engine and are returned at once.
     """
 
-    pick = _pick_engine(options, src, display_hz, kind, fixed, auto=auto)
+    pick = _pick_engine(options, src, display_hz, kind, fixed, auto=auto, animation=animation)
     if not forced or not options or pick.target.bypass is not BypassReason.NO_REALTIME:
         return pick
     # "smooth anyway" on Automatic is not a request for RIFE on a Mac: the first
@@ -649,6 +712,7 @@ def pick_size(
     *,
     auto: bool,
     forced: bool = False,
+    animation: bool = False,
 ) -> tuple[EnginePick, tuple[int, int]] | None:
     """§11.9: a video too demanding at its own size is smoothed at a smaller one.
 
@@ -661,6 +725,9 @@ def pick_size(
     2. otherwise any engine at the largest size where ``pick_engine`` finds one
        (a pinned RIFE-ncnn may fall back to MVTools there);
     3. otherwise, with ``forced``, the first engine uncapped at the smallest size.
+
+    With ``animation`` step 1 asks only RIFE: mvgpu at a smaller size does not
+    beat MVTools for 2D animation (``pick_engine``).
 
     None: nothing works at any smaller size (and not forced, or no size).
 
@@ -677,20 +744,23 @@ def pick_size(
     if reach is not None:
         need = min(need, reach)
     for size, opts in sized:
-        gpu = [o for o in opts if o.backend in GPU_BACKENDS and o.sustainable_fps is not None]
+        first = RIFE_BACKENDS if animation else GPU_BACKENDS
+        gpu = [o for o in opts if o.backend in first and o.sustainable_fps is not None]
         if not gpu:
             continue
-        p = pick_engine(gpu, src, display_hz, kind, fixed, auto=auto)
+        p = pick_engine(gpu, src, display_hz, kind, fixed, auto=auto, animation=animation)
         target = p.target.target
         if runs(p) and target is not None and (not auto or target >= need):
             return p, size
     for size, opts in sized:
-        p = pick_engine(opts, src, display_hz, kind, fixed, auto=auto)
+        p = pick_engine(opts, src, display_hz, kind, fixed, auto=auto, animation=animation)
         if runs(p):
             return p, size
     if forced and sized:
         size, opts = sized[-1]
-        p = pick_engine(opts, src, display_hz, kind, fixed, auto=auto, forced=True)
+        p = pick_engine(
+            opts, src, display_hz, kind, fixed, auto=auto, forced=True, animation=animation
+        )
         if runs(p):
             return dataclasses.replace(p, notice=forced_smaller_notice(size[1])), size
     return None
@@ -704,6 +774,7 @@ def _pick_engine(
     fixed: Fraction | None,
     *,
     auto: bool,
+    animation: bool = False,
 ) -> EnginePick:
     def target_for(o: EngineOption) -> TargetChoice:
         return choose_target(src, display_hz, kind, fixed, sustainable_fps=o.sustainable_fps)
@@ -738,7 +809,7 @@ def _pick_engine(
             ((o, tc) for o, tc in picks if tc.target is not None and tc.target >= enough),
             picks[-1],  # not reached
         )
-        if chosen[0].backend in RIFE_BACKENDS:
+        if chosen[0].backend in RIFE_BACKENDS and not animation:
             # "Match your display": mvgpu at the display rate (then 60) beats a
             # RIFE that reaches only a lower rate
             tier = _display_tier(chosen[1].target, src, display_hz, kind)
@@ -1043,6 +1114,9 @@ __all__ = [
     "interp_rate",
     "load_rate",
     "as_2x_rate",
+    "HOLD_FILL_GROUP",
+    "hold_fill_factor",
+    "hold_fill_fits",
     "EngineOption",
     "EnginePick",
     "pick_engine",
@@ -1056,6 +1130,8 @@ __all__ = [
     "fps_fraction",
     "matrix_name",
     "range_name",
+    "MPV_CHROMA_LOC",
+    "chroma_loc_name",
     "hdr_class",
     "interlaced",
     "format_supported",
