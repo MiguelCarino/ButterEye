@@ -204,3 +204,25 @@ fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accep
   .catch(() => { /* offline or rate-limited: the built-in 0.0.4 list stays */ });
 
 fill();
+
+// ---------------------------------------------------------------- one screen, no scroll
+// The page is one screen. Where it is taller than the window (a short laptop
+// screen, a phone), the hero is zoomed down just enough to fit, never below 60%.
+function fitScreen() {
+  const wrap = document.querySelector('.hero > .wrap');
+  wrap.style.zoom = '';
+  const fits = () => document.documentElement.scrollHeight <= window.innerHeight;
+  if (fits()) return;
+  // Text rewraps as it shrinks, so the height is not linear in the zoom: search for
+  // the largest zoom that fits rather than computing one.
+  let lo = 0.6, hi = 1;
+  for (let k = 0; k < 7; k++) {
+    const mid = (lo + hi) / 2;
+    wrap.style.zoom = String(mid);
+    if (fits()) lo = mid; else hi = mid;
+  }
+  wrap.style.zoom = String(lo);
+}
+fitScreen();
+window.addEventListener('resize', fitScreen);
+if (document.fonts) document.fonts.ready.then(fitScreen);
