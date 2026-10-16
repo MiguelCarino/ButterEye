@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 The ButterEye contributors
 // Motion-compensated in-between frame for one plane at time t (spike M0(r)):
-// the per-pixel half-vectors u (luma pixels, chosen by select.comp); out = (1-t) A(x - 2t u) + t C(x + 2(1-t) u), bilinear. Chroma
-// planes pass sub = 2 (4:2:0): positions and vectors are halved.
+// the per-pixel half-vectors u (luma pixels, chosen by select.comp);
+// out = (1-t) A(x - 2t u) + t C(x + 2(1-t) u), Catmull-Rom. Chroma planes pass
+// sub = 2 (4:2:0): positions and vectors are halved.
 #version 450
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(std430, binding = 0) readonly buffer A { float a[]; };
@@ -10,17 +11,30 @@ layout(std430, binding = 1) readonly buffer C { float c[]; };
 layout(std430, binding = 2) readonly buffer F { vec4 field[]; };  // per luma pixel (select.comp)
 layout(std430, binding = 3) writeonly buffer Out { float o[]; };
 layout(push_constant) uniform P { uint off; int w, h, lw, lh, sub; float t, lo, hi; } p;
-float bil_a(vec2 q) {
-    q = clamp(q, vec2(0.0), vec2(p.w - 1.001, p.h - 1.001));
-    ivec2 i = ivec2(q); vec2 f = q - vec2(i);
-    uint r0 = p.off + uint(i.y * p.w + i.x), r1 = r0 + uint(p.w);
-    return mix(mix(a[r0], a[r0 + 1u], f.x), mix(a[r1], a[r1 + 1u], f.x), f.y);
+// Catmull-Rom (cubic, exact at whole pixels): bilinear sampling at the
+// in-between positions sub-pixel vectors land on softens fine detail and lines,
+// and a soft in-between frame between two sharp source frames flickers
+vec4 cr(float f) {
+    float f2 = f * f, f3 = f2 * f;
+    return vec4(-0.5 * f3 + f2 - 0.5 * f, 1.5 * f3 - 2.5 * f2 + 1.0, -1.5 * f3 + 2.0 * f2 + 0.5 * f,
+                0.5 * f3 - 0.5 * f2);
 }
-float bil_c(vec2 q) {
-    q = clamp(q, vec2(0.0), vec2(p.w - 1.001, p.h - 1.001));
-    ivec2 i = ivec2(q); vec2 f = q - vec2(i);
-    uint r0 = p.off + uint(i.y * p.w + i.x), r1 = r0 + uint(p.w);
-    return mix(mix(c[r0], c[r0 + 1u], f.x), mix(c[r1], c[r1 + 1u], f.x), f.y);
+float tap(bool from_a, int x, int y) {
+    uint r = p.off + uint(clamp(y, 0, p.h - 1) * p.w + clamp(x, 0, p.w - 1));
+    return from_a ? a[r] : c[r];
+}
+float sample_at(bool from_a, vec2 q) {
+    q = clamp(q, vec2(0.0), vec2(p.w - 1, p.h - 1));
+    vec2 b = floor(q), f = q - b;
+    ivec2 i = ivec2(b);
+    vec4 wx = cr(f.x), wy = cr(f.y);
+    float s = 0.0;
+    for (int j = 0; j < 4; ++j) {
+        float r = 0.0;
+        for (int k = 0; k < 4; ++k) r += wx[k] * tap(from_a, i.x - 1 + k, i.y - 1 + j);
+        s += wy[j] * r;
+    }
+    return s;
 }
 void main() {
     int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
@@ -37,11 +51,18 @@ void main() {
         }
     u /= float(p.sub * p.sub * p.sub);
     vec2 here = vec2(x, y);
-    float sa = bil_a(here - 2.0 * p.t * u), sc = bil_c(here + 2.0 * (1.0 - p.t) * u);
+    float sa = sample_at(true, here - 2.0 * p.t * u), sc = sample_at(false, here + 2.0 * (1.0 - p.t) * u);
     float blend = (1.0 - p.t) * sa + p.t * sc;
     // where even the best vector leaves the frames disagreeing (occlusion: the
     // content is only in one of them), averaging them draws a ghost: take the
-    // frame nearer in time instead, with a smooth ramp in between
-    float one = p.t <= 0.5 ? sa : sc;
+    // frame that has it instead, with a smooth ramp in between. Where the vectors
+    // converge (div < 0) something is being covered, so it is still in A; where
+    // they spread, it is being uncovered and only C has it; elsewhere the frame
+    // nearer in time.
+    ivec2 l = min(ivec2(x * p.sub, y * p.sub), ivec2(p.lw - 1, p.lh - 1));
+    const int R = 4;
+    float div = field[l.y * p.lw + min(l.x + R, p.lw - 1)].x - field[l.y * p.lw + max(l.x - R, 0)].x
+              + field[min(l.y + R, p.lh - 1) * p.lw + l.x].y - field[max(l.y - R, 0) * p.lw + l.x].y;
+    float one = div < -0.25 ? sa : div > 0.25 ? sc : (p.t <= 0.5 ? sa : sc);
     o[p.off + uint(y * p.w + x)] = mix(blend, one, smoothstep(p.lo, p.hi, mismatch));
 }

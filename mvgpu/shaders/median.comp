@@ -1,11 +1,34 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 The ButterEye contributors
-// 3x3 component median of a block vector field (removes stray matches).
+// 3x3 vector median of a block vector field (removes stray matches), checked
+// against the picture. A plain median outvotes the right vector wherever only
+// a few blocks see it: the column of blocks on an edge between two flat areas,
+// a small object. So the median here is one of the 9 vectors (the one nearest
+// all the others), and it replaces the block's own vector only where it
+// matches the block about as well (SAD within rel and abs_tol a pixel): a
+// stray match in a flat or noisy area goes, an edge's real vector stays.
 #version 450
 layout(local_size_x = 16, local_size_y = 16) in;
-layout(std430, binding = 0) readonly buffer Src { ivec2 src[]; };
-layout(std430, binding = 1) writeonly buffer Dst { ivec2 dst[]; };
-layout(push_constant) uniform P { int bw, bh; } p;
+layout(std430, binding = 0) readonly buffer PyrA { float pa[]; };
+layout(std430, binding = 1) readonly buffer PyrC { float pc[]; };
+layout(std430, binding = 2) readonly buffer Src { ivec2 src[]; };
+layout(std430, binding = 3) writeonly buffer Dst { ivec2 dst[]; };
+layout(push_constant) uniform P { uint off; int w, h, bw, bh, bs, half_units, mode; float rel, abs_tol; } p;
+float px_a(int x, int y) { x = clamp(x, 0, p.w - 1); y = clamp(y, 0, p.h - 1); return pa[p.off + uint(y * p.w + x)]; }
+float px_c(int x, int y) { x = clamp(x, 0, p.w - 1); y = clamp(y, 0, p.h - 1); return pc[p.off + uint(y * p.w + x)]; }
+// SAD over the block and half a block around it: a 4x4 block's own vector is
+// fitted to 16 pixels of noise, and on the wider window a smoother neighbour
+// vector that is really as good shows it (an edge is still in the window)
+float sad(int bx, int by, ivec2 u) {
+    float s = 0.0;
+    int g = p.bs / 2, n = p.bs + 2 * g;
+    int x0 = bx * p.bs - g, y0 = by * p.bs - g;
+    ivec2 ua = p.half_units != 0 ? u >> 1 : u, uc = p.half_units != 0 ? u - ua : u;  // as search.comp
+    for (int j = 0; j < n; ++j)
+        for (int i = 0; i < n; ++i)
+            s += abs(px_a(x0 + i - ua.x, y0 + j - ua.y) - px_c(x0 + i + uc.x, y0 + j + uc.y));
+    return s;
+}
 int med9(int v[9]) {
     for (int i = 0; i < 5; ++i)
         for (int j = i + 1; j < 9; ++j)
@@ -15,12 +38,28 @@ int med9(int v[9]) {
 void main() {
     int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
     if (x >= p.bw || y >= p.bh) return;
-    int vx[9], vy[9];
+    ivec2 v[9];
     int n = 0;
     for (int j = -1; j <= 1; ++j)
-        for (int i = -1; i <= 1; ++i) {
-            ivec2 v = src[clamp(y + j, 0, p.bh - 1) * p.bw + clamp(x + i, 0, p.bw - 1)];
-            vx[n] = v.x; vy[n] = v.y; ++n;
-        }
-    dst[y * p.bw + x] = ivec2(med9(vx), med9(vy));
+        for (int i = -1; i <= 1; ++i)
+            v[n++] = src[clamp(y + j, 0, p.bh - 1) * p.bw + clamp(x + i, 0, p.bw - 1)];
+    if (p.mode == 0) {  // component-wise (the pyramid levels, where vectors are coarse)
+        int vx[9], vy[9];
+        for (int k = 0; k < 9; ++k) { vx[k] = v[k].x; vy[k] = v[k].y; }
+        dst[y * p.bw + x] = ivec2(med9(vx), med9(vy));
+        return;
+    }
+    int best = 4;
+    int bestd = 1 << 30;
+    for (int k = 0; k < 9; ++k) {
+        int d = 0;
+        for (int m = 0; m < 9; ++m) d += abs(v[k].x - v[m].x) + abs(v[k].y - v[m].y);
+        if (d < bestd || (d == bestd && k == 4)) { bestd = d; best = k; }
+    }
+    ivec2 own = v[4], med = v[best];
+    if (med != own) {
+        float so = sad(x, y, own), sm = sad(x, y, med);
+        if (sm <= so * (1.0 + p.rel) + p.abs_tol * float(4 * p.bs * p.bs)) own = med;  // per window pixel
+    }
+    dst[y * p.bw + x] = own;
 }

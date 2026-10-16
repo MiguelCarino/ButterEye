@@ -16,16 +16,28 @@ smooth = core.mvgpu.Interpolate(clip, fps_num=120, fps_den=1[, device=0])
   search centred on the in-between frame (8×8 blocks, ±8 at 1/8 size, ±1 refinement of the
   block's and its neighbours' doubled vectors at every finer level, 3×3 vector median),
   then a 4×4-block refinement at full size.
+- At full size the search works in whole pixels of *motion* (A → C) rather than of the
+  half-vector, so 1, 3 or 5 px a frame (slow pans, credit rolls) is matched instead of being
+  rounded to an even step; a last pass refines it to ½ px (`subpel.comp`), and the render
+  samples Catmull-Rom so in-between frames stay as sharp as the source frames.
+- The full-size medians are checked against the picture: the median vector (one of the 9)
+  replaces a block's own only where it matches about as well, so the one column of blocks
+  that sees a flat object's edge or a thin line keeps its vector instead of being outvoted
+  by the flat background around it.
 - Per in-between frame: **per-pixel vector selection** — among the 3×3 neighbouring
   blocks' vectors, the one under which the two warped frames agree best (bilinear blending
   of block vectors mixed a moving object's vector with the background's and ghosted both);
   then the render. Where even the best vector leaves the frames disagreeing (occlusion), it
-  takes the frame nearer in time instead of averaging two different things.
+  takes the frame that has the content instead of averaging two different things: A where
+  the vectors converge (something is being covered), C where they spread (uncovered), else
+  the nearer frame.
 - Source positions are the source frames, untouched. A frame with `_SceneChangeNext` set
   (ButterEye's scripts mark them) is repeated instead of interpolated.
 - `MVGPU_PROFILE=1` prints the mean CPU/GPU time per upload and per render.
 - For comparisons: `MVGPU_SELECT=0` (bilinear block vectors), `MVGPU_FINE=0` (no 4×4
-  level), `MVGPU_OCC=lo,hi` (the mismatch ramp, default `0.04,0.12`; `9,10` turns it off).
+  level), `MVGPU_SUBPEL=0` (no ½ px refinement), `MVGPU_MEDIAN=0` (plain component median at
+  full size too), `MVGPU_OCC=lo,hi` (the mismatch ramp, default `0.04,0.12`; `9,10` turns it
+  off).
 
 ## Build
 
@@ -153,6 +165,14 @@ On a fast swinging sleeve, the first version drew a translucent double (ghost); 
 the occlusion fallback and 4×4 vectors make it one solid shape with slightly broken edges
 (PSNR about 0.2 dB lower there: averaging scores better than a sharp shape in a slightly
 wrong place, but ghosts are what the eye notices). 4K 10-bit 24 → 120: 370 fps synthetic.
+
+The odd-motion search, ½ px refinement and checked median (2026-10-15) came after these
+tables. `MVGPU_PROFILE=1`, 1080p 2x, GPU ms per render before → after: a still frame
+0.79 → 0.82, a uniform pan 0.78 → 0.87, two real clips scaled to 1080p 0.84 → 1.07 and
+0.83 → 0.99, random noise 0.85 → 1.15. Real content costs about 20–35 % more, not the
+10 % a uniform pan shows: neighbouring blocks with different vectors each get their own
+search window. At 1080p on this card the CPU is the limit, so the frame rate barely moves;
+on smaller GPUs, at 4K or at high multipliers it will.
 
 Test: `tests/integration/test_mvgpu_real.py` (a textured square moving 16 px per frame, the
 reported version, clean construction errors), `tests/integration/test_mvgpu_live_real.py`

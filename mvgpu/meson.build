@@ -23,7 +23,7 @@ add_project_arguments(
   language: 'cpp')
 
 shader_headers = []
-foreach s : ['unpack', 'down2', 'search', 'median', 'select', 'render', 'pack']
+foreach s : ['unpack', 'down2', 'search', 'median', 'subpel', 'select', 'render', 'pack']
   shader_headers += custom_target(s + '_spv',
     input: 'shaders' / s + '.comp',
     output: s + '.h',

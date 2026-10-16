@@ -3,8 +3,16 @@
 // Symmetric block search centred on the in-between frame (spike M0(r)).
 // One workgroup per 8x8 block, one invocation per candidate half-vector u:
 // block p matches A(p - u) with C(p + u). The coarsest level searches +-radius
-// around (0, 0); finer levels refine +-1 around the doubled vectors of the parent
-// block and its 4 neighbours.
+// around (0, 0); finer levels refine +-radius around the scaled vectors of the
+// parent block and its 4 neighbours.
+// Vectors are whole-pixel half-vectors u on the pyramid levels, where the
+// motion A -> C (2u) can only be even. The full-size levels (half = 1) store the
+// motion m = 2u itself, so 1, 3 or 5 px a frame can be matched too: A is read at
+// p - floor(m / 2) and C at p + m - floor(m / 2), still whole pixels (centred half
+// a pixel off, which does not matter for which motion fits). Without it a thin
+// line or a flat object moving an odd number of pixels found no match at all,
+// and a long vector that jumps over it, landing on flat background on both
+// sides, matched perfectly: the line vanished from the in-between frame.
 #version 450
 layout(local_size_x_id = 0) in;   // specialization: a power of two >= candidates
 layout(constant_id = 0) const uint WG = 512;
@@ -13,43 +21,73 @@ layout(std430, binding = 1) readonly buffer PyrC { float pc[]; };
 layout(std430, binding = 2) readonly buffer Parent { ivec2 parent[]; };
 layout(std430, binding = 3) writeonly buffer Out { ivec2 vout[]; };
 // bs: block size; pscale: 2 when the parent is the next coarser level, 1 when it
-// is the same level with larger blocks (the 4x4 refinement of the 8x8 vectors)
-layout(push_constant) uniform P { uint off; int w, h, bw, bh, pw, ph, radius, npred, bs, pscale; } p;
-shared float best[WG];
-shared ivec2 bestv[WG];
+// is the same level with larger blocks (the 4x4 refinement of the 8x8 vectors),
+// 4 for the first motion (half = 1) level under a half-vector (half = 0) parent
+layout(push_constant) uniform P { uint off; int w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; } p;
+// KIDS = 4: one workgroup per parent block does its 2x2 child blocks (the 4x4
+// refinement), which share the parent's candidate list: a quarter of the groups
+layout(constant_id = 1) const int KIDS = 1;
+shared float best[WG * KIDS];
+shared ivec2 bestv[WG * KIDS];
 float px_a(int x, int y) { x = clamp(x, 0, p.w - 1); y = clamp(y, 0, p.h - 1); return pa[p.off + uint(y * p.w + x)]; }
 float px_c(int x, int y) { x = clamp(x, 0, p.w - 1); y = clamp(y, 0, p.h - 1); return pc[p.off + uint(y * p.w + x)]; }
+ivec2 predictor(int px, int py, int pi) {
+    const ivec2 nb[5] = ivec2[5](ivec2(0, 0), ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
+    int qx = clamp(px + nb[pi].x, 0, p.pw - 1), qy = clamp(py + nb[pi].y, 0, p.ph - 1);
+    return p.pscale * parent[qy * p.pw + qx];
+}
 void main() {
-    int bx = int(gl_WorkGroupID.x), by = int(gl_WorkGroupID.y);
+    int gx = int(gl_WorkGroupID.x), gy = int(gl_WorkGroupID.y);
+    // the parent block whose vectors (and its neighbours') seed the candidates
+    int px = KIDS == 4 ? gx : gx / 2, py = KIDS == 4 ? gy : gy / 2;
     uint k = gl_LocalInvocationID.x;
     int win = 2 * p.radius + 1, per = win * win;
-    float s = 3.4e38;
+    bool live = int(k) < p.npred * per;
     ivec2 u = ivec2(0);
-    if (int(k) < p.npred * per) {
+    if (live) {
         int pi = int(k) / per, r = int(k) % per;
         ivec2 base = ivec2(0);
         if (p.npred > 1) {
-            const ivec2 nb[5] = ivec2[5](ivec2(0, 0), ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
-            int qx = clamp(bx / 2 + nb[pi].x, 0, p.pw - 1), qy = clamp(by / 2 + nb[pi].y, 0, p.ph - 1);
-            base = p.pscale * parent[qy * p.pw + qx];
+            base = predictor(px, py, pi);
+            // neighbours often share a vector: search each distinct one once
+            for (int q = 0; q < pi; ++q)
+                if (predictor(px, py, q) == base) live = false;
         }
         u = base + ivec2(r % win - p.radius, r / win - p.radius);
-        s = 0.0;
-        int x0 = bx * p.bs, y0 = by * p.bs;
-        for (int j = 0; j < p.bs; ++j)
-            for (int i = 0; i < p.bs; ++i)
-                s += abs(px_a(x0 + i - u.x, y0 + j - u.y) - px_c(x0 + i + u.x, y0 + j + u.y));
-        s += 0.002 * float(p.bs * p.bs) / 64.0 * float(abs(u.x) + abs(u.y));  // short vectors win ties (flat areas)
     }
-    best[k] = s;
-    bestv[k] = u;
+    // A at -ua, C at +uc: u and u, or floor(m / 2) and the rest of m
+    ivec2 ua = p.half_units != 0 ? u >> 1 : u, uc = p.half_units != 0 ? u - ua : u;
+    // short vectors win ties (flat areas); |u| in pixels either way
+    float len = float(abs(u.x) + abs(u.y)) * (p.half_units != 0 ? 0.5 : 1.0);
+    for (int q = 0; q < KIDS; ++q) {
+        int bx = KIDS == 4 ? 2 * gx + (q & 1) : gx, by = KIDS == 4 ? 2 * gy + (q >> 1) : gy;
+        float s = 3.4e38;
+        if (live && bx < p.bw && by < p.bh) {
+            s = 0.0;
+            int x0 = bx * p.bs, y0 = by * p.bs;
+            for (int j = 0; j < p.bs; ++j)
+                for (int i = 0; i < p.bs; ++i)
+                    s += abs(px_a(x0 + i - ua.x, y0 + j - ua.y) - px_c(x0 + i + uc.x, y0 + j + uc.y));
+            s += 0.002 * float(p.bs * p.bs) / 64.0 * len;
+        }
+        best[q * int(WG) + int(k)] = s;
+        bestv[q * int(WG) + int(k)] = u;
+    }
     barrier();
     for (uint stride = WG / 2u; stride > 0u; stride >>= 1u) {
-        if (k < stride && best[k + stride] < best[k]) {
-            best[k] = best[k + stride];
-            bestv[k] = bestv[k + stride];
-        }
+        if (k < stride)
+            for (int q = 0; q < KIDS; ++q) {
+                uint i = uint(q) * WG + k;
+                if (best[i + stride] < best[i]) {
+                    best[i] = best[i + stride];
+                    bestv[i] = bestv[i + stride];
+                }
+            }
         barrier();
     }
-    if (k == 0u) vout[by * p.bw + bx] = bestv[0];
+    if (k < uint(KIDS)) {
+        int q = int(k);
+        int bx = KIDS == 4 ? 2 * gx + (q & 1) : gx, by = KIDS == 4 ? 2 * gy + (q >> 1) : gy;
+        if (bx < p.bw && by < p.bh) vout[by * p.bw + bx] = bestv[q * int(WG)];
+    }
 }

@@ -6,6 +6,7 @@
 #include "down2.h"
 #include "search.h"
 #include "median.h"
+#include "subpel.h"
 #include "select.h"
 #include "render.h"
 #include "pack.h"

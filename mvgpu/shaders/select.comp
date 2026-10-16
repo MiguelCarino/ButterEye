@@ -10,7 +10,7 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(std430, binding = 0) readonly buffer A { float a[]; };
 layout(std430, binding = 1) readonly buffer C { float c[]; };
-layout(std430, binding = 2) readonly buffer V { ivec2 vec[]; };
+layout(std430, binding = 2) readonly buffer V { vec2 vec[]; };  // subpel.comp
 layout(std430, binding = 3) writeonly buffer F { vec4 field[]; };  // (u.x, u.y, mismatch, 0)
 layout(push_constant) uniform P { int w, h, bw, bh; float t, lambda; int smooth_vec, bs; } p;
 float bil(bool from_a, vec2 q) {

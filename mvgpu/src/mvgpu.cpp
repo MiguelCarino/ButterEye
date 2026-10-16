@@ -153,13 +153,22 @@ private:
     std::array<Buffer, 2> slot, pyr;
     std::array<Buffer, LEVELS> vraw, vec;
     Buffer vraw4, vec4;  // 4x4 refinement at full size
+    Buffer vsub;         // the final half-vectors as floats, refined to 1/4 px (subpel.comp)
     int bw4 = 0, bh4 = 0;
     // MVGPU_FINE=0: vectors per 8x8 block only (for comparisons)
     bool fine = !(std::getenv("MVGPU_FINE") && std::string(std::getenv("MVGPU_FINE")) == "0");
-    VkDescriptorSet ds_median4{};
-    std::array<VkDescriptorSet, 2> ds_search4{}, ds_select4{};
+    std::array<VkDescriptorSet, 2> ds_median4{};
+    std::array<VkDescriptorSet, 2> ds_search4{}, ds_subpel{}, ds_subpel4{};
+    // MVGPU_SUBPEL=0: no 1/2 px refinement of the final motion (for comparisons)
+    int subpel_steps = std::getenv("MVGPU_SUBPEL") && std::string(std::getenv("MVGPU_SUBPEL")) == "0" ? 0 : 1;
+    // MVGPU_MEDIAN=0: the plain component median at the full-size levels too (for
+    // comparisons); otherwise a vector median kept only where it matches the block
+    // about as well: SAD within med_rel of the block's own plus med_abs a pixel
+    bool checked_median = !(std::getenv("MVGPU_MEDIAN") && std::string(std::getenv("MVGPU_MEDIAN")) == "0");
+    float med_rel = 0.5f, med_abs = 0.008f;
 
-    Pipe p_unpack, p_down2, p_search_coarse, p_search_fine, p_median, p_select, p_render, p_pack;
+    Pipe p_unpack, p_down2, p_search_coarse, p_search_fine, p_search_full, p_search4, p_median, p_subpel, p_select,
+        p_render, p_pack;
     std::array<VkDescriptorSet, 2> ds_select{};
     // MVGPU_SELECT=0: the old bilinear block vectors (for comparisons)
     bool select_vectors = !(std::getenv("MVGPU_SELECT") && std::string(std::getenv("MVGPU_SELECT")) == "0");
@@ -168,7 +177,7 @@ private:
     float occ_lo = 0.04f, occ_hi = 0.12f;
     std::array<VkDescriptorSet, 2> ds_unpack{}, ds_down2{};
     std::array<std::array<VkDescriptorSet, LEVELS>, 2> ds_search{};  // [order][level]
-    std::array<VkDescriptorSet, LEVELS> ds_median{};
+    std::array<std::array<VkDescriptorSet, LEVELS>, 2> ds_median{};  // [order][level]
     std::array<VkDescriptorSet, 2> ds_render{};
     VkDescriptorSet ds_pack{};
 
@@ -182,7 +191,7 @@ private:
     uint32_t find_mem(uint32_t bits, VkMemoryPropertyFlags want) const;
     Buffer make(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props);
     void free(Buffer& b);
-    Pipe pipeline(const uint32_t* code, size_t bytes, int bindings, uint32_t push, const uint32_t* wg);
+    Pipe pipeline(const uint32_t* code, size_t bytes, int bindings, uint32_t push, uint32_t wg = 0, uint32_t kids = 1);
     VkDescriptorSet set(const Pipe& p, std::initializer_list<const Buffer*> bufs);
     void begin();
     void submit();
@@ -240,7 +249,7 @@ void Gpu::free(Buffer& b) {
     b = Buffer{};
 }
 
-Pipe Gpu::pipeline(const uint32_t* code, size_t nbytes, int bindings, uint32_t push, const uint32_t* wg) {
+Pipe Gpu::pipeline(const uint32_t* code, size_t nbytes, int bindings, uint32_t push, uint32_t wg, uint32_t kids) {
     Pipe p;
     p.bindings = bindings;
     VkShaderModule mod = VK_NULL_HANDLE;
@@ -268,14 +277,16 @@ Pipe Gpu::pipeline(const uint32_t* code, size_t nbytes, int bindings, uint32_t p
         sm.codeSize = nbytes;
         sm.pCode = code;
         check(vkCreateShaderModule(dev, &sm, nullptr, &mod), "vkCreateShaderModule");
-        VkSpecializationMapEntry entry{0, 0, sizeof(uint32_t)};
-        VkSpecializationInfo spec{1, &entry, sizeof(uint32_t), wg};
+        // search.comp: constant 0 the group size, 1 the child blocks per group
+        const uint32_t data[2] = {wg, kids};
+        const VkSpecializationMapEntry entries[2] = {{0, 0, sizeof(uint32_t)}, {1, 4, sizeof(uint32_t)}};
+        VkSpecializationInfo spec{2, entries, sizeof(data), data};
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
         ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         ci.stage.module = mod;
         ci.stage.pName = "main";
-        ci.stage.pSpecializationInfo = wg ? &spec : nullptr;
+        ci.stage.pSpecializationInfo = wg ? &spec : nullptr;  // 0: not search.comp
         ci.layout = p.layout;
         check(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr, &p.pipe), "vkCreateComputePipelines");
     } catch (...) {
@@ -487,39 +498,46 @@ void Gpu::init(int device) {
     bh4 = (h + 3) / 4;
     vraw4 = make(VkDeviceSize(bw4) * bh4 * 8, SB, DEV);
     vec4 = make(VkDeviceSize(bw4) * bh4 * 8, SB, DEV);
+    vsub = make(VkDeviceSize(std::max(bw4 * bh4, bw[0] * bh[0])) * 8, SB, DEV);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 256};
     VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    dp.maxSets = 32;
+    dp.maxSets = 64;
     dp.poolSizeCount = 1;
     dp.pPoolSizes = &ps;
     check(vkCreateDescriptorPool(dev, &dp, nullptr, &dpool), "vkCreateDescriptorPool");
 
-    const uint32_t wg_coarse = 512, wg_fine = 64;  // >= 17*17 and 5*3*3 candidates
-    p_unpack = pipeline(unpack_spv, sizeof(unpack_spv), 2, 20, nullptr);
-    p_down2 = pipeline(down2_spv, sizeof(down2_spv), 1, 24, nullptr);
-    p_search_coarse = pipeline(search_spv, sizeof(search_spv), 4, 44, &wg_coarse);
-    p_search_fine = pipeline(search_spv, sizeof(search_spv), 4, 44, &wg_fine);
-    p_median = pipeline(median_spv, sizeof(median_spv), 2, 8, nullptr);
-    p_select = pipeline(select_spv, sizeof(select_spv), 4, 32, nullptr);
-    p_render = pipeline(render_spv, sizeof(render_spv), 4, 36, nullptr);
-    p_pack = pipeline(pack_spv, sizeof(pack_spv), 2, 20, nullptr);
+    // group sizes: powers of two >= the 17*17, 5*3*3 and 5*5*5 candidates
+    p_unpack = pipeline(unpack_spv, sizeof(unpack_spv), 2, 20);
+    p_down2 = pipeline(down2_spv, sizeof(down2_spv), 1, 24);
+    p_search_coarse = pipeline(search_spv, sizeof(search_spv), 4, 48, 512);
+    p_search_fine = pipeline(search_spv, sizeof(search_spv), 4, 48, 64);
+    p_search_full = pipeline(search_spv, sizeof(search_spv), 4, 48, 128);
+    p_search4 = pipeline(search_spv, sizeof(search_spv), 4, 48, 128, 4);
+    p_median = pipeline(median_spv, sizeof(median_spv), 4, 40);
+    p_subpel = pipeline(subpel_spv, sizeof(subpel_spv), 4, 28);
+    p_select = pipeline(select_spv, sizeof(select_spv), 4, 32);
+    p_render = pipeline(render_spv, sizeof(render_spv), 4, 36);
+    p_pack = pipeline(pack_spv, sizeof(pack_spv), 2, 20);
 
     for (int s = 0; s < 2; ++s) {
         ds_unpack[s] = set(p_unpack, {&raw_in, &slot[s]});
         ds_down2[s] = set(p_down2, {&pyr[s]});
-        ds_select[s] = set(p_select, {&slot[s], &slot[1 - s], &vec[0], &field});
-        ds_select4[s] = set(p_select, {&slot[s], &slot[1 - s], &vec4, &field});
-        ds_search4[s] = set(p_search_fine, {&pyr[s], &pyr[1 - s], &vec[0], &vraw4});
+        ds_subpel[s] = set(p_subpel, {&pyr[s], &pyr[1 - s], &vec[0], &vsub});
+        ds_subpel4[s] = set(p_subpel, {&pyr[s], &pyr[1 - s], &vec4, &vsub});
+        ds_select[s] = set(p_select, {&slot[s], &slot[1 - s], &vsub, &field});
+        ds_search4[s] = set(p_search4, {&pyr[s], &pyr[1 - s], &vec[0], &vraw4});
         ds_render[s] = set(p_render, {&slot[s], &slot[1 - s], &field, &out});
         for (int l = 0; l < LEVELS; ++l) {
-            const Pipe& sp = l == LEVELS - 1 ? p_search_coarse : p_search_fine;
+            const Pipe& sp = l == LEVELS - 1 ? p_search_coarse : l == 0 ? p_search_full : p_search_fine;
             const Buffer& parent = l == LEVELS - 1 ? vec[l] : vec[l + 1];
             ds_search[s][l] = set(sp, {&pyr[s], &pyr[1 - s], &parent, &vraw[l]});
         }
     }
-    for (int l = 0; l < LEVELS; ++l) ds_median[l] = set(p_median, {&vraw[l], &vec[l]});
-    ds_median4 = set(p_median, {&vraw4, &vec4});
+    for (int s = 0; s < 2; ++s) {
+        for (int l = 0; l < LEVELS; ++l) ds_median[s][l] = set(p_median, {&pyr[s], &pyr[1 - s], &vraw[l], &vec[l]});
+        ds_median4[s] = set(p_median, {&pyr[s], &pyr[1 - s], &vraw4, &vec4});
+    }
     ds_pack = set(p_pack, {&out, &raw_out});
 }
 
@@ -533,8 +551,8 @@ void Gpu::destroy() {
         return;
     }
     vkDeviceWaitIdle(dev);
-    for (Pipe* p : {&p_unpack, &p_down2, &p_search_coarse, &p_search_fine, &p_median, &p_select, &p_render,
-                    &p_pack}) {
+    for (Pipe* p : {&p_unpack, &p_down2, &p_search_coarse, &p_search_fine, &p_search_full, &p_search4, &p_median,
+                    &p_subpel, &p_select, &p_render, &p_pack}) {
         vkDestroyPipeline(dev, p->pipe, nullptr);
         vkDestroyPipelineLayout(dev, p->layout, nullptr);
         vkDestroyDescriptorSetLayout(dev, p->dsl, nullptr);
@@ -548,6 +566,7 @@ void Gpu::destroy() {
     }
     free(vraw4);
     free(vec4);
+    free(vsub);
     vkDestroyFence(dev, fence, nullptr);
     vkDestroyCommandPool(dev, pool, nullptr);
     vkDestroyDevice(dev, nullptr);
@@ -679,34 +698,50 @@ int Gpu::render(int a, float t, bool new_vectors) {
     if (new_vectors) {
         for (int l = LEVELS - 1; l >= 0; --l) {
             bool coarse = l == LEVELS - 1;
-            struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale; } pc{
+            // level 0 (full size) stores the motion m = 2u: +-1 px of u is +-2 of m, around
+            // 4 x the parent's u
+            bool full = l == 0;
+            struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; } pc{
                 loff[l], lw[l], lh[l], bw[l], bh[l],
-                coarse ? 1 : bw[l + 1], coarse ? 1 : bh[l + 1], coarse ? COARSE_RADIUS : 1, coarse ? 1 : 5,
-                BLOCK, 2};
-            push(coarse ? p_search_coarse : p_search_fine, ds_search[a][l], &pc, sizeof(pc));
+                coarse ? 1 : bw[l + 1], coarse ? 1 : bh[l + 1], coarse ? COARSE_RADIUS : full ? 2 : 1,
+                coarse ? 1 : 5,
+                BLOCK, full ? 4 : 2, full ? 1 : 0};
+            push(coarse ? p_search_coarse : full ? p_search_full : p_search_fine, ds_search[a][l], &pc, sizeof(pc));
             vkCmdDispatch(cmd, bw[l], bh[l], 1);
             barrier();
-            struct { int32_t bw, bh; } mc{bw[l], bh[l]};
-            push(p_median, ds_median[l], &mc, sizeof(mc));
+            struct { uint32_t off; int32_t w, h, bw, bh, bs, half_units, mode; float rel, abs; } mc{
+                loff[l], lw[l], lh[l], bw[l], bh[l], BLOCK, full ? 1 : 0, full && checked_median ? 1 : 0, med_rel,
+                med_abs};
+            push(p_median, ds_median[a][l], &mc, sizeof(mc));
             vkCmdDispatch(cmd, (bw[l] + 15) / 16, (bh[l] + 15) / 16, 1);
             barrier();
         }
-        if (fine) {  // 4x4 blocks refine +-1 around their 8x8 block's vector (same level)
-            struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale; } pc{
-                loff[0], w, h, bw4, bh4, bw[0], bh[0], 1, 5, 4, 1};
-            push(p_search_fine, ds_search4[a], &pc, sizeof(pc));
-            vkCmdDispatch(cmd, bw4, bh4, 1);
+        if (fine) {  // 4x4 blocks refine +-2 (motion units) around their 8x8 block's vector (same level)
+            struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; } pc{
+                loff[0], w, h, bw4, bh4, bw[0], bh[0], 2, 5, 4, 1, 1};
+            push(p_search4, ds_search4[a], &pc, sizeof(pc));
+            vkCmdDispatch(cmd, bw[0], bh[0], 1);  // a group per 8x8 block does its four 4x4 blocks
             barrier();
-            struct { int32_t bw, bh; } mc{bw4, bh4};
-            push(p_median, ds_median4, &mc, sizeof(mc));
+            struct { uint32_t off; int32_t w, h, bw, bh, bs, half_units, mode; float rel, abs; } mc{
+                loff[0], w, h, bw4, bh4, 4, 1, checked_median ? 1 : 0, med_rel, med_abs};
+            push(p_median, ds_median4[a], &mc, sizeof(mc));
             vkCmdDispatch(cmd, (bw4 + 15) / 16, (bh4 + 15) / 16, 1);
             barrier();
         }
+        // the final motion as float half-vectors, +-1/4 px of u where that matches better
+        int sbw = fine ? bw4 : bw[0], sbh = fine ? bh4 : bh[0];
+        struct { uint32_t off; int32_t w, h, bw, bh, bs, steps; } spc{
+            loff[0], w, h, sbw, sbh, fine ? 4 : BLOCK, subpel_steps};
+        push(p_subpel, fine ? ds_subpel4[a] : ds_subpel[a], &spc, sizeof(spc));
+        // a group per 8x8 block or per four 4x4 blocks, in rows of up to 1024 groups
+        uint32_t sg = uint32_t(sbw * sbh + (fine ? 3 : 0)) / (fine ? 4 : 1);
+        vkCmdDispatch(cmd, std::min(sg, 1024u), (sg + 1023) / 1024, 1);
+        barrier();
     }
     {
         struct { int32_t w, h, bw, bh; float t, lambda; int32_t smooth, bs; } sc{
             w, h, fine ? bw4 : bw[0], fine ? bh4 : bh[0], t, 0.05f, select_vectors ? 0 : 1, fine ? 4 : BLOCK};
-        push(p_select, fine ? ds_select4[a] : ds_select[a], &sc, sizeof(sc));
+        push(p_select, ds_select[a], &sc, sizeof(sc));
         vkCmdDispatch(cmd, (w + 15) / 16, (h + 15) / 16, 1);
         barrier();
     }
