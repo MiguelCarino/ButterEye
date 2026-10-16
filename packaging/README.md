@@ -57,7 +57,10 @@ The same sources and patches as the Fedora packages (fetched and checked by
 OpenMP, fftw and winpthreads are linked in, and the build fails if a DLL imports
 anything but `KERNEL32.dll`, `msvcrt.dll` or `vulkan-1.dll` (which the GPU driver
 installs). One extra patch, `plugins/buttereye-vs-rife-ncnn-windows-paths.patch`, fixes
-RIFE's Windows model loading for MinGW builds (Windows-only code).
+RIFE's Windows model loading for MinGW builds (Windows-only code). One Fedora patch is
+not applied yet: `plugins/buttereye-vs-rife-ncnn-keep-instance.patch` (the GPU instance
+and model kept across mpv's seeks) waits for a check that mpv still quits cleanly on
+real Windows hardware, since its GPU teardown would then run while the DLL unloads.
 
 The same chroot also builds, with `build-tools-in-chroot.sh`, the two Windows pieces
 the installer adds that Windows lacks, from pinned upstream releases (`windows/pins.sh`,

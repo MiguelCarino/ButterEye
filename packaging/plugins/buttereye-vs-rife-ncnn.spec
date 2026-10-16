@@ -51,6 +51,13 @@ Patch1:         buttereye-vs-rife-ncnn-host-pool.patch
 # the process (SIGABRT), taking vspipe or mpv with it. Reachable here, not only
 # off Linux. Applied to both builds.
 Patch2:         buttereye-vs-rife-ncnn-model-path.patch
+# mpv rebuilds the VapourSynth core on every seek; upstream destroyed the ncnn
+# GPU instance with its last filter, so each seek paid ~1.3 s to create it and
+# load the model again. Keep the instance for the process, pin the module and
+# reuse the last loaded model (dropped after a lost device). Frame buffers are
+# freed when no filter is left, so the idle cost is the instance and the
+# model's weights (~116 MiB). Not yet tested on Windows. Bit-identical.
+Patch3:         buttereye-vs-rife-ncnn-keep-instance.patch
 
 BuildRequires:  gcc-c++
 BuildRequires:  meson
@@ -80,6 +87,7 @@ cp -p %{SOURCE4} %{SOURCE5} %{SOURCE6} .
 %else
 %patch -P1 -p1
 %patch -P2 -p1
+%patch -P3 -p1
 mkdir -p subprojects/ncnn/glslang
 tar -xzf %{SOURCE2} -C subprojects/ncnn --strip-components=1
 tar -xzf %{SOURCE3} -C subprojects/ncnn/glslang --strip-components=1
@@ -120,7 +128,14 @@ if ldd %{buildroot}%{_libdir}/buttereye/vapoursynth/librife.so | grep -q 'libncn
 %{_libdir}/buttereye/vapoursynth/librife.so
 
 %changelog
-* Sun Oct 12 2026 The ButterEye contributors - 9.33-2
+* Thu Oct 15 2026 The ButterEye contributors - 9.33-2
+- Keep the GPU instance and the loaded model across mpv's per-seek core
+  rebuilds (Patch3): seek -> playback-restart 1.5 s -> 0.25-0.36 s at 640x360.
+  Frame buffers (host and GPU) are freed when the last filter goes, so an idle
+  RIFE keeps ~116 MiB of VRAM instead of up to 3.7 GiB at 2160p. The instance
+  is still destroyed at exit and after a lost device.
+
+* Mon Oct 12 2026 The ButterEye contributors - 9.33-2
 - Fix the model-path buffer overflow in load_param_model (Patch2): a model_path
   of 242 characters or more overran parampath into modelpath and aborted the
   process; the paths are std::string now. Output is bit-identical.

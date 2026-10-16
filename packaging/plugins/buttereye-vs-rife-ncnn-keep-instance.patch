@@ -1,0 +1,457 @@
+ButterEye: keep the GPU instance and the loaded model across mpv's seeks.
+
+mpv rebuilds the whole VapourSynth core on every seek, and LoadPlugin loads
+this module again with it. Upstream counted its filters and called
+ncnn::destroy_gpu_instance() when the last one was freed (and on six error
+paths), so every seek paid for a fresh Vulkan instance and a fresh model load.
+Measured on the dev box (RTX 4090, 640x360, rife-v4.26, gpu_thread=2): the
+re-created core took 1.0-1.3 s to build RIFE() and 0.2-0.3 s more to free it;
+mpv logged 1.1-1.4 s between "initializing" and "initialized" after each seek,
+and seek -> playback-restart took 1.5-1.9 s.
+
+- The instance is created once and lives as long as the process. ncnn's own
+  atexit hook (gpu.cpp) still destroys it at exit, as before.
+- The module pins itself (dladdr + dlopen(RTLD_NOLOAD | RTLD_NODELETE); on
+  Windows GetModuleHandleEx(..._PIN)) so freeing the core cannot unload it and
+  take the instance and the cached model with it.
+- The RIFE object of the last filter is kept, keyed by everything its
+  constructor and load() take (gpu, tta, uhd, v2/v4, padding, model folder), and
+  shared with the next filter that asks for the same. Filters already run
+  several process() calls at once on one object (gpu_thread), so sharing it
+  adds no new concurrency.
+- When no filter is left, the frame buffers are given back: the host pool and
+  the device's pooled blob/staging allocators that process() borrows (these
+  would otherwise keep 0.45 GiB at 720p, 0.9 GiB at 1080p, 3.7 GiB at 2160p for
+  as long as mpv runs, e.g. after interpolation is turned off or another engine
+  is picked). The idle cost is then the instance plus the model's weights,
+  about 116 MiB for rife-v4.26 whatever the resolution. Re-allocating them costs
+  the next seek about 0.1 s at 1080p.
+- A filter is counted from the moment it creates (or reuses) the instance, and
+  every early return of rifeCreate gives the count back, so the instance can
+  never be dropped under a filter that is still loading its model.
+- A failed GPU submit (vkQueueSubmit / vkWaitForFences, as after a lost device)
+  is remembered; a model that saw one is no longer handed to new filters, and
+  once the last filter is gone the cached model and the instance are destroyed,
+  so the next filter starts on a fresh instance. A failed create_gpu_instance()
+  is likewise forgotten when no filter is alive. The old counter also went
+  negative when the format check threw before the instance was created; that
+  is gone with it.
+
+Windows: the instance is now always destroyed by ncnn's atexit hook, which in
+a DLL runs during process detach, possibly after the Vulkan driver's DLLs have
+been detached. Only Linux has been tested; check that mpv quits cleanly on real
+Windows hardware before the Windows build applies this patch.
+
+After (640x360): RIFE() in a re-created core 0 ms (another model: 0.27-0.37 s);
+mpv's re-init 5-15 ms and seek -> playback-restart 0.25-0.36 s; at 1080p with
+--hr-seek=no 0.38-0.40 s (was 1.8 s). Output is bit-identical.
+
+--- a/RIFE/plugin.cpp
++++ b/RIFE/plugin.cpp
+@@ -23,8 +23,10 @@
+ */
+ 
+ #include <atomic>
++#include <cstdlib>
+ #include <fstream>
+ #include <memory>
++#include <mutex>
+ #include <semaphore>
+ #include <string>
+ #include <vector>
+@@ -34,9 +36,45 @@
+ 
+ #include "rife.h"
+ 
++#ifndef _WIN32
++#include <dlfcn.h>
++#endif
++
+ using namespace std::literals;
+ 
+-static std::atomic<int> numGPUInstances{ 0 };
++// ButterEye: mpv rebuilds the VapourSynth core on every seek and loads this
++// module again with it. Upstream destroyed the ncnn GPU instance when its last
++// filter was freed, so each seek paid about 1 s to create the instance and load
++// the model again. Now the instance lives as long as the process (ncnn's own
++// atexit hook still destroys it on exit), the module is pinned so that freeing
++// the core cannot unload it, and the last loaded model is kept for the next
++// filter with the same settings. After a failed GPU submit (a lost device) both
++// are dropped once the last filter is gone, so a later filter starts afresh.
++static std::mutex gpuMutex;
++static int liveFilters;              // filters alive or being built; guarded by gpuMutex
++static bool gpuFailed;               // guarded by gpuMutex
++static std::shared_ptr<RIFE> cachedRife; // guarded by gpuMutex
++static std::string cachedKey;        // guarded by gpuMutex
++
++// Runs before ncnn's atexit destroy_gpu_instance (registered after it), so the
++// kept model is released while its device still exists.
++static void dropCachedRife() {
++    std::lock_guard lock{ gpuMutex };
++    cachedRife.reset();
++    cachedKey.clear();
++}
++
++static void pinModule() {
++#ifdef _WIN32
++    HMODULE self;
++    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
++                       reinterpret_cast<LPCWSTR>(&pinModule), &self);
++#else
++    Dl_info info;
++    if (dladdr(reinterpret_cast<void*>(&pinModule), &info) && info.dli_fname)
++        dlopen(info.dli_fname, RTLD_LAZY | RTLD_NOLOAD | RTLD_NODELETE);
++#endif
++}
+ 
+ struct RIFEData final {
+     VSNode* node;
+@@ -48,7 +86,7 @@
+     int64_t factor;
+     int64_t factorNum;
+     int64_t factorDen;
+-    std::unique_ptr<RIFE> rife;
++    std::shared_ptr<RIFE> rife;
+     std::unique_ptr<std::counting_semaphore<>> semaphore;
+ };
+ 
+@@ -135,18 +173,48 @@
+     return nullptr;
+ }
+ 
++// Gives back one filter's hold on the GPU instance (see liveFilters). The last
++// one to go releases the kept model's idle buffers, or, after a failed GPU
++// submit, drops the model and the instance so the next filter starts afresh.
++static void releaseFilter(std::shared_ptr<RIFE> rife) {
++    std::lock_guard lock{ gpuMutex };
++    if (rife && rife->failed())
++        gpuFailed = true;
++    rife.reset();
++
++    if (--liveFilters == 0) {
++        if (gpuFailed) {
++            cachedRife.reset();
++            cachedKey.clear();
++            ncnn::destroy_gpu_instance();
++            gpuFailed = false;
++        } else if (cachedRife) {
++            cachedRife->release_idle_buffers();
++        }
++    }
++}
++
++// Holds a filter's count while rifeCreate builds it, so every early return
++// (errors, list_gpu, the Text/PSNR invokes) gives it back.
++struct FilterHold final {
++    std::shared_ptr<RIFE>* rife{};
++    ~FilterHold() {
++        if (rife)
++            releaseFilter(std::move(*rife));
++    }
++};
++
+ static void VS_CC rifeFree(void* instanceData, [[maybe_unused]] VSCore* core, const VSAPI* vsapi) {
+     auto d{ static_cast<RIFEData*>(instanceData) };
+     vsapi->freeNode(d->node);
+     vsapi->freeNode(d->psnr);
++    releaseFilter(std::move(d->rife));
+     delete d;
+-
+-    if (--numGPUInstances == 0)
+-        ncnn::destroy_gpu_instance();
+ }
+ 
+ static void VS_CC rifeCreate(const VSMap* in, VSMap* out, [[maybe_unused]] void* userData, VSCore* core, const VSAPI* vsapi) {
+     auto d{ std::make_unique<RIFEData>() };
++    FilterHold hold;
+ 
+     try {
+         d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
+@@ -159,9 +227,20 @@
+             d->vi.format.bitsPerSample != 32)
+             throw "only constant RGB format 32 bit float input supported";
+ 
+-        if (ncnn::create_gpu_instance())
+-            throw "failed to create GPU instance";
+-        ++numGPUInstances;
++        {
++            std::lock_guard lock{ gpuMutex };
++            if (ncnn::create_gpu_instance()) {
++                // ncnn remembers the failure; forget it so a later filter retries
++                if (liveFilters == 0)
++                    ncnn::destroy_gpu_instance();
++                throw "failed to create GPU instance";
++            }
++            static std::once_flag atexitOnce;
++            std::call_once(atexitOnce, [] { std::atexit(dropCachedRife); });
++            // counted from here, so the instance cannot be dropped under us
++            ++liveFilters;
++            hold.rife = &d->rife;
++        }
+ 
+         auto model{ vsapi->mapGetIntSaturated(in, "model", 0, &err) };
+         if (err)
+@@ -264,18 +343,12 @@
+                 vsapi->mapSetError(out, vsapi->mapGetError(ret));
+                 vsapi->freeMap(args);
+                 vsapi->freeMap(ret);
+-
+-                if (--numGPUInstances == 0)
+-                    ncnn::destroy_gpu_instance();
+                 return;
+             }
+ 
+             vsapi->mapConsumeNode(out, "clip", vsapi->mapGetNode(ret, "clip", 0, nullptr), maReplace);
+             vsapi->freeMap(args);
+             vsapi->freeMap(ret);
+-
+-            if (--numGPUInstances == 0)
+-                ncnn::destroy_gpu_instance();
+             return;
+         }
+         int padding;
+@@ -571,9 +644,6 @@
+                 vsapi->mapSetError(out, vsapi->mapGetError(ret));
+                 vsapi->freeMap(args);
+                 vsapi->freeMap(ret);
+-
+-                if (--numGPUInstances == 0)
+-                    ncnn::destroy_gpu_instance();
+                 return;
+             }
+ 
+@@ -588,9 +658,6 @@
+                 vsapi->mapSetError(out, vsapi->mapGetError(ret));
+                 vsapi->freeMap(args);
+                 vsapi->freeMap(ret);
+-
+-                if (--numGPUInstances == 0)
+-                    ncnn::destroy_gpu_instance();
+                 return;
+             }
+ 
+@@ -604,9 +671,6 @@
+                 vsapi->mapSetError(out, vsapi->mapGetError(ret));
+                 vsapi->freeMap(args);
+                 vsapi->freeMap(ret);
+-
+-                if (--numGPUInstances == 0)
+-                    ncnn::destroy_gpu_instance();
+                 return;
+             }
+ 
+@@ -621,9 +685,6 @@
+                 vsapi->mapSetError(out, vsapi->mapGetError(ret));
+                 vsapi->freeMap(args);
+                 vsapi->freeMap(ret);
+-
+-                if (--numGPUInstances == 0)
+-                    ncnn::destroy_gpu_instance();
+                 return;
+             }
+ 
+@@ -632,29 +693,46 @@
+             vsapi->freeMap(ret);
+         }
+ 
+-        d->rife = std::make_unique<RIFE>(gpuId, tta, uhd, 1, rife_v2, rife_v4, padding);
++        const auto key{ std::to_string(gpuId) + '|' + std::to_string(tta) + std::to_string(uhd) + std::to_string(rife_v2) +
++                        std::to_string(rife_v4) + '|' + std::to_string(padding) + '|' + modelPath };
++        {
++            std::lock_guard lock{ gpuMutex };
++            if (cachedRife && cachedRife->failed())
++                gpuFailed = true;
++            if (cachedRife && !gpuFailed && cachedKey == key)
++                d->rife = cachedRife;
++        }
++
++        if (!d->rife) {
++            auto rife{ std::make_shared<RIFE>(gpuId, tta, uhd, 1, rife_v2, rife_v4, padding) };
+ 
+ #ifdef _WIN32
+-        auto bufferSize{ MultiByteToWideChar(CP_UTF8, 0, modelPath.c_str(), -1, nullptr, 0) };
+-        std::vector<wchar_t> wbuffer(bufferSize);
+-        MultiByteToWideChar(CP_UTF8, 0, modelPath.c_str(), -1, wbuffer.data(), bufferSize);
+-        d->rife->load(wbuffer.data());
++            auto bufferSize{ MultiByteToWideChar(CP_UTF8, 0, modelPath.c_str(), -1, nullptr, 0) };
++            std::vector<wchar_t> wbuffer(bufferSize);
++            MultiByteToWideChar(CP_UTF8, 0, modelPath.c_str(), -1, wbuffer.data(), bufferSize);
++            auto loaded{ rife->load(wbuffer.data()) == 0 };
+ #else
+-        d->rife->load(modelPath);
++            auto loaded{ rife->load(modelPath) == 0 };
+ #endif
++
++            std::lock_guard lock{ gpuMutex };
++            if (loaded && !gpuFailed) {
++                cachedRife = rife;
++                cachedKey = key;
++            }
++            d->rife = std::move(rife);
++        }
+     } catch (const char* error) {
+         vsapi->mapSetError(out, ("RIFE: "s + error).c_str());
+         vsapi->freeNode(d->node);
+         vsapi->freeNode(d->psnr);
+-
+-        if (--numGPUInstances == 0)
+-            ncnn::destroy_gpu_instance();
+         return;
+     }
+ 
+     std::vector<VSFilterDependency> deps{ {d->node, rpGeneral} };
+     if (d->skip)
+         deps.push_back({ d->psnr, rpGeneral });
++    hold.rife = nullptr; // rifeFree gives the count back from now on
+     vsapi->createVideoFilter(out, "RIFE", &d->vi, rifeGetFrame, rifeFree, fmParallel, deps.data(), deps.size(), d.get(), core);
+     d.release();
+ }
+@@ -663,6 +741,9 @@
+ // Init
+ 
+ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI* vspapi) {
++    static std::once_flag pinOnce;
++    std::call_once(pinOnce, pinModule);
++
+     vspapi->configPlugin("com.holywu.rife", "rife", "Real-Time Intermediate Flow Estimation for Video Frame Interpolation",
+                          VS_MAKE_VERSION(9, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
+ 
+--- a/RIFE/rife.cpp
++++ b/RIFE/rife.cpp
+@@ -22,6 +22,49 @@
+ 
+ DEFINE_LAYER_CREATOR(Warp)
+ 
++// ButterEye: the GPU instance now outlives the filters (see plugin.cpp), and so
++// do the device's pooled blob/staging allocators that process() borrows, each
++// keeping every frame-sized buffer it ever held (about 0.45 GiB at 720p, 3.7 GiB
++// at 2160p). Track how many are borrowed at once so release_idle_buffers() can
++// borrow back every one of them and free that memory.
++static std::atomic<int> allocators_out{ 0 };
++static std::atomic<int> allocators_peak{ 0 };
++
++static void count_allocators_out()
++{
++    const int out = ++allocators_out;
++    int peak = allocators_peak;
++    while (out > peak && !allocators_peak.compare_exchange_weak(peak, out))
++        ;
++}
++
++void RIFE::release_idle_buffers() const
++{
++    host_pool.clear();
++
++    if (!vkdev)
++        return;
++
++    // with nothing in flight every pooled allocator is free; ncnn pre-creates one
++    // per compute queue and adds one whenever all are out, so borrowing the larger
++    // of the two counts returns each of them
++    const int queues = vkdev->info.compute_queue_count();
++    const int n = allocators_peak > queues ? allocators_peak.load() : queues;
++    std::vector<ncnn::VkAllocator*> blob(n), staging(n);
++    for (int i = 0; i < n; i++)
++    {
++        blob[i] = vkdev->acquire_blob_allocator();
++        staging[i] = vkdev->acquire_staging_allocator();
++    }
++    for (int i = 0; i < n; i++)
++    {
++        blob[i]->clear();
++        staging[i]->clear();
++        vkdev->reclaim_blob_allocator(blob[i]);
++        vkdev->reclaim_staging_allocator(staging[i]);
++    }
++}
++
+ RIFE::RIFE(int gpuid, bool _tta_mode, bool _uhd_mode, int _num_threads, bool _rife_v2, bool _rife_v4, int _padding)
+ {
+     vkdev = gpuid == -1 ? 0 : ncnn::get_gpu_device(gpuid);
+@@ -383,6 +426,7 @@
+ 
+     ncnn::VkAllocator* blob_vkallocator = vkdev->acquire_blob_allocator();
+     ncnn::VkAllocator* staging_vkallocator = vkdev->acquire_staging_allocator();
++    count_allocators_out();
+ 
+     ncnn::Option opt = flownet.opt;
+     opt.blob_vkallocator = blob_vkallocator;
+@@ -1152,7 +1196,10 @@
+ 
+         cmd.record_clone(out_gpu, out, opt);
+ 
+-        cmd.submit_and_wait();
++        // ButterEye: remember a failed submit (vkQueueSubmit/vkWaitForFences, as
++        // after a lost device) so the plugin drops the GPU instance afterwards
++        if (cmd.submit_and_wait() != 0)
++            gpu_failed = true;
+ 
+         const float* outR{ out.channel(0) };
+         const float* outG{ out.channel(1) };
+@@ -1166,6 +1213,7 @@
+         }
+     }
+ 
++    --allocators_out;
+     vkdev->reclaim_blob_allocator(blob_vkallocator);
+     vkdev->reclaim_staging_allocator(staging_vkallocator);
+ 
+@@ -1183,6 +1231,7 @@
+ 
+     ncnn::VkAllocator* blob_vkallocator = vkdev->acquire_blob_allocator();
+     ncnn::VkAllocator* staging_vkallocator = vkdev->acquire_staging_allocator();
++    count_allocators_out();
+ 
+     ncnn::Option opt = flownet.opt;
+     opt.blob_vkallocator = blob_vkallocator;
+@@ -1329,7 +1378,10 @@
+ 
+         cmd.record_clone(out_gpu, out, opt);
+ 
+-        cmd.submit_and_wait();
++        // ButterEye: remember a failed submit (vkQueueSubmit/vkWaitForFences, as
++        // after a lost device) so the plugin drops the GPU instance afterwards
++        if (cmd.submit_and_wait() != 0)
++            gpu_failed = true;
+ 
+         const float* outR{ out.channel(0) };
+         const float* outG{ out.channel(1) };
+@@ -1343,6 +1395,7 @@
+         }
+     }
+ 
++    --allocators_out;
+     vkdev->reclaim_blob_allocator(blob_vkallocator);
+     vkdev->reclaim_staging_allocator(staging_vkallocator);
+ 
+--- a/RIFE/rife.h
++++ b/RIFE/rife.h
+@@ -3,6 +3,7 @@
+ #ifndef RIFE_H
+ #define RIFE_H
+ 
++#include <atomic>
+ #include <string>
+ 
+ // ncnn
+@@ -30,6 +31,12 @@
+                    float* dstR, float* dstG, float* dstB,
+                    const int w, const int h, const ptrdiff_t stride, const float timestep) const;
+ 
++    // ButterEye: a GPU submit failed (a lost device): the instance must be rebuilt
++    bool failed() const { return gpu_failed; }
++    // ButterEye: give back the idle frame buffers, host and device (the object is
++    // kept loaded between filters; see plugin.cpp). Only with no process() running.
++    void release_idle_buffers() const;
++
+ private:
+     ncnn::VulkanDevice* vkdev;
+     ncnn::Net flownet;
+@@ -55,6 +62,7 @@
+     // ButterEye: reused host buffers for process/process_v4 (locked, bounded by
+     // gpu_thread); see rife.cpp
+     mutable ncnn::PoolAllocator host_pool;
++    mutable std::atomic<bool> gpu_failed{ false };
+ };
+ 
+ #endif // RIFE_H
