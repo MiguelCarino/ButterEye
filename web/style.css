@@ -191,6 +191,5 @@ summary { cursor: pointer; font-weight: 600; }
 .cert-badge .cert-seal { width: 15px; height: 15px; flex: none; }
 .cert-badge .cert-rosette { fill: #050505; }
 .cert-badge .cert-check { fill: none; stroke: var(--accent); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-/* pinned to the hero's top-left corner, so it adds no height to the one screen */
-.hero { position: relative; }
-.cert-top { position: absolute; top: 12px; left: 16px; margin: 0; }
+/* centred above the mark; fitScreen() in app.js absorbs the height it adds */
+.cert-top { margin: 0 0 min(28px, calc(clamp(8px, 1.4vh, 16px) + var(--tall) * .03)); }
