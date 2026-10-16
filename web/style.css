@@ -181,3 +181,14 @@ summary { cursor: pointer; font-weight: 600; }
   .dl-note { font-size: .78rem; }
 }
 @media (prefers-reduced-motion: reduce) { .dl-btn, .btn, .pick { transition: none; } }
+
+/* ---- AI Bloat Certified (branding.carino.systems, section 08) ---- */
+/* AI Bloat Certified: a two-part seal for the top of a project page. Gold half with the
+   rosette, dark half with the verdict; one gold hairline around both. */
+.cert-badge { display: inline-flex; align-items: stretch; vertical-align: middle; font-family: var(--mono); font-size: .65rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; line-height: 1; border: 1px solid var(--accent); border-radius: 5px; overflow: hidden; white-space: nowrap; box-shadow: 0 0 14px rgba(234,179,8,.15); }
+.cert-badge .cert-l { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px 5px 5px; background: var(--accent); color: #050505; }
+.cert-badge .cert-r { display: inline-flex; align-items: center; padding: 5px 9px; background: #0b0b0b; color: var(--accent); }
+.cert-badge .cert-seal { width: 15px; height: 15px; flex: none; }
+.cert-badge .cert-rosette { fill: #050505; }
+.cert-badge .cert-check { fill: none; stroke: var(--accent); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.cert-top { margin: 0 0 min(28px, calc(clamp(10px, 1.8vh, 18px) + var(--tall) * .03)); }
