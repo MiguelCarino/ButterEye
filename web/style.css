@@ -115,7 +115,7 @@ a { color: var(--accent); }
   color: var(--muted); font-size: min(.9rem, calc(.78rem + var(--tall) * .006)); }
 
 .foot { padding: 12px 5% 18px; border-top: 1px solid var(--border); text-align: center;
-  color: #666; font-family: var(--mono); font-size: .72rem; }
+  color: #8a8a8a; font-family: var(--mono); font-size: .72rem; }
 .foot a { color: var(--muted); text-decoration: none; }
 .foot a:hover { color: var(--accent); }
 
