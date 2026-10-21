@@ -5,6 +5,8 @@
 
 # ButterEye
 
+**[Download and docs →](https://butter.carino.systems/)**
+
 ButterEye is a free, open-source (AGPL-3.0-or-later) smooth-motion control center for
 [mpv](https://mpv.io) on Linux: it interpolates video to a rate that suits your display with
 RIFE (Vulkan, via VapourSynth), its own GPU motion-vector engine (mvgpu) or MVTools, live
