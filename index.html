@@ -85,6 +85,12 @@
          aria-haspopup="dialog" aria-controls="installDialog">⌨ Install in one command</button></p>
       <p class="dl-all"><a href="https://github.com/MiguelCarino/ButterEye/releases">All versions and changelogs →</a></p>
       <p class="dl-note">On Linux, run the AppImage, or on Fedora use the one-line install that brings everything. On Windows, install mpv with winget, then run the installer. On a Mac, drag ButterEye to Applications.</p>
+      <!-- The dialog chips: what it is, what it does, where the docs are. -->
+      <p class="info-chips">
+        <button class="chip" type="button" data-dialog="aboutDialog" aria-haspopup="dialog" aria-controls="aboutDialog">What it is (and is not)</button>
+        <button class="chip" type="button" data-dialog="featuresDialog" aria-haspopup="dialog" aria-controls="featuresDialog">Features</button>
+        <button class="chip" type="button" data-dialog="docsDialog" aria-haspopup="dialog" aria-controls="docsDialog">Docs</button>
+      </p>
       <!-- Literally true: the one request this page makes is the release lookup in app.js. -->
       <p class="privacy">This page runs in your browser and sends nothing anywhere. It asks api.github.com for the latest release.</p>
     </div>
@@ -175,6 +181,63 @@
       <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$</span> <span class="cmd" id="maccmd">xattr -dr com.apple.quarantine /Applications/ButterEye.app</span></code></div><button type="button" class="copy-btn term-copy" id="maccopy" aria-label="Copy the Terminal command">Copy</button></div>
       <p><strong>3. Start ButterEye</strong> from Applications and drop a video on it. If anything is still marked, ButterEye's System page says so and shows the same command.</p>
       <p class="small">macOS 27 or newer, Apple silicon (M1 or newer). This first macOS build is experimental: it has been measured on one Mac, not yet on others. <a id="macsums" href="https://github.com/MiguelCarino/ButterEye/releases/latest">Checksums and source code</a>.</p>
+    </div>
+  </dialog>
+
+  <!-- What it is, its features, its docs: the chips under the install block open these.
+       Every line here can be checked in README.md, docs/SCOPE.md or CHANGELOG.md. -->
+  <dialog class="modal" id="aboutDialog" aria-labelledby="aboutTitle">
+    <div class="modal-head">
+      <h2 class="modal-title" id="aboutTitle">What it is (and is not)</h2>
+      <form method="dialog"><button class="modal-x" aria-label="Close">✕</button></form>
+    </div>
+    <div class="modal-body">
+      <p>ButterEye makes motion in videos smoother by adding in-between frames, either live while the video plays in mpv or as a new file saved next to it.</p>
+      <p>It is for people who watch their own video files in mpv on a desktop or laptop computer.</p>
+      <p>It is not a video player: the video plays in mpv, which ButterEye starts and controls, and it never edits your <code>mpv.conf</code>. It does not work with browsers or streaming services.</p>
+      <p>It does not upload anything. It has no telemetry and no update checks; its logs and speed-test results stay on your computer.</p>
+      <p>Fedora 44 and 45 are the supported systems. The AppImage for other Linux, the Windows installer (Windows 10 version 1903 or newer, 64-bit) and the Mac app (Apple silicon, macOS 27 or newer) are experimental.</p>
+      <p>Smoothing on the graphics card needs a GPU with Vulkan; without one, ButterEye smooths on the CPU with MVTools. It is free software under the AGPL-3.0-or-later.</p>
+    </div>
+  </dialog>
+
+  <dialog class="modal" id="featuresDialog" aria-labelledby="featuresTitle">
+    <div class="modal-head">
+      <h2 class="modal-title" id="featuresTitle">Features</h2>
+      <form method="dialog"><button class="modal-x" aria-label="Close">✕</button></form>
+    </div>
+    <div class="modal-body">
+      <ul class="list">
+        <li><strong>Live smoothing in mpv</strong> to double the frame rate, to 60 fps, or to match your display.</li>
+        <li><strong>Smooth copies:</strong> save a new file with its audio, subtitles and chapters. An HDR10 video becomes an HDR10 copy.</li>
+        <li><strong>Three engines:</strong> RIFE on any Vulkan GPU, mvgpu (ButterEye's own GPU motion-vector engine, for 4K) and MVTools on the CPU. An experimental NVIDIA TensorRT path can be set up separately.</li>
+        <li><strong>A speed test</strong> measures each installed engine inside mpv; Auto then picks one that keeps up.</li>
+        <li><strong>Picture options:</strong> sharper edges with the bundled FSRCNNX shader, and less banding with mpv's own debanding.</li>
+        <li><strong>A row for each playing video</strong> with its rates, GPU or CPU, Pause smoothing and Let go (mpv keeps playing).</li>
+        <li><strong>System checks</strong> with error codes and the command that fixes each problem.</li>
+        <li><strong>A <code>buttereye</code> command</strong> for everything the window does, with <code>--json</code> output.</li>
+      </ul>
+    </div>
+  </dialog>
+
+  <dialog class="modal" id="docsDialog" aria-labelledby="docsTitle">
+    <div class="modal-head">
+      <h2 class="modal-title" id="docsTitle">Docs</h2>
+      <form method="dialog"><button class="modal-x" aria-label="Close">✕</button></form>
+    </div>
+    <div class="modal-body">
+      <ul class="list docs">
+        <li><a href="https://github.com/MiguelCarino/ButterEye/blob/main/README.md#install-fedora-44-and-45">Install on Fedora 44 and 45</a>: the RPMs, updating and removing.</li>
+        <li><a href="https://github.com/MiguelCarino/ButterEye/blob/main/README.md#any-other-linux-the-appimage-experimental">The AppImage</a>: any other x86-64 Linux, experimental.</li>
+        <li><a href="https://github.com/MiguelCarino/ButterEye/blob/main/README.md#installing-the-macos-app">Installing the macOS app</a>: past Gatekeeper, and how to remove it.</li>
+        <li><a href="https://github.com/MiguelCarino/ButterEye/blob/main/README.md#run-the-gui">Using the window</a>: the drop zones, Target, Smoothness and Picture.</li>
+        <li><a href="https://github.com/MiguelCarino/ButterEye/blob/main/README.md#the-buttereye-command">The <code>buttereye</code> command</a>: every subcommand and exit code.</li>
+        <li><a href="https://github.com/MiguelCarino/ButterEye/blob/main/README.md#status">Status</a>: what works, what is not in this build yet, known gaps.</li>
+        <li><a href="https://github.com/MiguelCarino/ButterEye/blob/main/docs/PLATFORMS.md">Platforms</a>: Linux, Windows and macOS, with measurements.</li>
+        <li><a href="https://github.com/MiguelCarino/ButterEye/blob/main/docs/errors.md">Error codes</a>: what each code means.</li>
+        <li><a href="https://github.com/MiguelCarino/ButterEye/blob/main/docs/SCOPE.md">Scope</a>: the design and the decisions behind it.</li>
+        <li><a href="https://github.com/MiguelCarino/ButterEye/blob/main/CHANGELOG.md">Changelog</a> and <a href="https://github.com/MiguelCarino/ButterEye/blob/main/THIRD-PARTY.md">third-party notices</a>.</li>
+      </ul>
     </div>
   </dialog>
 

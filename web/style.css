@@ -178,6 +178,19 @@ summary { cursor: pointer; font-weight: 600; }
 .files { margin: 8px 0; padding-left: 18px; font-family: var(--mono); font-size: .78rem; }
 .files li { margin: 3px 0; overflow-wrap: anywhere; }
 .small { font-size: .82rem; }
+/* The dialog chips under the install block: what it is, its features, its docs.
+   Each opens a sheet like the install ones; app.js puts focus back on the chip. */
+.info-chips { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px;
+  margin: min(22px, calc(clamp(8px, 1.4vh, 14px) + var(--tall) * .03)) 0 0; }
+.chip { font-family: var(--mono); font-size: min(.8rem, calc(.66rem + var(--tall) * .005)); font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase; padding: 6px 13px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: transparent; color: #a3a3a3; transition: .15s; }
+.chip:hover { color: var(--accent); border-color: var(--accent); }
+.modal-body .list { margin: 10px 0; padding-left: 1.2em; color: #cfcfcf; }
+.modal-body .list li { margin: 7px 0; }
+.modal-body .list li::marker { color: var(--accent); }
+.modal-body .docs a { text-decoration: none; }
+.modal-body .docs a:hover { text-decoration: underline; }
 /* The privacy line: what this page sends, under the install block. */
 .privacy { margin: 10px auto 0; max-width: min(720px, 94vw); font-family: var(--mono); font-size: .7rem; color: var(--muted); }
 
@@ -191,7 +204,7 @@ summary { cursor: pointer; font-weight: 600; }
   /* the Copy button gets its own band above the command */
   .terminal { padding: 3.1rem 1.1rem 1.1rem; }
 }
-@media (prefers-reduced-motion: reduce) { .dl-btn, .btn, .pick { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .dl-btn, .btn, .pick, .chip { transition: none; } }
 
 /* ---- AI Bloat Certified (branding.carino.systems, section 08) ---- */
 /* AI Bloat Certified: a two-part seal for the top of a project page. Gold half with the

@@ -149,6 +149,16 @@ for (const d of [install, linux, mac, windows]) {
   d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
 }
 
+// ---------------------------------------------------------------- the info chips
+// What it is, Features, Docs: each chip opens its sheet. Closing one (Escape, ✕ or the
+// backdrop) puts focus back on the chip that opened it.
+for (const chip of document.querySelectorAll('.info-chips [data-dialog]')) {
+  const d = document.getElementById(chip.dataset.dialog);
+  chip.addEventListener('click', () => { if (!d.open) d.showModal(); });
+  d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
+  d.addEventListener('close', () => chip.focus());
+}
+
 // ---------------------------------------------------------------- copy
 async function copyFrom(button, source) {
   const text = document.getElementById(source).textContent;
