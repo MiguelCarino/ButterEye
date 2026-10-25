@@ -144,17 +144,24 @@ a { color: var(--accent); }
 .seg button + button { border-left: 1px solid var(--border); }
 .seg button[aria-checked="true"] { background: var(--accent); color: #050505; }
 
-/* shell commands scroll inside their own box rather than wrap (dicom's rule) */
-.code { position: relative; margin: 10px 0; }
-.code pre { margin: 0; padding: 14px 92px 14px 14px; overflow-x: auto; white-space: pre;
-  background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px;
-  font-size: .78rem; line-height: 1.6; color: #fde68a; }
-.copy { position: absolute; top: 8px; right: 8px; font-family: var(--mono); font-size: .7rem; font-weight: 600;
-  text-transform: uppercase; letter-spacing: .06em; border-radius: 6px; cursor: pointer; padding: 0 12px; height: 32px;
-  border: 1px solid var(--accent); background: var(--accent); color: #050505; }
-.copy:hover { background: var(--accent-hover); }
-.copy.done { background: transparent; color: var(--accent); }
-.modal code:not(#cmd):not(#wincmd):not(#appcmd) { font-family: var(--mono); background: #1a1a1a; padding: 1px 5px; border-radius: 3px; color: #fde68a; }
+/* Command blocks, built like branding.carino.systems' command block so every
+   install step looks and copies the same: black box, green command, gold
+   prompt that stays out of the selection and the clipboard (app.js copies the
+   .cmd span only), and a Copy button kept off the command. Commands scroll
+   inside their own box rather than wrap: a wrapped command gets pasted wrong. */
+.terminal-wrapper { position: relative; margin: 10px 0; }
+.terminal { background: #000; border: 1px solid var(--border); border-radius: 12px;
+  padding: 1.1rem 6.5rem 1.1rem 1.4rem; overflow-x: auto; }
+.terminal code { display: block; font-family: var(--mono); font-size: .8rem; line-height: 1.7;
+  color: #22c55e; white-space: pre; }
+.terminal .prompt { color: var(--accent); user-select: none; }
+.copy-btn { display: inline-flex; align-items: center; font-family: var(--mono); font-size: .6rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .08em; padding: 7px 11px; border-radius: 6px; cursor: pointer;
+  white-space: nowrap; border: 1px solid var(--border); background: transparent; color: #a3a3a3; transition: .18s; }
+.copy-btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(234,179,8,.05); }
+.copy-btn.done { border-color: #22c55e; color: #22c55e; background: rgba(34,197,94,.08); }
+.term-copy { position: absolute; top: 10px; right: 10px; background: rgba(5,5,5,.85); }
+.modal :not(.terminal) > code { font-family: var(--mono); background: #1a1a1a; padding: 1px 5px; border-radius: 3px; color: #fde68a; }
 /* the Linux sheet's two choices: the download chips, smaller */
 .picks { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0 6px; }
 .pick { flex: 1 1 200px; display: flex; flex-direction: column; align-items: center; gap: 2px;
@@ -171,6 +178,8 @@ summary { cursor: pointer; font-weight: 600; }
 .files { margin: 8px 0; padding-left: 18px; font-family: var(--mono); font-size: .78rem; }
 .files li { margin: 3px 0; overflow-wrap: anywhere; }
 .small { font-size: .82rem; }
+/* The privacy line: what this page sends, under the install block. */
+.privacy { margin: 10px auto 0; max-width: min(720px, 94vw); font-family: var(--mono); font-size: .7rem; color: var(--muted); }
 
 /* ---- phone ---- */
 @media (max-width: 640px) {
@@ -179,6 +188,8 @@ summary { cursor: pointer; font-weight: 600; }
   .dl-btn b { font-size: .98rem; }
   .downloads { gap: 10px; }
   .dl-note { font-size: .78rem; }
+  /* the Copy button gets its own band above the command */
+  .terminal { padding: 3.1rem 1.1rem 1.1rem; }
 }
 @media (prefers-reduced-motion: reduce) { .dl-btn, .btn, .pick { transition: none; } }
 

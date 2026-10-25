@@ -19,7 +19,7 @@
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="ButterEye">
   <meta name="twitter:card" content="summary_large_image">
-  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "ButterEye", "url": "https://butter.carino.systems/", "description": "ButterEye makes the videos you play in mpv smoother: new in-between frames, live or as a saved copy. Free software for Fedora Linux, Windows and macOS.", "operatingSystem": "Linux, Windows", "isAccessibleForFree": true, "author": {"@type": "Person", "name": "Miguel Cariño"}}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "ButterEye", "url": "https://butter.carino.systems/", "description": "ButterEye makes the videos you play in mpv smoother: new in-between frames, live or as a saved copy. Free software for Fedora Linux, Windows and macOS.", "operatingSystem": "Linux, Windows, macOS", "isAccessibleForFree": true, "author": {"@type": "Person", "name": "Miguel Cariño"}}</script>
   <!-- /carino:head -->
   <meta name="theme-color" content="#050505">
   <link rel="icon" type="image/svg+xml" href="web/buttereye.svg">
@@ -85,13 +85,17 @@
          aria-haspopup="dialog" aria-controls="installDialog">⌨ Install in one command</button></p>
       <p class="dl-all"><a href="https://github.com/MiguelCarino/ButterEye/releases">All versions and changelogs →</a></p>
       <p class="dl-note">On Linux, run the AppImage, or on Fedora use the one-line install that brings everything. On Windows, install mpv with winget, then run the installer. On a Mac, drag ButterEye to Applications.</p>
+      <!-- Literally true: the one request this page makes is the release lookup in app.js. -->
+      <p class="privacy">This page runs in your browser and sends nothing anywhere. It asks api.github.com for the latest release.</p>
     </div>
   </header>
 
   <footer class="foot">
     <span id="foot-version">ButterEye 0.0.4</span> · AGPL-3.0-or-later ·
     <a href="https://github.com/MiguelCarino/ButterEye">Source</a> ·
-    <a href="https://github.com/MiguelCarino/ButterEye/blob/main/CHANGELOG.md">Changelog</a>
+    <a href="https://github.com/MiguelCarino/ButterEye/blob/main/CHANGELOG.md">Changelog</a> ·
+    <a href="https://github.com/MiguelCarino/ButterEye/tree/main/docs">Docs</a> ·
+    <a href="https://github.com/MiguelCarino/ButterEye/blob/main/THIRD-PARTY.md">Third-party notices</a>
   </footer>
 
   <!-- The install sheet: a native <dialog> (focus trap, Escape, backdrop for free).
@@ -107,7 +111,7 @@
         <button type="button" role="radio" data-platform="fc45" aria-checked="false">Fedora 45</button>
       </div>
       <p>One command; dnf downloads the files from the release:</p>
-      <div class="code"><pre><code id="cmd"></code></pre><button type="button" class="copy" id="copy">Copy</button></div>
+      <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$</span> <span class="cmd" id="cmd"></span></code></div><button type="button" class="copy-btn term-copy" id="copy" aria-label="Copy the install command">Copy</button></div>
       <p>Then open <strong>ButterEye</strong> from your application menu, or run <code>buttereye-gui</code>.</p>
       <details>
         <summary>Or download the files</summary>
@@ -135,8 +139,8 @@
       </div>
       <div id="appimageSteps">
         <p><strong>AppImage:</strong> one file with everything inside, mpv included; nothing to install. Make it runnable and start it:</p>
-        <div class="code"><pre><code id="appcmd">chmod +x ButterEye-*-x86_64.AppImage
-./ButterEye-*-x86_64.AppImage</code></pre><button type="button" class="copy" id="appcopy">Copy</button></div>
+        <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$</span> <span class="cmd" id="appcmd">chmod +x ButterEye-*-x86_64.AppImage
+./ButterEye-*-x86_64.AppImage</span></code></div><button type="button" class="copy-btn term-copy" id="appcopy" aria-label="Copy the AppImage commands">Copy</button></div>
         <p class="small" id="appimageNote">Needs glibc 2.35 or newer: Ubuntu 22.04, Debian 12, Fedora 36 or later. Smooths with MVTools on the CPU; the GPU engines come with Fedora's packages. Experimental: tested in clean containers of Ubuntu, Debian, Fedora and Arch, not yet on many desktops. <a id="appsums" href="https://github.com/MiguelCarino/ButterEye/releases/latest">Checksums and source code</a>.</p>
       </div>
       <p><strong>Fedora:</strong> RPM packages that dnf keeps up to date, with the GPU plugins. One command installs everything.</p>
@@ -151,7 +155,7 @@
     </div>
     <div class="modal-body">
       <p><strong>1. Install mpv</strong> (ButterEye plays your videos in it), in PowerShell or a Command Prompt:</p>
-      <div class="code"><pre><code id="wincmd">winget install --exact --id shinchiro.mpv</code></pre><button type="button" class="copy" id="wincopy">Copy</button></div>
+      <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">&gt;</span> <span class="cmd" id="wincmd">winget install --exact --id shinchiro.mpv</span></code></div><button type="button" class="copy-btn term-copy" id="wincopy" aria-label="Copy the winget command">Copy</button></div>
       <p><strong>2. Run the installer</strong> you just downloaded. It isn't code-signed yet, so Windows SmartScreen may warn: choose <em>More info</em> ▸ <em>Run anyway</em>. It installs for your account only and asks you to accept Microsoft's terms for two runtime files that come with Python.</p>
       <p><strong>3. Start ButterEye</strong> from the Start menu and drop a video on it. If Microsoft's Visual C++ runtime is missing, the installer offers it and ButterEye tells you.</p>
       <p class="small">Windows 10 version 1903 or newer, 64-bit. This first Windows build is experimental: it is tested on GitHub's Windows machines and under Wine, not yet on a Windows PC with a graphics card. <a id="winsums" href="https://github.com/MiguelCarino/ButterEye/releases/latest">Checksums and source code</a>.</p>
@@ -168,7 +172,7 @@
     <div class="modal-body">
       <p><strong>1. Open the disk image</strong> you just downloaded and drag <strong>ButterEye</strong> onto <strong>Applications</strong>. Everything it needs is inside, mpv included; you don't need Homebrew.</p>
       <p id="macStep2"><strong>2. Allow it once.</strong> ButterEye isn't notarised by Apple, so macOS refuses to open it until you clear the download mark. In Terminal:</p>
-      <div class="code"><pre><code id="maccmd">xattr -dr com.apple.quarantine /Applications/ButterEye.app</code></pre><button type="button" class="copy" id="maccopy">Copy</button></div>
+      <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$</span> <span class="cmd" id="maccmd">xattr -dr com.apple.quarantine /Applications/ButterEye.app</span></code></div><button type="button" class="copy-btn term-copy" id="maccopy" aria-label="Copy the Terminal command">Copy</button></div>
       <p><strong>3. Start ButterEye</strong> from Applications and drop a video on it. If anything is still marked, ButterEye's System page says so and shows the same command.</p>
       <p class="small">macOS 27 or newer, Apple silicon (M1 or newer). This first macOS build is experimental: it has been measured on one Mac, not yet on others. <a id="macsums" href="https://github.com/MiguelCarino/ButterEye/releases/latest">Checksums and source code</a>.</p>
     </div>
