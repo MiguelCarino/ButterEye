@@ -7,11 +7,11 @@
 # buttereye-vs-rife-ncnn, buttereye-rife-ncnn-models).
 
 %global pypi_name buttereye
-%global pypi_version 0.0.6
+%global pypi_version 0.0.7
 %global app_id io.github.buttereye.ButterEye
 
 Name:           buttereye
-Version:        0.0.6
+Version:        0.0.7
 Release:        1%{?dist}
 Summary:        Smoother motion for the videos you play in mpv
 # ButterEye: AGPL-3.0-or-later (generated scripts and configs carry the §7
@@ -111,6 +111,8 @@ EOF
 %{_datadir}/icons/hicolor/scalable/apps/%{app_id}.svg
 
 %changelog
+* Wed Oct 28 2026 The ButterEye contributors - 0.0.7-1
+- 0.0.7 (see CHANGELOG.md): smooth copies of files with non-ASCII names
 * Wed Oct 28 2026 The ButterEye contributors - 0.0.6-1
 - 0.0.6 (see CHANGELOG.md): MacBook Air fixes, picture controls, faster
   smooth copies on the Mac's media engine

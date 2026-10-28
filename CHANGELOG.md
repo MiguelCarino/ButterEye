@@ -5,7 +5,9 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
-## Unreleased
+## 0.0.7 — 2026-10-28
+
+A fix for smooth copies of files with names that are not plain English letters.
 
 ### Fixed
 

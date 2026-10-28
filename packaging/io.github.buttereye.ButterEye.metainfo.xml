@@ -32,6 +32,12 @@
     <binary>buttereye-gui</binary>
   </provides>
   <releases>
+    <release version="0.0.7" date="2026-10-28" type="stable">
+      <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.7</url>
+      <description>
+        <p>Smooth copies of files with characters such as accents, Japanese, "⧸" or "｜" in their name no longer fail at the end.</p>
+      </description>
+    </release>
     <release version="0.0.6" date="2026-10-28" type="stable">
       <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.6</url>
       <description>
