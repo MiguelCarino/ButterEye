@@ -32,6 +32,12 @@
     <binary>buttereye-gui</binary>
   </provides>
   <releases>
+    <release version="0.0.6" date="2026-10-28" type="stable">
+      <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.6</url>
+      <description>
+        <p>Hand-drawn 2D animation plays smoothly instead of still-still-still-jump, and scene cuts in dark or similar shots are caught. New picture controls (brightness, contrast, saturation, gamma and hue, 3D LUTs, stronger debanding with grain, a RAVU upscaler and an A/B split view), smooth copies that keep their full size and encode on the Mac's media engine, a speed test that measures inside mpv on a Mac and holds its result through a sustained run, and many fixes for fanless Macs.</p>
+      </description>
+    </release>
     <release version="0.0.5" date="2026-10-14" type="stable">
       <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.5</url>
       <description>

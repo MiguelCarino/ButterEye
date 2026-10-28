@@ -5,7 +5,7 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
-## Unreleased
+## 0.0.6 — 2026-10-28
 
 Hand-drawn 2D animation now plays smoothly instead of still-still-still-jump.
 Scene cuts in dark or similar-looking shots are caught, colours no longer shift
