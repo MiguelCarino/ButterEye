@@ -12,6 +12,7 @@ import dataclasses
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Coroutine
@@ -264,6 +265,32 @@ async def test_a_failing_script_is_the_scripts_failure(
         await _encode(monkeypatch, tmp_path, vspipe, ffmpeg)
     assert err.value.code is ErrorCode.VSPIPE_FRAME_ERROR
     assert "no ffms2" in (err.value.detail or "")
+
+
+# ---------------------------------------------------------------- non-ASCII names
+@posix
+@pytest.mark.skipif(
+    not (shutil.which("mkvmerge") and shutil.which("ffmpeg")), reason="no mkvmerge or ffmpeg"
+)
+async def test_mkvmerge_remuxes_a_file_name_that_is_not_ascii(tmp_path: Path) -> None:
+    """A YouTube title ("K⧸DA - POP⧸STARS ｜ …") reached mkvmerge as "K" under
+    run()'s LC_ALL=C and the remux refused to overwrite its own source."""
+    mkvmerge, ffmpeg = shutil.which("mkvmerge"), shutil.which("ffmpeg")
+    assert mkvmerge and ffmpeg
+    src = tmp_path / "K⧸DA - POP⧸STARS ｜ Music Video.webm"
+    subprocess.run(
+        [ffmpeg, "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=d=1:s=64x64",
+         "-f", "lavfi", "-i", "sine=d=1", "-c:v", "libvpx-vp9", "-c:a", "libopus", str(src)],
+        check=True,
+    )  # fmt: skip
+    out = tmp_path / "K⧸DA - POP⧸STARS ｜ Music Video.smooth.mkv"
+    video, part = pipeline.temp_paths(out)
+    subprocess.run(
+        [ffmpeg, "-loglevel", "error", "-i", str(src), "-an", "-c", "copy", str(video)], check=True
+    )
+    tools = jobs._Tools("ffprobe", ffmpeg, "vspipe", mkvmerge)
+    await jobs._remux(tools, video, src, part, _info(), io.StringIO())
+    assert part.stat().st_size > 0
 
 
 # ---------------------------------------------------------------- B2: keep the encode

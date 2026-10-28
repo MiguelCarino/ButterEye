@@ -5,6 +5,14 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
+## Unreleased
+
+### Fixed
+
+- **Smooth copies of files with "⧸", "｜", accents or Japanese in their name
+  failed at the end** with BE-4007: mkvmerge was given the name cut off at the
+  first such character. YouTube titles often have them.
+
 ## 0.0.6 — 2026-10-28
 
 Hand-drawn 2D animation now plays smoothly instead of still-still-still-jump.

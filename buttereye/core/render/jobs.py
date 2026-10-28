@@ -107,6 +107,10 @@ USER_MODEL_SUBDIR = "models"
 PROBE_TIMEOUT_S = 60.0
 REMUX_TIMEOUT_S = 6 * 3600.0
 RENICE = 10  # §7.6: renders always run at lower CPU priority than the desktop
+#: run() sets LC_ALL=C, and mkvmerge then reads its arguments as ASCII and cuts a
+#: file name off at the first other character ("K⧸DA" → "K"); C.UTF-8 exists on
+#: macOS and on every glibc ButterEye supports
+REMUX_ENV = {"LC_ALL": "C.UTF-8"}
 #: ffms2 comes with ButterEye on Windows (its installer), with dnf on Fedora and
 #: with Homebrew on macOS, where packaging it is phase 4 of the port. The same
 #: three answers as ``capabilities._FFMS2_INSTALL``, for the same condition:
@@ -1726,6 +1730,7 @@ async def _remux(
         pipeline.low_priority(argv, nice=shutil.which("nice"), ionice=shutil.which("ionice"),
                               level=RENICE, taskpolicy=_taskpolicy()),
         timeout_s=REMUX_TIMEOUT_S,
+        env=REMUX_ENV,
     )  # fmt: skip
     text = (res.stdout or "") + (res.stderr or "")
     if text.strip():
