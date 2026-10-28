@@ -5,6 +5,14 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
+## Unreleased
+
+### Fixed
+
+- **Smooth copies of videos stored as RGB failed at once** with BE-4005, with
+  every engine. Such files are rare (some screen recordings and lossless
+  exports); playing them was not affected.
+
 ## 0.0.7 — 2026-10-28
 
 A fix for smooth copies of files with names that are not plain English letters.

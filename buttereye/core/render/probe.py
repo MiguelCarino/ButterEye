@@ -279,6 +279,10 @@ def source_info(
         )
         if video.get(name) and video.get(name) not in ("unknown", "unspecified")
     }
+    if color.get("colorspace") == "gbr":
+        # stored as RGB: the copy is YUV, written with BT.709 (vs_matrix gives the
+        # template the same), and "gbr" would tag its Y, U and V as G, B and R
+        color["colorspace"] = "bt709"
     streams = tuple(
         StreamInfo(
             index=int(s.get("index", i)),

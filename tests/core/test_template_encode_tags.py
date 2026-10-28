@@ -56,3 +56,12 @@ def test_probe_reads_the_siting_and_maps_it_for_the_script() -> None:
         assert rp.vs_chromaloc(info) == zimg
         assert rp.chroma_sample_location(info) == ffprobe
     assert rp.chroma_sample_location(_info()) == "left"
+
+
+def test_an_rgb_source_is_tagged_with_the_matrix_the_template_converts_with() -> None:
+    # gbrp (an RGB VP9 or FFV1): the smoothed copy is YUV, so ffprobe's "gbr" would
+    # tell players to show its Y, U and V as G, B and R
+    info = _info(pix_fmt="gbrp", color_space="gbr", color_range="pc", width=320, height=240)
+    assert (rp.vs_matrix(info), rp.vs_range(info)) == ("709", "full")
+    argv = pipeline.encode_argv("ffmpeg", "libx264", info, Path("/o/v.mkv"))
+    assert argv[argv.index("-colorspace") + 1] == "bt709"

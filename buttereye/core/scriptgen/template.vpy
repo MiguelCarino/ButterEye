@@ -124,6 +124,20 @@ def _to_yuv(rgb, fmt, matrix, rng, loc, cfg):
                                 chromaloc_s=loc, dither_type=_dither(fmt, cfg))
 
 
+def _from_rgb(clip, cfg, props):
+    # A video stored as RGB (gbrp: a screen capture, an FFV1 or VP9 export): the
+    # frame analysis, the engines' RGB round trip and mvgpu all take YUV, and
+    # zimg needs a matrix to get there. YUV 4:4:4 at the source's depth, once;
+    # the matrix and range it is written with go into cfg for every later
+    # conversion (an offline render tags the copy with the same ones)
+    matrix = _matrix(cfg, clip, props)
+    rng = _range(cfg, props)
+    cfg['matrix'], cfg['range'] = matrix, rng
+    fmt = core.query_video_format(vs.YUV, clip.format.sample_type,
+                                  clip.format.bits_per_sample, 0, 0)
+    return core.resize.Spline36(clip, format=fmt.id, matrix_s=matrix, range_s=rng)
+
+
 def _source(cfg):
     if 'video_in' in globals():
         clip = globals()['video_in']
@@ -808,6 +822,8 @@ def _compare(clip, out, target, cfg):
 def build():
     cfg = _settings()
     clip, props = _source(cfg)
+    if clip.format.color_family == vs.RGB:
+        clip = _from_rgb(clip, cfg, props)
     # settled once for every conversion, and stamped on the frames: zimg takes
     # a frame's _ChromaLocation over a chromaloc_in_s argument
     cfg['chromaloc'] = _chromaloc(cfg, props)

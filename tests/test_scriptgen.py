@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.mpvctl.ipc import VF_ADD_PREFIX, valid_vf_add
 from buttereye.core.scriptgen import generator as g
 from buttereye.core.types import BackendId
@@ -307,6 +308,39 @@ def test_template_rejects_bad_user_data(tmp_path: Path) -> None:
         capture_output=True, text=True, timeout=60, check=False,
     )  # fmt: skip
     assert res.returncode != 0 and "unsupported user_data version" in res.stderr
+
+
+@pytest.mark.integration
+def test_template_takes_an_rgb_source_vspipe(tmp_path: Path) -> None:
+    """A video stored as RGB (gbrp: VP9 or FFV1 from ``testsrc`` or a screen
+    capture) is smoothed like a YUV one: the frame analysis and the engines get
+    YUV 4:4:4, not a resize that has no matrix to convert with (BE-4005)."""
+    for tool in ("vspipe", "ffmpeg"):
+        if shutil.which(tool) is None:
+            pytest.skip(f"{tool} missing")
+    consts = g.DEFAULT_CONSTANTS
+    if not consts.ffms2_lib.is_file():
+        pytest.skip("ffms2 is not installed")
+    if not (consts.plugin_dir / osapi.plugin_file("mvtools.so")).is_file():
+        pytest.skip("MVTools is not installed")
+    src = tmp_path / "rgb.mkv"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=24", "-t", "1",
+         "-c:v", "ffv1", "-pix_fmt", "gbrp", os.fspath(src)],
+        capture_output=True, timeout=60, check=True,
+    )  # fmt: skip
+    script = tmp_path / "gen.vpy"
+    g.write_script(script)
+    data = {"v": 1, "gen": 1, "backend": "mvtools", "src_fps": [24, 1], "target_fps": [48, 1],
+            "sc_threshold": 0.12, "hold_fill": True, "still_skip": True, "matrix": "709",
+            "range": "full", "source": {"kind": "file", "path": os.fspath(src)}}  # fmt: skip
+    assert "YUV444P8" in _vspipe_info(script, data)
+    res = subprocess.run(
+        ["vspipe", "-a", "user_data=" + json.dumps(data), "-p", os.fspath(script), "--"],
+        capture_output=True, text=True, timeout=120, check=False,
+    )  # fmt: skip
+    assert res.returncode == 0, res.stderr
+    assert "Output 48 frames" in res.stderr
 
 
 @pytest.mark.integration
