@@ -92,6 +92,21 @@ def test_plugins_models_clean_licence() -> None:
     assert "Third-party components" in out and "Affero" in out
 
 
+def test_bench_prints_the_core_s_notices() -> None:
+    """A failed in-mpv pass is reported as a Notice; the table alone showed the
+    vspipe speed with "real time: no", which reads like a slow engine."""
+    from buttereye.core.events import Notice
+    from buttereye.core.types import Msg
+
+    async def once_benching(core: Any) -> None:
+        while not core.fake_call_count("bench"):
+            await asyncio.sleep(0)
+        core.fake_emit(Notice(Msg("In-mpv speed of mvgpu could not be measured")))
+
+    code, out, _ = run("bench", scenario="bench_results", after_open=once_benching)
+    assert code == 0 and "In-mpv speed of mvgpu could not be measured" in out
+
+
 def test_bench_runs_and_lists() -> None:
     code, out, _ = run("bench", "--json", scenario="bench_results")
     d = doc(out)
@@ -107,6 +122,20 @@ def test_render_follows_the_job_to_the_end(tmp_path: Path) -> None:
     d = doc(out)
     assert code == 0 and d["data"]["state"] == "succeeded"
     assert d["data"]["spec"]["output"] == str(tmp_path / "film.smooth.mkv")
+
+
+def test_render_hands_the_core_absolute_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """vspipe and ffmpeg run in another directory: a relative source failed every
+    render with "Can't open" (BE-4005, measured on the M2)."""
+    (tmp_path / "film.mkv").write_bytes(b"x")
+    monkeypatch.chdir(tmp_path)
+    code, out, _ = run("render", "film.mkv", "-o", "out.mkv", "--json")
+    spec = doc(out)["data"]["spec"]
+    assert code == 0
+    assert spec["source"] == str(tmp_path / "film.mkv")
+    assert spec["output"] == str(tmp_path / "out.mkv")
 
 
 def test_play_stays_until_the_session_ends(tmp_path: Path) -> None:

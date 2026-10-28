@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from fractions import Fraction
 
+from buttereye.core.mpvctl.decide import display_rate, uneven_pacing
 from buttereye.core.types import BackendId, BypassReason, FilterState, Health, SessionSnapshot
 
 #: the one overlay id ButterEye uses (ipc.check_command allows only this one)
@@ -54,7 +55,12 @@ def parts(snap: SessionSnapshot, items: Sequence[str]) -> list[str]:
     out: list[str] = []
     src = snap.source
     if "rates" in items and src is not None and snap.target_fps is not None:
-        out.append(f"{_rate(src.fps)} → {_rate(snap.target_fps)} fps")
+        rates = f"{_rate(src.fps)} → {_rate(snap.target_fps)} fps"
+        if uneven_pacing(snap.target_fps, snap.display_fps):
+            # 2x of 23.976 on 60 Hz is shown 1-1-1-2 (decide.uneven_pacing)
+            display = display_rate(snap.display_fps)
+            rates += f" (uneven on {_rate(display)} Hz)" if display else " (uneven)"
+        out.append(rates)
     if "engine" in items:
         if snap.backend is BackendId.RIFE_TRT:
             out.append(f"GPU · RIFE{_model(snap.model)} TensorRT")

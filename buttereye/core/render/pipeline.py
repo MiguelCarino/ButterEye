@@ -41,8 +41,24 @@ _ENCODER_ARGS: Mapping[str, tuple[str, ...]] = {
     "libx265": ("-preset", "fast", "-crf", "20"),
     "libsvtav1": ("-preset", "8", "-crf", "28"),
     "libx264": ("-preset", "medium", "-crf", "18"),
+    # the Mac's media engine: constant quality (1-100), hardware only (-allow_sw
+    # is off by default); 60 is not calibrated against x265's CRF 20 yet. hvc1
+    # is the tag Apple's players want, and Matroska accepts it
+    "hevc_videotoolbox": ("-q:v", "60", "-tag:v", "hvc1"),
+    # ProRes 422 HQ, always 4:2:2 10-bit (ffmpeg converts the 4:2:0 frames)
+    "prores_videotoolbox": ("-profile:v", "hq"),
 }
-_TEN_BIT_PIX = {"hevc_nvenc": "p010le", "av1_nvenc": "p010le"}
+_TEN_BIT_PIX = {"hevc_nvenc": "p010le", "av1_nvenc": "p010le", "hevc_videotoolbox": "p010le"}
+#: encoders whose 10-bit output needs ``-profile:v main10``
+_MAIN10 = frozenset({"hevc_nvenc", "hevc_videotoolbox"})
+#: encoders with one fixed pixel format of their own
+_FIXED_PIX = {"prores_videotoolbox": "p210le"}
+
+#: ffprobe ``color_space`` → the matrix name of ffmpeg's scale filter
+_SCALE_MATRIX: Mapping[str, str] = {
+    "bt709": "bt709", "smpte170m": "smpte170m", "bt470bg": "bt470", "smpte240m": "smpte240m",
+    "bt2020nc": "bt2020", "fcc": "fcc",
+}  # fmt: skip
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,11 +92,71 @@ def vspipe_argv(
     return [*argv, os.fspath(script), "-"]
 
 
+def ten_bit_output(src: SourceInfo, encoder: str, *, ten_bit: bool = False) -> bool:
+    """Whether the copy is written with 10 bits: 10-bit and HDR10 sources stay
+    10-bit, and ``ten_bit`` asks for it on 8-bit ones (less banding in gradients
+    after encoding, at about the same speed), when the encoder can."""
+    wanted = ten_bit or src.bits > 8 or renders_as_hdr10(src)
+    return wanted and encoder in TEN_BIT_ENCODERS
+
+
+def _pix_fmt(src: SourceInfo, encoder: str, ten_bit: bool) -> str:
+    if encoder in _FIXED_PIX:
+        return _FIXED_PIX[encoder]
+    if ten_bit_output(src, encoder, ten_bit=ten_bit):
+        return _TEN_BIT_PIX.get(encoder, "yuv420p10le")
+    return "yuv420p"
+
+
+def filter_value(text: str) -> str:
+    """``text`` as one option value inside an ``-vf`` graph: escaped for the
+    option parser (``' \\ :``) and then for the graph parser (``\\ ' [ ] , ;``),
+    the two levels ffmpeg-filters(1) describes. A path with a space or a quote
+    (``~/Library/Application Support``) stays one value."""
+    level1 = re.sub(r"([\\':])", r"\\\1", text)
+    return re.sub(r"([\\'\[\],;])", r"\\\1", level1)
+
+
+def lut_filter(src: SourceInfo, lut: Path, pix_fmt: str) -> str:
+    """``-vf`` that applies a 3D LUT (.cube) to the smoothed frames: YUV to float
+    RGB with the source's own matrix and range (the y4m pipe carries neither, and
+    the scaler would guess BT.601), the LUT with tetrahedral interpolation, then
+    back with the same matrix to ``pix_fmt``. Float in between keeps 10 bits and
+    loses nothing on the way: through an identity LUT a BT.709 gradient came back
+    bit-exact (16-bit RGB: 66-88 dB), colour bars 84 dB (16-bit: 69 dB)."""
+    c = src.color
+    matrix = _SCALE_MATRIX.get(c.get("colorspace", ""))
+    if matrix is None:  # the usual guess: HD and up is BT.709
+        matrix = "bt709" if src.height >= 720 or src.width >= 1280 else "smpte170m"
+    rng = "pc" if c.get("color_range") == "pc" else "tv"
+    return ",".join((
+        f"scale=in_color_matrix={matrix}:in_range={rng}",
+        "format=gbrpf32le",
+        f"lut3d=file={filter_value(os.fspath(lut))}:interp=tetrahedral",
+        f"scale=out_color_matrix={matrix}:out_range={rng}",
+        f"format={pix_fmt}",
+    ))  # fmt: skip
+
+
 def encode_argv(
-    ffmpeg: str, encoder: str, src: SourceInfo, out: Path, *, threads: int | None = None
+    ffmpeg: str,
+    encoder: str,
+    src: SourceInfo,
+    out: Path,
+    *,
+    threads: int | None = None,
+    ten_bit: bool = False,
+    lut: Path | None = None,
 ) -> list[str]:
+    """``ffmpeg`` reading vspipe's y4m and writing the video-only track.
+    ``ten_bit``: 10 bits for an 8-bit source (``ten_bit_output``); ``lut``: a
+    .cube file applied before encoding (SDR only: ``jobs`` never passes one for
+    an HDR10 copy, whose PQ values a display-referred LUT would misread)."""
     argv = [ffmpeg, "-hide_banner", "-nostats", "-loglevel", "error", "-y"]
     argv += ["-f", "yuv4mpegpipe", "-i", "-"]
+    pix = _pix_fmt(src, encoder, ten_bit)
+    if lut is not None:
+        argv += ["-vf", lut_filter(src, lut, pix)]
     for key in ("color_primaries", "color_trc", "colorspace", "color_range"):
         value = src.color.get(key)
         if value:
@@ -95,16 +171,24 @@ def encode_argv(
         params = svtav1_hdr_params(src.hdr)
         if params:
             argv += ["-svtav1-params", params]
-    if (src.bits > 8 or hdr10) and encoder in TEN_BIT_ENCODERS:
-        argv += ["-pix_fmt", _TEN_BIT_PIX.get(encoder, "yuv420p10le")]
-        if encoder == "hevc_nvenc":
-            argv += ["-profile:v", "main10"]
-    else:
-        argv += ["-pix_fmt", "yuv420p"]
+    argv += ["-pix_fmt", pix]
+    if encoder in _MAIN10 and ten_bit_output(src, encoder, ten_bit=ten_bit):
+        argv += ["-profile:v", "main10"]
     if threads:
         argv += ["-threads", str(threads)]
     argv += ["-an", "-sn", "-dn", os.fspath(out)]
     return argv
+
+
+def encoder_test_argv(ffmpeg: str, encoder: str) -> list[str]:
+    """A quarter second of a small test pattern through ``encoder`` with the
+    options a render passes, to nowhere: does it encode on this machine?"""
+    return [
+        ffmpeg, "-hide_banner", "-nostdin", "-nostats", "-loglevel", "error",
+        "-f", "lavfi", "-i", "testsrc2=s=256x144:r=24:d=0.25",
+        "-c:v", encoder, *_ENCODER_ARGS.get(encoder, ()),
+        "-pix_fmt", _FIXED_PIX.get(encoder, "yuv420p"), "-f", "null", "-",
+    ]  # fmt: skip
 
 
 def mkvmerge_argv(
@@ -160,28 +244,56 @@ def hdr10_colour_args(src: SourceInfo) -> list[str]:
     return argv
 
 
+#: subtitle codecs Matroska can't hold, and what ffmpeg converts them to
+_MKV_SUBTITLE = {"mov_text": "srt"}
+
+
 def ffmpeg_remux_argv(
-    ffmpeg: str, video: Path, source: Path, out: Path, *, start_s: float
+    ffmpeg: str,
+    video: Path,
+    source: Path,
+    out: Path,
+    *,
+    start_s: float,
+    src: SourceInfo | None = None,
 ) -> list[str]:
-    """The fallback without mkvtoolnix (§7.2): one ffmpeg copy pass."""
+    """The fallback without mkvtoolnix (§7.2): one ffmpeg copy pass. MP4 text
+    subtitles (``mov_text``) have no Matroska form, so each of them, and only
+    them, becomes SubRip (copying it fails the whole pass; a global ``-c:s srt``
+    would break PGS and ASS). Output subtitle N is the source's N-th subtitle,
+    the order ``-map 1:s?`` keeps."""
     argv = [ffmpeg, "-hide_banner", "-nostats", "-loglevel", "error", "-y"]
     if start_s:
         argv += ["-itsoffset", f"{start_s:.3f}"]
     argv += ["-i", os.fspath(video), "-i", os.fspath(source)]
     argv += ["-map", "0:v", "-map", "1:a?", "-map", "1:s?", "-map", "1:t?"]
-    argv += ["-map_chapters", "1", "-map_metadata", "1", "-c", "copy", "-f", "matroska"]
-    argv += [os.fspath(out)]
+    argv += ["-map_chapters", "1", "-map_metadata", "1", "-c", "copy"]
+    subs = [s for s in src.streams if s.kind == "subtitle"] if src is not None else []
+    for n, s in enumerate(subs):
+        if s.codec in _MKV_SUBTITLE:
+            argv += [f"-c:s:{n}", _MKV_SUBTITLE[s.codec]]
+    argv += ["-f", "matroska", os.fspath(out)]
     return argv
 
 
 def low_priority(
-    argv: Sequence[str], *, nice: str | None, ionice: str | None, level: int
+    argv: Sequence[str],
+    *,
+    nice: str | None,
+    ionice: str | None,
+    level: int,
+    taskpolicy: str | None = None,
 ) -> list[str]:
     """``argv`` behind ``nice -n level`` and ``ionice -c2 -n7`` (best effort, not
-    idle: idle can starve under other disk IO), each only when installed (§7.6)."""
+    idle: idle can starve under other disk IO), each only when installed (§7.6).
+    macOS has no ionice; ``taskpolicy -b`` (``PRIO_DARWIN_BG``) is its disk
+    throttle, used for the remux, a copy pass where the efficiency cores it
+    keeps the process on are no loss."""
     out = list(argv)
     if ionice:
         out = [ionice, "-c2", "-n7", *out]
+    if taskpolicy:
+        out = [taskpolicy, "-b", *out]
     if nice:
         out = [nice, "-n", str(int(level)), *out]
     return out
@@ -211,6 +323,10 @@ __all__ = [
     "parse_progress",
     "vspipe_argv",
     "encode_argv",
+    "ten_bit_output",
+    "encoder_test_argv",
+    "lut_filter",
+    "filter_value",
     "mkvmerge_argv",
     "hdr10_colour_args",
     "ffmpeg_remux_argv",

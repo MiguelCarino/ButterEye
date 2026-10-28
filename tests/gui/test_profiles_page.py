@@ -653,6 +653,31 @@ def test_ctrl_s_saves_and_title_marker(make_window: Any, qtbot: Any) -> None:
 
 
 # --------------------------------------------------------------------- dialog
+def test_rule_tester_uses_the_power_state_now(
+    make_window: Any, qtbot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Battery and heat rules (RuleMatch.on_battery, thermal_*) are tested
+    against this machine's power state, not "mains, nominal"."""
+    from buttereye.core import api as core_api
+    from buttereye.gui.pages import profiles as pp
+
+    power = core_api.PowerSnapshot(on_battery=True, low_power=False, thermal=2)
+    monkeypatch.setattr(core_api.osapi, "power_snapshot", lambda: power)
+    seen: list[object] = []
+    real = pp.explain_rules
+
+    def spy(cfg: Any, facts: Any, p: Any = None) -> Any:
+        seen.append(p)
+        return real(cfg, facts, p)
+
+    monkeypatch.setattr(pp, "explain_rules", spy)
+    _win, page = open_page(make_window, qtbot)
+    page.tabs.setCurrentWidget(page.rules_tab)
+    page.t_fps.setText("60")
+    assert page.trace_texts()[0] == "Rule 3 matched → Fast"
+    assert seen and seen[-1] is power
+
+
 def test_rule_edit_dialog_use_checkboxes(qtbot: Any) -> None:
     profiles = scenarios.builtin_profiles()
     dlg = RuleEditDialog(None, profiles)
@@ -850,3 +875,44 @@ def test_layout_gives_the_editor_the_width(make_window: Any, qtbot: Any) -> None
     assert page.target_fps.isVisibleTo(page) and page.target_fps_label.isVisibleTo(page)
     page.target_2x.click()
     assert not page.target_fps.isVisibleTo(page)
+
+
+def test_anti_aliasing_toggle_saves_and_loads(make_window: Any, qtbot: Any) -> None:
+    sc = custom_scenario()
+    cfg = sc.config_load.config
+    aa = dataclasses.replace(CUSTOM, aa=True)
+    cfg = dataclasses.replace(
+        cfg, profiles=tuple(aa if p.id == "anime" else p for p in cfg.profiles)
+    )
+    sc = dataclasses.replace(sc, config_load=dataclasses.replace(sc.config_load, config=cfg))
+    win, page = open_page(make_window, qtbot, sc)
+    box = page.aa_check
+    assert box.accessibleName() == "Smooth jagged edges first"
+    assert "znedi3" in box.accessibleDescription()
+    assert "needs the znedi3 plugin" in box.toolTip()  # off in the default macOS build
+    select_profile(page, "anime")
+    assert box.isChecked() and box.isEnabled()
+    select_profile(page, "spare")
+    assert not box.isChecked()
+    box.setChecked(True)
+    edited = page.config()
+    assert edited is not None and next(p for p in edited.profiles if p.id == "spare").aa
+    page.save()
+    qtbot.waitUntil(lambda: not page.has_unsaved_changes(), timeout=3000)
+    assert next(p for p in saves(win)[-1].args[0].profiles if p.id == "spare").aa
+    select_profile(page, "quality")
+    assert not box.isEnabled()
+
+
+def test_double_explains_uneven_pacing(make_window: Any, qtbot: Any) -> None:
+    _win, page = open_page(make_window, qtbot, custom_scenario())
+    select_profile(page, "spare")
+    page.target_2x.click()
+    assert page.cadence_note.isVisibleTo(page)
+    assert "60 Hz" in page.cadence_note.text()
+    # true by default: Match my display alone still doubles at 1080p on an M2,
+    # so the note points at the setting that trades size for even pacing
+    assert "Even motion" in page.cadence_note.text()
+    assert "Match my display paces every frame" not in page.cadence_note.text()
+    page.target_display.click()
+    assert not page.cadence_note.isVisibleTo(page)

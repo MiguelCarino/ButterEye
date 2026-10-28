@@ -86,6 +86,102 @@ def test_refused(cmd: tuple[object, ...]) -> None:
         m.check_command(cmd)
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        ("set_property", "brightness", -100),
+        ("set_property", "contrast", 0),
+        ("set_property", "saturation", 100),
+        ("set_property", "gamma", 7),
+        ("set_property", "hue", -3),
+        ("set_property", "deband-iterations", 16),
+        ("set_property", "deband-threshold", 4096),
+        ("set_property", "deband-range", 1),
+        ("set_property", "deband-grain", 0),
+        ("set_property", "tscale", "oversample"),
+        ("set_property", "tscale", "catmull_rom"),
+        ("set_property", "lut", ""),
+        ("set_property", "glsl-shaders", []),
+        ("get_property", "scale"),
+        ("get_property", "glsl-shaders"),
+        ("get_property", "display-fps"),
+        ("get_property", "estimated-display-fps"),
+        ("get_property", "brightness"),
+        ("get_property", "deband-grain"),
+        ("get_property", "lut"),
+        ("get_property", "tscale"),
+    ],
+)
+def test_picture_properties_allowed(cmd: tuple[object, ...]) -> None:
+    m.check_command(cmd)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        ("set_property", "brightness", 101),
+        ("set_property", "contrast", -101),
+        ("set_property", "saturation", True),  # an int to Python, 1 to mpv
+        ("set_property", "gamma", 1.5),
+        ("set_property", "hue", "10"),
+        ("set_property", "deband-iterations", 17),
+        ("set_property", "deband-range", 0),
+        ("set_property", "deband-grain", 4097),
+        ("set_property", "deband-threshold", None),
+        ("set_property", "tscale", "ewa_lanczossharp"),
+        ("set_property", "tscale", 1),
+        ("set_property", "lut", "/etc/passwd"),
+        ("set_property", "lut", "relative/luts/film.cube"),
+        ("set_property", "lut", 0),
+        ("set_property", "glsl-shaders", ["/tmp/evil.glsl"]),
+        ("set_property", "glsl-shaders", "/tmp/evil.glsl"),
+        ("set_property", "glsl-shaders", [1]),
+        ("set_property", "interpolation", 1),  # the attach settings take str or bool only
+        ("set_property", "scale", "ewa_lanczossharp"),  # readable, not writable
+        ("set_property", 3, 3),
+    ],
+)
+def test_picture_properties_refused(cmd: tuple[object, ...]) -> None:
+    with pytest.raises(m.CommandRefused):
+        m.check_command(cmd)
+
+
+def test_bundled_shader_list_may_be_put_back() -> None:
+    from buttereye.core.mpvctl import shaders
+
+    m.check_command(("set_property", "glsl-shaders", sorted(shaders.ALLOWED)))
+
+
+def test_lut_only_from_a_private_luts_folder(tmp_path: Path) -> None:
+    luts = tmp_path / "luts"
+    luts.mkdir(mode=0o700)
+    lut = luts / "film.cube"
+    lut.write_text("LUT_3D_SIZE 2\n")
+    m.check_command(("set_property", "lut", str(lut)))
+    # a symlink to it, a file in another folder, a missing one, a non-LUT name
+    (luts / "link.cube").symlink_to(lut)
+    other = tmp_path / "elsewhere"
+    other.mkdir(mode=0o700)
+    (other / "film.cube").write_text("LUT_3D_SIZE 2\n")
+    (luts / "notes.txt").write_text("x")
+    for bad in (
+        luts / "link.cube",
+        other / "film.cube",
+        luts / "missing.cube",
+        luts / "notes.txt",
+        luts / ".." / "luts" / "film.cube",
+    ):
+        with pytest.raises(m.CommandRefused):
+            m.check_command(("set_property", "lut", str(bad)))
+    # a folder others can write to is not ButterEye's
+    luts.chmod(0o777)
+    try:
+        with pytest.raises(m.CommandRefused):
+            m.check_command(("set_property", "lut", str(lut)))
+    finally:
+        luts.chmod(0o700)
+
+
 def test_quote_is_byte_length() -> None:
     assert m.quote("abc") == "%3%abc"
     assert m.quote("ü") == "%2%ü"
@@ -235,6 +331,29 @@ async def test_eof_fails_pending_and_sets_closed(server: tuple[FakeMpv, Path]) -
     with pytest.raises(m.IpcClosed):
         await client.command("client_name")
     await client.close()
+
+
+async def test_a_request_cancelled_while_sending_leaves_nothing_pending(
+    server: tuple[FakeMpv, Path],
+) -> None:
+    """A caller cancelled during ``drain`` (the 0.25 s poll at mpv's exit) left its
+    future registered; closing then failed it with nobody to read the exception,
+    and asyncio printed "Future exception was never retrieved" (measured, M2)."""
+    fake, path = server
+    client = await m.MpvIpc.connect(path)
+    client.start()
+    stuck = asyncio.Event()
+    client._writer.drain = stuck.wait  # type: ignore[method-assign]
+    try:
+        sending = asyncio.ensure_future(client.command("client_name"))
+        await asyncio.sleep(0.05)
+        assert client._pending
+        sending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await sending
+        assert not client._pending
+    finally:
+        await client.close()
 
 
 async def test_timeout(server: tuple[FakeMpv, Path]) -> None:

@@ -99,6 +99,7 @@ from buttereye.core.api import (
     builtin_profiles,
     command_hint,
     explain_rules,
+    osapi,
     render,
     validate_config,
 )
@@ -423,6 +424,21 @@ class ProfilesPage(Page):
         tl.addLayout(fr)
         self.target_box.setFocusProxy(self.target_display)
         self._row(self.tr("Target"), self.target_box, "target", focus=self.target_display)
+        # Even pacing: 2x of 23.976 fps is 47.95, which a 60 Hz panel shows as
+        # 1-1-1-2 refreshes per frame (a 12 Hz judder). "Match my display" alone
+        # does not fix it on an M2: RIFE and mvgpu can't reach 60 at 1080p, so it
+        # doubles too, unless general.cadence_first trades size for an even rate
+        self.cadence_note = self._note(fb)
+        self.cadence_note.setObjectName("cadenceNote")
+        self.cadence_note.setText(
+            self.tr(
+                "Double can step unevenly: 2× a 24 fps film is 48 fps, which a 60 Hz "
+                "display shows as a slight regular judder. Details → Settings → Even "
+                "motion can blend the uneven steps, or let Match my display smooth at "
+                "a smaller size so every frame is paced evenly."
+            )
+        )
+        self.form.addRow(self.cadence_note)
         self.target_group.idClicked.connect(lambda _i: self._on_target_kind())
         self.target_fps.valueChanged.connect(lambda _v: self._on_form_edited())
 
@@ -449,6 +465,22 @@ class ProfilesPage(Page):
         # what a row's description goes back to when its issue is fixed (_show_issues)
         self._field_desc: dict[str, str] = {"content": content_tip}
         self.content_combo.activated.connect(lambda _i: self._on_form_edited())
+
+        # Anti-aliasing before smoothing (Profile.aa): znedi3, on the CPU
+        self.aa_check = QCheckBox(self.tr("Smooth jagged edges first"), fb)
+        self.aa_check.setObjectName("field.aa")
+        aa_tip = self.tr(
+            "Anti-aliases each frame with znedi3 before smoothing, so the engine follows "
+            "clean edges instead of stair-steps. It runs on the CPU and costs a lot; "
+            "use it with a GPU engine, for low-resolution or aliased video. It needs "
+            "the znedi3 plugin; without it the video is smoothed as it is."
+        )
+        self.aa_check.setToolTip(aa_tip)
+        self._row(self.tr("Edges"), self.aa_check, "aa")
+        self.aa_check.setAccessibleName(self.tr("Smooth jagged edges first"))
+        self.aa_check.setAccessibleDescription(aa_tip)
+        self._field_desc["aa"] = aa_tip
+        self.aa_check.toggled.connect(lambda _on: self._on_form_edited())
 
         # Scene-cut sensitivity: slider + spin, both expose the value
         self.sc_box = QWidget(fb)
@@ -1283,6 +1315,7 @@ class ProfilesPage(Page):
                 (self.hdr_pass if p.hdr == "passthrough" else self.hdr_skip).setChecked(True)
                 i = self.content_combo.findData(str(p.content))
                 self.content_combo.setCurrentIndex(max(i, 0))
+                self.aa_check.setChecked(p.aa)
         finally:
             self._populating = False
         self._update_frames_text(p)
@@ -1449,6 +1482,7 @@ class ProfilesPage(Page):
             self.target_2x,
             self.target_fixed,
             self.content_combo,
+            self.aa_check,
             self.sc_slider,
             self.sc_spin,
             self.buffered_auto,
@@ -1468,6 +1502,7 @@ class ProfilesPage(Page):
             can_edit and (backend == BackendId.RIFE_TRT or (p is not None and p.scale is not None))
         )
         self._sync_target_fps(can_edit)
+        self.cadence_note.setVisible(self.target_2x.isChecked())
         self.buffered_spin.setEnabled(can_edit and not self.buffered_auto.isChecked())
         self.concurrent_spin.setEnabled(can_edit and not self.concurrent_auto.isChecked())
         hdr_ok = getattr(self, "_hdr_available", False)
@@ -1510,6 +1545,7 @@ class ProfilesPage(Page):
             else self.concurrent_spin.value(),
             hdr="passthrough" if self.hdr_pass.isChecked() else "skip",
             content=ContentKind(self.content_combo.currentData() or ContentKind.AUTO),
+            aa=self.aa_check.isChecked(),
         )
 
     def _on_form_edited(self) -> None:
@@ -1885,7 +1921,8 @@ class ProfilesPage(Page):
             lines.append(self.tr("Enter a frame rate to test, such as 24000/1001."))
         else:
             try:
-                trace = explain_rules(cfg, facts)
+                # this Mac's power and heat now, for on_battery / thermal_* rules
+                trace = explain_rules(cfg, facts, osapi.power_snapshot())
             except ButterEyeError as err:
                 lines.append(render(err.cause))
         if trace is not None and cfg is not None:

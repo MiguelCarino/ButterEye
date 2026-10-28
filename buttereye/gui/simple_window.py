@@ -20,6 +20,7 @@ import logging
 import re
 import signal
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from functools import partial
 from pathlib import Path
@@ -90,7 +91,10 @@ from buttereye.core.api import (
     SourceFacts,
     Target,
     TargetKind,
+    bench_stale,
     osapi,
+    pacing_notice,
+    real_measurement,
     render,
     unavailable_text,
 )
@@ -133,6 +137,13 @@ FIRST_BENCH = BenchRequest(1920, 1080, Fraction(24000, 1001))
 
 SMOOTH_KEY = "simple/smooth"
 DISPLAY_HZ_KEY = "simple/display_hz"
+#: The background speed test re-run for mvgpu that was never measured, or for
+#: results gone stale, waits for this time (ISO) and counts its tries here: a
+#: re-run that cannot measure mvgpu waits 1, 2, 4 ... days, at most
+#: ``RETRY_MAX``, instead of measuring at every start (B10)
+BENCH_RETRY_KEY = "simple/bench_retry_after"
+BENCH_TRIES_KEY = "simple/bench_retries"
+RETRY_MAX = timedelta(days=30)
 
 #: Smoothness choice -> (backend, model).
 SMOOTHNESS: dict[str, tuple[BackendId | str, str | None]] = {
@@ -160,18 +171,26 @@ def _t(text: str) -> str:
 
 
 #: Picture choices (§15.2): key -> label; stored as general.upscaling + general.deband
-PICTURE_CHOICES: tuple[str, ...] = ("standard", "sharper", "deband", "sharper-deband")
+PICTURE_CHOICES: tuple[str, ...] = (
+    "standard", "sharper", "ravu", "deband", "sharper-deband", "ravu-deband",
+)  # fmt: skip
+#: the upscaling shaders a Picture choice can name (general.upscaling)
+_SHADED: tuple[Literal["sharper", "ravu"], ...] = ("sharper", "ravu")
 
 
 def picture_key(upscaling: str, deband: bool) -> str:
-    if upscaling == "sharper":
-        return "sharper-deband" if deband else "sharper"
+    if upscaling in _SHADED:
+        return f"{upscaling}-deband" if deband else upscaling
     return "deband" if deband else "standard"
 
 
-def picture_settings(key: str) -> tuple[str, bool]:
+def picture_settings(key: str) -> tuple[Literal["standard", "sharper", "ravu"], bool]:
     """``(general.upscaling, general.deband)`` for a Picture choice."""
-    return ("sharper" if key.startswith("sharper") else "standard", key.endswith("deband"))
+    up: Literal["standard", "sharper", "ravu"] = "standard"
+    for shader in _SHADED:
+        if key.startswith(shader):
+            up = shader
+    return up, key.endswith("deband")
 
 
 def current_results(
@@ -327,9 +346,41 @@ def mvgpu_usable(report: DoctorReport | None) -> bool | None:
 
 
 def mvgpu_unmeasured(results: Sequence[BenchResult]) -> bool:
-    """None of this computer's speed-test results measured mvgpu (installed after
-    them): Automatic trusts only a measured GPU engine, so it is measured."""
-    return not any(m.backend is BackendId.MVGPU for r in results for m in r.measurements)
+    """None of this computer's speed-test results really measured mvgpu: installed
+    after them, or its in-mpv pass failed (the vspipe speed stored instead) or
+    faulted. Automatic trusts only a measured GPU engine, so it is measured again
+    (B10: a row that merely names mvgpu kept it out of Automatic for good)."""
+    return not any(
+        m.backend is BackendId.MVGPU and real_measurement(m)
+        for r in results
+        for m in r.measurements
+    )
+
+
+def bench_reason(
+    results: Sequence[BenchResult], *, mvgpu: bool, now: datetime
+) -> Literal["none", "mvgpu", "stale"] | None:
+    """Why the background speed test should run on this computer, if at all:
+    ``"none"`` (never measured here, or nothing current: ``runner.history``
+    leaves out results from other software and runs that shared the machine),
+    ``"mvgpu"`` (installed and not measured), ``"stale"`` (the newest result is
+    older than ``STALE_AFTER``: still used until the re-run replaces it)."""
+    if not results:
+        return "none"
+    if mvgpu and mvgpu_unmeasured(results):
+        return "mvgpu"
+    if all(bench_stale(r, now) for r in results):
+        return "stale"
+    return None
+
+
+def retry_backoff(tries: int) -> timedelta:
+    """1, 2, 4 ... days after the ``tries``-th re-run, at most ``RETRY_MAX``."""
+    return min(RETRY_MAX, timedelta(days=2 ** min(max(0, tries), 8)))
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -500,6 +551,9 @@ def row_view(snap: SessionSnapshot, note: str | None = None) -> RowView:
         )
     if not notice and snap.filter is FilterState.OFF:
         notice = _t("Smoothing is paused for this video. Resume turns it back on.")
+    if not notice:
+        uneven = pacing_notice(snap)  # B3: 2x of 24 fps on 60 Hz is 1-1-1-2
+        notice = render(uneven) if uneven is not None else ""
 
     kind: BadgeKind
     if snap.health in (Health.STALLED, Health.GPU_FAULT, Health.DEVICE_LOST):
@@ -749,13 +803,20 @@ class SimpleWindow(QMainWindow):
         self._save_again = False
         self._retried_conflict = False
         self._bench_running = False
+        #: run the background speed test again once nothing plays or converts
+        #: (B8: it was put off, or a video started while it ran)
+        self._bench_when_idle = False
+        self._bench_why: str | None = None
+        self._starting = 0  # play operations in flight
         self._busy: str | None = None
         self._details: Any = None
         self._display_hz: float | None = _float(settings.value(DISPLAY_HZ_KEY))
         self._updating = False
         self._smooth_key = DEFAULT_SMOOTHNESS
         self._target_key = DEFAULT_TARGET
-        self._upscaling = "standard"  # general.upscaling (§15.2)
+        #: general.upscaling (§15.2), every value the schema knows ("ravu" chosen
+        #: in Details → Settings is kept by a save from here)
+        self._upscaling: Literal["standard", "sharper", "ravu"] = "standard"
         self._deband = False  # general.deband (§15.2)
         self._hdr: Literal["skip", "passthrough"] = "skip"  # simple profile hdr (F7)
         self._full_size = False  # general.full_size: never smaller to keep up
@@ -939,8 +1000,8 @@ class SimpleWindow(QMainWindow):
             self.tr("&Picture"),
             self.picture_combo,
             description=self.tr(
-                "Sharper adds crisper edges when the video is smaller than the window; "
-                "less banding smooths steps in gradients."
+                "Sharper and Sharp edges add crisper edges when the video is smaller "
+                "than the window; less banding smooths steps in gradients."
             ),
         )
         grid.addWidget(plabel, 1, 2)
@@ -1190,13 +1251,28 @@ class SimpleWindow(QMainWindow):
             combo.clear()
             combo.addItem(self.tr("Standard"), "standard")
             combo.addItem(self.tr("Sharper"), "sharper")
+            combo.addItem(self.tr("Sharp edges (RAVU)"), "ravu")
             combo.addItem(self.tr("Less banding"), "deband")
             combo.addItem(self.tr("Sharper, less banding"), "sharper-deband")
-            combo.setItemData(
-                1,
-                self.tr("FSRCNNX shader; costs a little GPU time when the video is upscaled."),
-                Qt.ItemDataRole.ToolTipRole,
+            combo.addItem(self.tr("Sharp edges, less banding"), "ravu-deband")
+            # both shaders run on every smoothed frame; the session turns FSRCNNX
+            # off below 1.8x enlargement, at smaller smoothing sizes, on battery and
+            # hot (shaders.sharper_allowed). RAVU is a small fixed-kernel pass
+            sharper = self.tr(
+                "FSRCNNX shader; it runs on every smoothed frame, so ButterEye leaves it "
+                "off unless the video is enlarged at least 1.8×, and on battery or when hot."
             )
+            ravu = self.tr(
+                "RAVU shader: crisp edges for much less GPU time than Sharper, while the "
+                "video is enlarged."
+            )
+            for key, tip in (
+                ("sharper", sharper),
+                ("sharper-deband", sharper),
+                ("ravu", ravu),
+                ("ravu-deband", ravu),
+            ):
+                combo.setItemData(combo.findData(key), tip, Qt.ItemDataRole.ToolTipRole)
             combo.setCurrentIndex(max(combo.findData(self.picture()), 0))
         finally:
             self._updating = False
@@ -1587,12 +1663,24 @@ class SimpleWindow(QMainWindow):
 
     def _on_history(self, history: tuple[BenchResult, ...]) -> None:
         # measured before on this hardware: never again just because the app opened,
-        # unless mvgpu arrived after that speed test (Automatic needs its speed)
+        # unless mvgpu arrived after that speed test (Automatic needs its speed) or
+        # the results went stale; those two re-runs back off (B9, B10)
         if self.bench_started or self._bench_running:
             return
-        current = current_results(history, self.report)
-        if current and not (self.mvgpu_available is True and mvgpu_unmeasured(current)):
+        now = _now()
+        why = bench_reason(
+            current_results(history, self.report), mvgpu=self.mvgpu_available is True, now=now
+        )
+        if why is None or (why != "none" and not self._retry_due(now)):
             return
+        if not self._idle():
+            # B8: a speed test next to a playing video measures both too slow, and
+            # the result would be kept; it waits until nothing plays or converts
+            self._bench_when_idle = True
+            return
+        if why != "none":
+            self._note_retry(now)
+        self._bench_why = why
         self.bench_started = True
         self._bench_running = True
         self.set_status("busy", self._bench_text())
@@ -1609,10 +1697,44 @@ class SimpleWindow(QMainWindow):
             base = self.tr("Preparing NVIDIA TensorRT and measuring your GPU (a few minutes)…")
             return f"{base} {pct}%" if pct else base
         if self.gpu_available is False:
-            base = self.tr("Measuring your computer (about a minute)…")
+            base = self.tr("Measuring your computer (a few minutes)…")
         else:
-            base = self.tr("Measuring your GPU (about a minute)…")
+            base = self.tr("Measuring your GPU (a few minutes)…")
         return f"{base} {pct}%" if pct else base
+
+    def _idle(self) -> bool:
+        """Nothing plays, starts playing or converts."""
+        busy = (OpState.QUEUED, OpState.RUNNING, OpState.CANCELLING)
+        return (
+            not self._rows
+            and self._starting == 0
+            and not any(j.state in busy for j in self._jobs.values())
+        )
+
+    def _resume_bench(self) -> None:
+        """Ask the history again once idle: a run put off, or one a video shared the
+        machine with (the core keeps that one out of the history), runs now."""
+        if self._bench_when_idle and not self._bench_running and self._idle():
+            self._bench_when_idle = False
+            self.bench_started = False
+            self._maybe_bench()
+
+    def _retry_due(self, now: datetime) -> bool:
+        raw = self.settings.value(BENCH_RETRY_KEY)
+        try:
+            after = datetime.fromisoformat(str(raw)) if raw else None
+        except ValueError:
+            after = None
+        return after is None or now >= after
+
+    def _note_retry(self, now: datetime) -> None:
+        try:
+            tries = int(self.settings.value(BENCH_TRIES_KEY) or 0)
+        except TypeError, ValueError:
+            tries = 0
+        self.settings.setValue(BENCH_RETRY_KEY, (now + retry_backoff(tries)).isoformat())
+        self.settings.setValue(BENCH_TRIES_KEY, tries + 1)
+        self.settings.sync()
 
     def _bench_progress(self, p: Progress) -> None:
         pct = None
@@ -1621,13 +1743,19 @@ class SimpleWindow(QMainWindow):
         if self._busy is None:
             self.set_status("busy", self._bench_text(pct))
 
-    def _bench_done(self, _result: BenchResult) -> None:
+    def _bench_done(self, result: BenchResult) -> None:
         self._bench_running = False
+        why, self._bench_why = self._bench_why, None
+        if why == "stale" or (why == "mvgpu" and not mvgpu_unmeasured((result,))):
+            self.settings.remove(BENCH_RETRY_KEY)
+            self.settings.remove(BENCH_TRIES_KEY)
         self._ready()
         self._sync_trt()
+        self._resume_bench()
 
     def _bench_failed(self, err: ButterEyeError) -> None:
         self._bench_running = False
+        self._bench_why = None
         self._quiet(err)
         if isinstance(err, OperationCancelled):
             self._ready()
@@ -1666,14 +1794,11 @@ class SimpleWindow(QMainWindow):
             return
         self._saving = True
         cfg = simple_config(load.config, self.profile())
-        upscaling: Literal["standard", "sharper"] = (
-            "sharper" if self._upscaling == "sharper" else "standard"
-        )
         cfg = dataclasses.replace(
             cfg,
             general=dataclasses.replace(
                 cfg.general,
-                upscaling=upscaling,
+                upscaling=self._upscaling,
                 deband=self._deband,
                 full_size=self._full_size,
             ),
@@ -1795,6 +1920,9 @@ class SimpleWindow(QMainWindow):
             else None
         )
         self.set_status("busy", self.tr("Starting {name}…").format(name=file.name))
+        self._starting += 1
+        if self._bench_running:
+            self._bench_when_idle = True  # the core marks that run contended
         self.bridge.run_op(
             lambda core: core.play(file, profile_id=profile_id),
             owner=self,
@@ -1803,11 +1931,14 @@ class SimpleWindow(QMainWindow):
         )
 
     def _played(self, sid: SessionId) -> None:
+        self._starting = max(0, self._starting - 1)
         if not self.smooth_on:
             self._set_interpolation(sid, False)
         self._ready()
 
     def _play_failed(self, err: ButterEyeError) -> None:
+        self._starting = max(0, self._starting - 1)
+        self._resume_bench()
         if isinstance(err, OperationCancelled):
             self._ready()
             return
@@ -1888,12 +2019,14 @@ class SimpleWindow(QMainWindow):
             row.show_button.clicked.connect(lambda: self.show_job(jid))
             row.log_button.clicked.connect(lambda: self.copy_job_log(jid))
             row.log_button.setVisible(self._keep_logs)
+            row.set_retry(self.retry_job)
             self._job_rows[job.id] = row
             self.jobs_box.addWidget(row)
             self.copies.show()
             self._fit_height()
         else:
             row.update_job(job)
+        self._resume_bench()
         if job.state is OpState.SUCCEEDED:
             self.set_status("ok", self.tr("Saved {name}.").format(name=job.spec.output.name))
         elif job.state is OpState.FAILED:
@@ -1953,6 +2086,19 @@ class SimpleWindow(QMainWindow):
             self.copies.setVisible(bool(self._job_rows))
 
         self.bridge.call(lambda core: core.render_forget(job), owner=self, ok=gone, err=self._quiet)
+
+    def retry_job(self, job: RenderJobState) -> None:
+        """Finish the copy after a failed remux: queue the same spec again (the
+        core finishes from the kept video), then drop the failed row."""
+        old, spec = job.id, job.spec
+
+        def queued(_new: object) -> None:
+            self.forget_job(old)
+            self._copy_enqueued(str(_new))
+
+        self.bridge.call(
+            lambda core: core.render_enqueue(spec), owner=self, ok=queued, err=self._quiet
+        )
 
     def show_job(self, job: JobId) -> None:
         state = self._jobs.get(job)
@@ -2025,6 +2171,7 @@ class SimpleWindow(QMainWindow):
         while len(self._closed_rows) > CLOSED_KEPT:
             self.dismiss_closed(next(iter(self._closed_rows)))
         self._sync_playing_heading()
+        self._resume_bench()
         kind, word, _why = closed_words(snap)
         if kind != "info":
             self.set_status(
@@ -2111,6 +2258,7 @@ class SimpleWindow(QMainWindow):
             if had_focus:
                 self.open_button.setFocus(Qt.FocusReason.OtherFocusReason)
         self._sync_playing_heading()
+        self._resume_bench()
 
     def _note(self, sid: SessionId, text: str) -> None:
         self._notes[sid] = text
@@ -2312,7 +2460,9 @@ __all__ = [
     "find_simple",
     "gpu_smoothing_available",
     "is_simple",
+    "bench_reason",
     "current_results",
+    "retry_backoff",
     "row_view",
     "short_rate",
     "simple_config",

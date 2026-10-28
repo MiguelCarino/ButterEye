@@ -16,6 +16,16 @@ Rule semantics (first match wins; an empty ``match`` matches everything):
   (``*.mkv``); with ``/`` it matches the whole path (``~/Videos/Anime/**``, ``*``
   stays within one directory, ``**`` spans any number). A leading ``~`` is the
   home directory.
+- ``on_battery``: equal to ``PowerSnapshot.on_battery``.
+- ``thermal_min`` / ``thermal_max``: ``PowerSnapshot.thermal`` >= / <= the bound
+  (``THERMAL_STATES`` indices: 0 nominal … 3 critical).
+
+What the power conditions see when nothing is known -- no snapshot passed, or a
+field that is None, which is every field off macOS -- is a machine on mains power
+at nominal temperature. So ``on_battery = true`` and ``thermal_min = "fair"``
+never match on Linux or Windows, and ``on_battery = false`` and every
+``thermal_max`` always do: a rule written on a Mac does not stop working anywhere
+else.
 
 A rule whose profile id does not exist is skipped (shown in the trace). With no
 match the profile is ``defaults.DEFAULT_PROFILE_ID`` (or the first profile when
@@ -35,14 +45,20 @@ from types import MappingProxyType
 
 from buttereye.core.errors import ErrorCode
 from buttereye.core.profiles import defaults
-from buttereye.core.profiles.schema import format_fraction
+from buttereye.core.profiles.luts import valid_lut_name
+from buttereye.core.profiles.schema import UPSCALING_CHOICES, format_fraction
 from buttereye.core.types import (
+    DEBAND_GRAIN_RANGE,
+    PICTURE_KEYS,
+    PICTURE_RANGE,
+    THERMAL_STATES,
     BackendId,
     Config,
     ConfigIssue,
     ContentKind,
     HdrClass,
     Msg,
+    PowerSnapshot,
     Profile,
     Rule,
     RuleMatch,
@@ -141,6 +157,34 @@ def _validate_general(cfg: Config, out: _Issues, trt_on: bool) -> None:
         )
     if g.trt_experimental is not None and not isinstance(g.trt_experimental, bool):
         out.add("general.trt_experimental", "trt_experimental must be true or false.")
+    if g.upscaling not in UPSCALING_CHOICES:
+        out.add("general.upscaling", "Upscaling must be standard, sharper or ravu.")
+    lo, hi = PICTURE_RANGE
+    for key in PICTURE_KEYS:
+        value = getattr(g.picture, key, None)
+        if not isinstance(value, int) or isinstance(value, bool) or not lo <= value <= hi:
+            out.add(
+                f"general.picture.{key}",
+                "Must be a whole number from {lo} to {hi}.",
+                {"lo": lo, "hi": hi},
+            )
+    if g.lut is not None and not valid_lut_name(g.lut):
+        out.add(
+            "general.lut",
+            "A LUT is the name of an imported .cube file, such as film.cube, not a path.",
+        )
+    if g.deband_strength not in ("light", "strong"):
+        out.add("general.deband_strength", "Debanding strength must be light or strong.")
+    if g.deband_grain is not None:
+        lo, hi = DEBAND_GRAIN_RANGE
+        if not _is_count(g.deband_grain) or not lo <= g.deband_grain <= hi:
+            out.add(
+                "general.deband_grain",
+                "Must be a whole number from {lo} to {hi}, or automatic.",
+                {"lo": lo, "hi": hi},
+            )
+    if g.compare not in ("off", "split"):
+        out.add("general.compare", "Compare must be off or split.")
 
 
 def _validate_profiles(profiles: tuple[Profile, ...], out: _Issues, trt_on: bool) -> set[str]:
@@ -175,6 +219,8 @@ def _validate_profiles(profiles: tuple[Profile, ...], out: _Issues, trt_on: bool
             out.add(f"{f}.hdr", "HDR must be skip or passthrough.")
         if not isinstance(p.content, ContentKind):
             out.add(f"{f}.content", "Content must be auto, live or animation.")
+        if not isinstance(p.aa, bool):
+            out.add(f"{f}.aa", "Anti-aliasing must be true or false.")
     return ids
 
 
@@ -272,6 +318,24 @@ def _validate_match(m: RuleMatch, f: str, out: _Issues) -> None:
         out.add(f"{f}.interlaced", "Interlaced must be true or false.")
     if m.path_glob is not None and (not isinstance(m.path_glob, str) or not m.path_glob.strip()):
         out.add(f"{f}.path_glob", "The path pattern is empty.")
+    if m.on_battery is not None and not isinstance(m.on_battery, bool):
+        out.add(f"{f}.on_battery", "On battery must be true or false.")
+    for name, level in (("thermal_min", m.thermal_min), ("thermal_max", m.thermal_max)):
+        if level is not None and (not _is_count(level) or not 0 <= level < len(THERMAL_STATES)):
+            out.add(
+                f"{f}.{name}",
+                "The temperature must be one of {names}.",
+                {"names": ", ".join(THERMAL_STATES)},
+            )
+    if (
+        isinstance(m.thermal_min, int)
+        and isinstance(m.thermal_max, int)
+        and m.thermal_min > m.thermal_max
+    ):
+        out.add(
+            f"{f}.thermal_min",
+            "The lowest temperature is above the highest; nothing can match.",
+        )
 
 
 def _validate_render(cfg: Config, out: _Issues) -> None:
@@ -322,7 +386,11 @@ def path_matches(glob: str, path: str) -> bool:
 Check = tuple[bool, Msg]
 
 
-def _checks(m: RuleMatch, s: SourceFacts) -> list[Check]:
+def _thermal_name(level: int) -> str:
+    return THERMAL_STATES[level] if 0 <= level < len(THERMAL_STATES) else str(level)
+
+
+def _checks(m: RuleMatch, s: SourceFacts, power: PowerSnapshot | None = None) -> list[Check]:
     out: list[Check] = []
 
     def add(ok: bool, yes: str, no: str, params: Mapping[str, str | int | float]) -> None:
@@ -382,6 +450,33 @@ def _checks(m: RuleMatch, s: SourceFacts) -> list[Check]:
             "path does not match path_glob {limit}",
             p,
         )
+    # unknown power reads as mains and nominal (see the module doc)
+    battery = bool(power is not None and power.on_battery)
+    thermal = power.thermal if power is not None and power.thermal is not None else 0
+    if m.on_battery is not None:
+        p = {"value": _yes_no(battery), "limit": _yes_no(m.on_battery)}
+        add(
+            battery == m.on_battery,
+            "on battery {value} = on_battery {limit}",
+            "on battery {value} ≠ on_battery {limit}",
+            p,
+        )
+    if m.thermal_min is not None:
+        p = {"value": _thermal_name(thermal), "limit": _thermal_name(m.thermal_min)}
+        add(
+            thermal >= m.thermal_min,
+            "temperature {value} ≥ thermal_min {limit}",
+            "temperature {value} < thermal_min {limit}",
+            p,
+        )
+    if m.thermal_max is not None:
+        p = {"value": _thermal_name(thermal), "limit": _thermal_name(m.thermal_max)}
+        add(
+            thermal <= m.thermal_max,
+            "temperature {value} ≤ thermal_max {limit}",
+            "temperature {value} > thermal_max {limit}",
+            p,
+        )
     return out
 
 
@@ -394,8 +489,12 @@ def _fill(m: Msg) -> str:
     return m.key.format_map(dict(m.params))
 
 
-def explain(cfg: Config, facts: SourceFacts) -> RuleTrace:
+def explain(cfg: Config, facts: SourceFacts, power: PowerSnapshot | None = None) -> RuleTrace:
     """Evaluate ``cfg.rules`` in order; stop at the first match. Pure.
+
+    ``power`` is what the power conditions are checked against
+    (``osapi.power_snapshot()``, taken by the caller so this stays pure); None
+    reads as mains power at nominal temperature.
 
     ``steps`` holds every evaluated rule up to and including the match. A
     skipped step's ``why`` is the first condition that failed, e.g.
@@ -410,7 +509,7 @@ def explain(cfg: Config, facts: SourceFacts) -> RuleTrace:
                 RuleStep(i, False, _msg("profile {id} does not exist", {"id": rule.profile}))
             )
             continue
-        checks = _checks(rule.match, facts)
+        checks = _checks(rule.match, facts, power)
         failed = next((msg for ok, msg in checks if not ok), None)
         if failed is not None:
             steps.append(RuleStep(i, False, failed))

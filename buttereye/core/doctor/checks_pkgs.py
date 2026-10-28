@@ -587,15 +587,52 @@ def _unreadable_db_finding(db: RpmDb) -> Finding:
     )
 
 
+#: the folder macOS runs a quarantined app from when it was opened where it was
+#: downloaded (Gatekeeper path randomisation): a read-only copy at a new random
+#: path each launch, ``/private/var/folders/<..>/T/AppTranslocation/<uuid>/d/``
+TRANSLOCATION_DIR = osapi.APP_TRANSLOCATION_DIR
+
+
+def translocated(app: Path) -> bool:
+    """``app`` is a translocated copy. Read from the path alone: the folder name
+    is what ``SecTranslocateIsTranslocatedURL`` answers from too, and a path
+    that merely contains the word elsewhere would need a folder by that name."""
+    return TRANSLOCATION_DIR in app.parts
+
+
 def app_quarantine_finding(resources: Path) -> Finding | None:
     """ButterEye.app, downloaded and not yet cleared: macOS holds each of its
     programs at first start until the user answers a prompt
     (``osapi.app_quarantined``), mpv and vspipe included. One command clears
-    the whole app; it is the same one the README gives for a first start."""
+    the whole app; it is the same one the README gives for a first start.
+
+    Not when macOS translocated it, though: the app opened from ``~/Downloads``
+    (or the disk image) runs from a read-only copy, ``xattr`` on that copy fails
+    with EROFS, and the next launch gets another copy anyway. The one thing that
+    works there is moving ButterEye.app to Applications and opening it again,
+    which ends translocation, so that is the finding, and it is shown even when
+    nothing is held: every launch from a new random path also breaks the
+    ``include=`` line in mpv.conf and the install record's paths."""
     held = osapi.app_quarantined(resources)
+    app = resources.parent.parent
+    if translocated(app):
+        return _f(
+            "packages.app_quarantine",
+            Severity.BLOCKING if held else Severity.DEGRADED,
+            M("ButterEye is running from a temporary copy"),
+            cause=M(
+                "ButterEye.app was opened where it was downloaded, so macOS runs it "
+                "from a read-only copy in a new place each time. The download mark "
+                "can't be cleared there, and the programs inside may be held back."
+            ),
+            fix=M(
+                "Quit ButterEye, move ButterEye.app to your Applications folder in "
+                "Finder, and open it again from there."
+            ),
+            evidence=(str(app), *(str(p) for p in held)),
+        )
     if not held:
         return None
-    app = resources.parent.parent
     return _f(
         "packages.app_quarantine",
         Severity.BLOCKING,
@@ -708,8 +745,7 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                     # no Homebrew formula for RIFE-ncnn-Vulkan and none for the
                     # models; ButterEye has to build both (phase 3)
                     macos=M(
-                        "RIFE has no macOS package yet, so only MVTools (CPU) smoothing "
-                        "works here."
+                        "RIFE has no macOS package yet, so only MVTools (CPU) smoothing works here."
                     ),
                     appimage=APPIMAGE_NO_GPU,
                 ),
@@ -1161,6 +1197,7 @@ __all__ = [
     "INSTALL_MANIFEST",
     "APP_CARRIES",
     "app_quarantine_finding",
+    "translocated",
     "APP_REPAIR",
     "REPAIR",
     "WINGET",

@@ -59,6 +59,13 @@ Linux path everywhere the rows below do not say otherwise:
   and the children's environment is ``point_at_appimage``'s. Fedora's RPMs never
   meet any of it: their Python is ``/usr/bin/python3``.
 
+- power and heat: macOS says how hot it is, whether Low Power Mode is on and
+  whether it runs from a battery (``thermal_state``, ``low_power_mode``,
+  ``on_battery``, all three in one ``power_snapshot``), and can be kept from idle
+  sleep while ButterEye works (``keep_awake``, ``activity``). Linux and Windows
+  answer None and keep nothing awake: a rule that asks reads them as a cool
+  machine on mains power (``rules.py``).
+
 mypy checks all three: ``mypy --platform linux``, ``mypy --platform win32``
 and ``mypy --platform darwin``.
 """
@@ -83,7 +90,10 @@ import sys
 import time
 from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from buttereye.core.types import PowerSnapshot
 
 _log = logging.getLogger(__name__)
 
@@ -420,7 +430,7 @@ def point_at_vsscript(
 APP_BIN = "bin"
 #: the programs the app carries, which are never looked for anywhere else while
 #: ButterEye runs from it (``executable``)
-APP_TOOLS = frozenset({"mpv", "ffmpeg", "ffprobe", "vulkaninfo"})
+APP_TOOLS = frozenset({"mpv", "ffmpeg", "ffprobe", "vulkaninfo", "mkvmerge"})
 #: the bundle's MoltenVK manifest, relative to Resources
 APP_VULKAN_ICD = "share/vulkan/icd.d/MoltenVK_icd.json"
 #: variables that would make a child load something other than what the app
@@ -460,7 +470,7 @@ def app_resources(executable: str, module: str) -> Path | None:
     try:
         exe = Path(executable).resolve()
         mod = Path(module).resolve()
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         return None
     if len(exe.parts) < 7 or exe.parent.name != "bin" or exe.parent.parent.name != "python":
         return None
@@ -497,9 +507,7 @@ def app_runtime(resources: Path) -> dict[str, Path]:
     }
 
 
-def point_at_app(
-    env: MutableMapping[str, str], resources: Path, *, sep: str = os.pathsep
-) -> None:
+def point_at_app(env: MutableMapping[str, str], resources: Path, *, sep: str = os.pathsep) -> None:
     """macOS app: make ``env`` lead every child ButterEye starts to what the app
     carries, and to nothing else.
 
@@ -552,6 +560,7 @@ APP_PROGRAMS = (
     "Resources/bin/ffmpeg",
     "Resources/bin/ffprobe",
     "Resources/bin/vulkaninfo",
+    "Resources/bin/mkvmerge",
 )
 
 
@@ -576,6 +585,10 @@ def app_quarantined(
     return tuple(p for p in programs if p.exists() and has_quarantine(p))
 
 
+#: the folder macOS runs a quarantined app from until it is moved (Gatekeeper
+#: path randomisation); ``doctor.checks_pkgs.translocated`` reads the same name
+APP_TRANSLOCATION_DIR = "AppTranslocation"
+
 #: the command that clears the whole app, the same one the README and the
 #: doctor's ``packages.app_quarantine`` give
 XATTR = "/usr/bin/xattr"
@@ -597,10 +610,21 @@ def release_app(
     something is held. True when it ran and succeeded. Any failure (a
     translocated read-only copy, an app owned by someone else) is False and
     never raised: the doctor still names the same command for the user to run.
-    ``has_quarantine`` and ``run`` are for tests; off macOS nothing is read or run."""
+    A translocated copy (a path through ``AppTranslocation``, the read-only copy
+    macOS runs an app from until it is moved out of Downloads) is False before
+    anything runs: xattr cannot change it, and the fix is to move ButterEye.app
+    to Applications. ``has_quarantine`` and ``run`` are for tests; off macOS
+    nothing is read or run."""
     if not app_quarantined(resources, has_quarantine=has_quarantine):
         return False
     app = resources.parent.parent
+    if APP_TRANSLOCATION_DIR in app.parts:
+        _log.warning(
+            "%s is a translocated read-only copy; move ButterEye.app to Applications "
+            "and open it from there",
+            app,
+        )
+        return False
     try:
         done = run(
             [XATTR, "-dr", "com.apple.quarantine", str(app)],
@@ -673,7 +697,7 @@ def appimage_root(executable: str, module: str, *, uid: int | None = None) -> Pa
     try:
         exe = Path(executable).resolve()
         mod = Path(module).resolve()
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         return None
     if len(exe.parts) < 5 or exe.parent.name != "bin" or exe.parent.parent.name != "python":
         return None
@@ -710,9 +734,7 @@ def appimage_runtime(root: Path) -> dict[str, Path]:
     }
 
 
-def point_at_appimage(
-    env: MutableMapping[str, str], root: Path, *, sep: str = os.pathsep
-) -> None:
+def point_at_appimage(env: MutableMapping[str, str], root: Path, *, sep: str = os.pathsep) -> None:
     """Linux AppImage: make ``env`` lead every child ButterEye starts to what the
     AppImage carries. ``point_at_app`` is the macOS model; the differences are
     Linux's:
@@ -1313,10 +1335,100 @@ def ipc_peer(writer: asyncio.StreamWriter) -> tuple[int | None, bool] | None:
     return (pid if pid > 0 else None), uid == os.getuid()
 
 
+# ======================================================================== power and heat
+def thermal_state() -> int | None:
+    """How hot macOS says this Mac is: 0 nominal, 1 fair, 2 serious, 3 critical
+    (``NSProcessInfo.thermalState``; ``types.THERMAL_STATES`` names them). None
+    on Linux and Windows, and when macOS does not answer."""
+    if sys.platform == "darwin":
+        return d.thermal_state()
+    return None
+
+
+def low_power_mode() -> bool | None:
+    """Is macOS's Low Power Mode on? None on Linux and Windows."""
+    if sys.platform == "darwin":
+        return d.low_power_mode()
+    return None
+
+
+def on_battery() -> bool | None:
+    """Is this machine running from a battery (IOKit's providing power source)?
+    None on Linux and Windows, and when it cannot be read."""
+    if sys.platform == "darwin":
+        return d.on_battery()
+    return None
+
+
+def power_snapshot() -> PowerSnapshot:
+    """The three answers above at once, as a ``types.PowerSnapshot``.
+
+    Cheap enough to ask whenever a decision is made: on the dev Mac all three
+    together take about 0.1 ms (two Objective-C messages and one IOKit call that
+    asks powerd), so nothing caches them and an answer is never stale. Every
+    field is None off macOS."""
+    from buttereye.core.types import PowerSnapshot  # types imports this module
+
+    return PowerSnapshot(
+        on_battery=on_battery(), low_power=low_power_mode(), thermal=thermal_state()
+    )
+
+
+def keep_awake(pid: int) -> subprocess.Popen[bytes] | None:
+    """Keep macOS from idle-sleeping until ``pid`` exits: ``caffeinate -i -w <pid>``.
+
+    The caller owns the returned process and may end it early (``terminate``);
+    otherwise it exits by itself with ``pid``, so a ButterEye that crashes leaves
+    nothing holding the machine awake past the job it was watching. The display
+    still sleeps. None off macOS and when ``caffeinate`` cannot be started."""
+    if sys.platform == "darwin":
+        try:
+            return subprocess.Popen(
+                d.caffeinate_argv(pid),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+        except OSError as exc:
+            _log.warning("could not start caffeinate for pid %d: %s", pid, exc)
+    return None
+
+
+def begin_activity(reason: str) -> int | None:
+    """Tell macOS this process is doing work the user asked for: no idle system
+    sleep and no App Nap until ``end_activity`` (``NSProcessInfo``
+    ``beginActivityWithOptions:reason:``, ``NSActivityUserInitiated``). ``reason``
+    is what ``pmset -g assertions`` shows. Returns a token for ``end_activity``,
+    or None (off macOS, or when macOS refused), which ``end_activity`` accepts."""
+    if sys.platform == "darwin":
+        return d.begin_activity(reason)
+    return None
+
+
+def end_activity(token: int | None) -> None:
+    """End an activity ``begin_activity`` started. None does nothing; never raises."""
+    if token is None:
+        return
+    if sys.platform == "darwin":
+        d.end_activity(token)
+
+
+@contextlib.contextmanager
+def activity(reason: str) -> Iterator[int | None]:
+    """``begin_activity`` for the length of a ``with`` block; yields the token."""
+    token = begin_activity(reason)
+    try:
+        yield token
+    finally:
+        end_activity(token)
+
+
 __all__ = [
     "APP_BIN",
     "APP_PROGRAMS",
     "APP_TOOLS",
+    "APP_TRANSLOCATION_DIR",
     "APP_UNSET",
     "APP_VULKAN_ICD",
     "APPIMAGE_TOOLS",
@@ -1335,6 +1447,14 @@ __all__ = [
     "O_CLOEXEC",
     "O_NOFOLLOW",
     "DetachedChild",
+    "activity",
+    "begin_activity",
+    "end_activity",
+    "keep_awake",
+    "low_power_mode",
+    "on_battery",
+    "power_snapshot",
+    "thermal_state",
     "app_quarantined",
     "release_app",
     "app_resources",

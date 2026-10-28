@@ -29,6 +29,7 @@ from pathlib import Path
 
 import buttereye
 from buttereye.core import capabilities, osapi
+from buttereye.core import commands as commands_
 from buttereye.core.capabilities import ProviderRef
 from buttereye.core.errors import ButterEyeError, ErrorCode
 from buttereye.core.mpvctl.ipc import MpvIpc, SocketRefused
@@ -42,9 +43,20 @@ PROFILE = "buttereye"
 #: Copy-back decoding for the VapourSynth bridge (§4.3), NVDEC first: with mpv
 #: 0.41 ``auto-copy`` settles on vulkan-copy on NVIDIA, about 1.6-2x the CPU of
 #: nvdec-copy for the same frames. Without NVIDIA/CUDA nvdec-copy fails to start
-#: and mpv falls through to ``auto-copy`` exactly as before. Keep in step with
-#: ``data/mpv/buttereye.conf``.
+#: and mpv falls through to ``auto-copy`` exactly as before. The profile file
+#: (``data/mpv/buttereye.conf``) gets the same value from ``write_include``.
 HWDEC = "nvdec-copy,auto-copy"
+#: macOS: VideoToolbox first. No Mac has NVDEC, so the NVIDIA probe only fails
+#: (and logs) at every start, and ``auto-copy`` may try vulkan-copy through
+#: MoltenVK before VideoToolbox.
+HWDEC_MACOS = "videotoolbox-copy,auto-copy"
+
+
+def hwdec() -> str:
+    """The ``--hwdec`` value on this platform, read at call time."""
+    return HWDEC_MACOS if osapi.IS_MACOS else HWDEC
+
+
 #: Per-session mpv logs kept in ``logs_dir`` (SCOPE §4.6: 5 files of at most 5 MB).
 LOG_KEEP = 5
 LOG_MAX_BYTES = 5 * 1024 * 1024
@@ -91,9 +103,21 @@ def ensure_private_dir(path: Path) -> Path:
     return path
 
 
+#: the hwdec line of ``data/mpv/buttereye.conf``, replaced per platform
+CONF_HWDEC_LINE = f"hwdec={HWDEC}\n"
+
+
+def include_text() -> str:
+    """The profile file for this platform: the template with this platform's
+    ``hwdec`` (``hwdec()``), so plain ``mpv --profile=buttereye`` decodes as
+    ButterEye's own launch does."""
+    text = CONF_TEMPLATE.read_text(encoding="utf-8")
+    return text.replace(CONF_HWDEC_LINE, f"hwdec={hwdec()}\n", 1)
+
+
 def write_include(path: Path) -> bool:
     """Write ButterEye's own ``[buttereye]`` profile file; True if it changed."""
-    text = CONF_TEMPLATE.read_text(encoding="utf-8")
+    text = include_text()
     with contextlib.suppress(OSError):
         if path.read_text(encoding="utf-8") == text:
             return False
@@ -110,8 +134,12 @@ def build_argv(
     file: Path,
     extra: Sequence[str] = (),
     shaders: Sequence[Path] = (),
+    lut: Path | None = None,
 ) -> list[str]:
     """The mpv command line. No ``--vf``: the filter is added over IPC (§4.2 step 2).
+
+    ``lut``: an imported 3D LUT (``profiles.luts.resolve_lut``), applied by mpv
+    after smoothing with ``--lut-type=auto`` (mpv reads the .cube header).
 
     ``--term-status-msg=`` empties the terminal status line, which mpv would
     otherwise append to the log several times a second (~24 MB/h); warnings,
@@ -123,11 +151,12 @@ def build_argv(
         f"--profile={PROFILE}",
         f"--script={os.fspath(LUA_HELPER)}",
         f"--input-ipc-server={osapi.ipc_address(socket)}",
-        f"--hwdec={HWDEC}",
+        f"--hwdec={hwdec()}",
         "--video-sync=display-resample",
         "--term-status-msg=",
         # appended, so shaders from the user's mpv.conf stay (§15.2)
         *(f"--glsl-shaders-append={os.fspath(p)}" for p in shaders),
+        *((f"--lut={os.fspath(lut)}", "--lut-type=auto") if lut is not None else ()),
         *extra,
         "--",
         os.fspath(file),
@@ -208,14 +237,31 @@ async def spawn_mpv(
     try:
         child = osapi.spawn_detached(argv, log_path, env=env)
     except FileNotFoundError as exc:
+        hint, commands = mpv_missing_hint()
         raise ButterEyeError(
             ErrorCode.MPV_NOT_FOUND,
             Msg("mpv was not found."),
-            Msg("Install mpv." if osapi.IS_WINDOWS else "Install the distribution's mpv package."),
-            commands=() if osapi.IS_WINDOWS else ("sudo dnf install mpv",),
+            hint,
+            commands=commands,
             detail=str(exc),
         ) from exc
     return MpvProcess(child.pid, child)
+
+
+def mpv_missing_hint() -> tuple[Msg, tuple[str, ...]]:
+    """What to do when mpv can't be started, and the command that installs it.
+
+    ButterEye.app carries its own mpv, so a missing one means a damaged app,
+    which reinstalling fixes (Homebrew's mpv would not be the one it runs).
+    A Homebrew or Fedora install: that platform's package
+    (``commands.install_command``); 0.0.5 told a Mac to ``sudo dnf install``."""
+    if osapi.MACOS_APP is not None:
+        return Msg("ButterEye's own mpv is missing; reinstall ButterEye."), ()
+    if osapi.IS_WINDOWS:
+        return Msg("Install mpv."), ()  # the installer's own mpv, as before
+    if osapi.IS_MACOS:
+        return Msg("Install mpv with Homebrew."), (commands_.install_command("mpv"),)
+    return Msg("Install the distribution's mpv package."), (commands_.install_command("mpv"),)
 
 
 def _group_alive(pgid: int) -> bool:
@@ -414,6 +460,10 @@ __all__ = [
     "CONF_TEMPLATE",
     "PROFILE",
     "HWDEC",
+    "HWDEC_MACOS",
+    "hwdec",
+    "include_text",
+    "mpv_missing_hint",
     "ensure_private_dir",
     "write_include",
     "LOG_KEEP",

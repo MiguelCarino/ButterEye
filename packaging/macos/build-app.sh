@@ -18,17 +18,20 @@
 #        Contents/Resources/
 #          python/                    CPython + site-packages (PySide6 thinned to
 #                                     arm64 and trimmed, VapourSynth, ButterEye)
-#          bin/                       mpv, ffmpeg, ffprobe, vulkaninfo
+#          bin/                       mpv, ffmpeg, ffprobe, vulkaninfo (and
+#                                     mkvmerge with BUTTEREYE_BUNDLE_MKVMERGE=1)
 #          lib/                       every library those load, MoltenVK and the
 #                                     Vulkan loader: Homebrew's bottles, relocated
-#          vapoursynth/               the plugins: mvtools, ffms2, mvgpu, rife
+#          vapoursynth/               the plugins: mvtools, ffms2, mvgpu, rife, and
+#                                     znedi3 + nnedi3_weights.bin when built
 #          share/rife-ncnn-models/, share/vulkan/icd.d/MoltenVK_icd.json
 #          licenses/<part>/, licenses/SOURCES.txt, buttereye-install.json
 #   4. relocation: every Homebrew Mach-O gets @rpath load commands, and
 #      appstage.py check refuses the bundle if anything still names a file
 #      outside it but macOS's own
-#   5. Info.plist, the icon (from buttereye/gui/icons/buttereye.svg, drawn by
-#      the bundled Qt), an ad-hoc signature over all of it
+#   5. Info.plist (with the video types Finder may offer it for), the icon (from
+#      buttereye/gui/icons/buttereye.svg, drawn by the bundled Qt), local symbols
+#      stripped from every Mach-O, an ad-hoc signature over all of it
 #   6. the disk image and the Corresponding Source tar
 #
 # What it takes from Homebrew, and why that is not a dependency of the result:
@@ -38,7 +41,23 @@
 # build input here, like Fedora's mock is for the Windows build; the formulae
 # below must be installed on the build Mac:
 #   mpv ffmpeg ffms2 vapoursynth-mvtools molten-vk vulkan-loader vulkan-tools
-#   (and ncnn, libomp, glslang for build-plugins.sh)
+#   (and ncnn, libomp, glslang for build-plugins.sh; mkvtoolnix for
+#   BUTTEREYE_BUNDLE_MKVMERGE=1)
+#
+# mkvmerge is carried only with BUTTEREYE_BUNDLE_MKVMERGE=1. Without it the offline render remuxes with
+# ffmpeg, which fails on MP4 mov_text subtitles and writes no container-level
+# HDR10 mastering metadata (review B2, B21); a Finder-started app never sees a
+# Homebrew mkvmerge, since its PATH has no /opt/homebrew/bin. Measured on
+# mkvtoolnix 103.0: 25 files from 19 kegs, 61 MiB, of which ICU's data library
+# is 32 MiB - the bottle links Homebrew's QtCore, and QtCore links ICU. The
+# relocated copy ran with no file loaded from /opt/homebrew (DYLD_PRINT_LIBRARIES).
+# Its licences (GPL-2.0-or-later, Qt's LGPL) and sources go the same way as
+# every other formula's: licences, copyleft and the sources tar below.
+# It is opt-in because 61 MiB is a quarter of the whole app, and the render no
+# longer needs it: mov_text is converted to SRT for the ffmpeg remux and a
+# failed remux keeps the encode (core/render/pipeline.py). A Homebrew mkvmerge
+# is still used when one is installed. Measured with mkvtoolnix 103.0, boost's
+# keg has no licence text, so appstage.py licences refuses the opt-in build.
 #
 # Signing: ad hoc (`codesign -s -`), because there is no Apple Developer ID
 # (an owner decision, docs/PLATFORMS.md). arm64 code must carry a signature to
@@ -78,12 +97,15 @@ done
 
 [[ $(uname -s) == Darwin && $(uname -m) == arm64 ]] \
     || { echo "build-app.sh builds on an Apple Silicon Mac" >&2; exit 1; }
-for tool in brew clang install_name_tool codesign hdiutil iconutil lipo otool git shasum; do
+for tool in brew clang install_name_tool codesign hdiutil iconutil lipo otool strip git shasum; do
     command -v "$tool" >/dev/null || { echo "$tool is missing" >&2; exit 1; }
 done
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1
 prefix=$(brew --prefix)
-for f in mpv ffmpeg ffms2 vapoursynth-mvtools molten-vk vulkan-loader vulkan-tools; do
+bundle_mkvmerge=${BUTTEREYE_BUNDLE_MKVMERGE:-0}
+formulae=(mpv ffmpeg ffms2 vapoursynth-mvtools molten-vk vulkan-loader vulkan-tools)
+if [[ $bundle_mkvmerge == 1 ]]; then formulae+=(mkvtoolnix); fi
+for f in "${formulae[@]}"; do
     [[ -d $prefix/opt/$f ]] || { echo "brew install $f first (a build input)" >&2; exit 1; }
 done
 
@@ -178,6 +200,15 @@ stagepy unwheel "$work/wheel/buttereye-$version-py3-none-any.whl" "$site"
 # the native parts: Homebrew's bottles and ButterEye's plugins, with every
 # library they load
 plugin_autoload=$(ls -d "$prefix"/lib/python3.*/site-packages/vapoursynth/plugins | tail -1)
+# znedi3 (Profile.aa) only when build-plugins.sh built it (BUTTEREYE_ZNEDI3=1);
+# its weights go beside it, where the plugin looks for them
+optional=()
+if [[ $bundle_mkvmerge == 1 ]]; then
+    optional+=("bin/mkvmerge=$prefix/bin/mkvmerge")
+fi
+if [[ -f $mac/vapoursynth/libznedi3.dylib ]]; then
+    optional+=("vapoursynth/libznedi3.dylib=$mac/vapoursynth/libznedi3.dylib")
+fi
 stagepy collect "$prefix" "$res" "$work/collected.json" \
     "bin/mpv=$prefix/bin/mpv" \
     "bin/ffmpeg=$prefix/bin/ffmpeg" \
@@ -188,8 +219,12 @@ stagepy collect "$prefix" "$res" "$work/collected.json" \
     "vapoursynth/mvtools.dylib=$plugin_autoload/mvtools.dylib" \
     "vapoursynth/libffms2.dylib=$prefix/opt/ffms2/lib/libffms2.dylib" \
     "vapoursynth/libmvgpu.dylib=$mac/vapoursynth/libmvgpu.dylib" \
-    "vapoursynth/librife.dylib=$mac/vapoursynth/librife.dylib"
+    "vapoursynth/librife.dylib=$mac/vapoursynth/librife.dylib" \
+    ${optional[@]+"${optional[@]}"}
 stagepy relocate "$res" "$work/collected.json"
+if [[ -f $mac/vapoursynth/nnedi3_weights.bin ]]; then
+    install -m 0644 "$mac/vapoursynth/nnedi3_weights.bin" "$res/vapoursynth/nnedi3_weights.bin"
+fi
 mkdir -p "$res/share/vulkan/icd.d"
 # the loader resolves a relative library_path against the manifest's folder:
 # share/vulkan/icd.d -> Resources/lib (osapi.point_at_app hands mpv this file)
@@ -271,6 +306,20 @@ cat >"$contents/Info.plist" <<EOF
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleDisplayName</key><string>ButterEye</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>Video</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.movie</string>
+                <string>org.matroska.mkv</string>
+                <string>org.webmproject.webm</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleExecutable</key><string>ButterEye</string>
     <key>CFBundleIconFile</key><string>ButterEye</string>
     <key>CFBundleIdentifier</key><string>io.github.buttereye.ButterEye</string>
@@ -287,11 +336,56 @@ cat >"$contents/Info.plist" <<EOF
     <key>NSHumanReadableCopyright</key><string>Copyright (C) 2026 The ButterEye contributors. AGPL-3.0-or-later.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key><string>org.matroska.mkv</string>
+            <key>UTTypeDescription</key><string>Matroska video</string>
+            <key>UTTypeConformsTo</key><array><string>public.movie</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key><array><string>mkv</string></array>
+                <key>public.mime-type</key><array><string>video/x-matroska</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key><string>org.webmproject.webm</string>
+            <key>UTTypeDescription</key><string>WebM video</string>
+            <key>UTTypeConformsTo</key><array><string>public.movie</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key><array><string>webm</string></array>
+                <key>public.mime-type</key><array><string>video/webm</string></array>
+            </dict>
+        </dict>
+    </array>
 </dict>
 </plist>
 EOF
+# Open With and a drop on the Dock icon: macOS offers ButterEye for any movie
+# (public.movie covers MP4, QuickTime, AVI, MPEG...) as a Viewer that never
+# takes over as the default player (Alternate). macOS declares no Matroska or
+# WebM type of its own, so the two are imported here, as conforming to
+# public.movie; an app that exports one (VLC, IINA) wins over an import. The
+# files arrive as QEvent.FileOpen (gui/app.py FileOpenRouter), not in argv.
 plutil -lint "$contents/Info.plist" >/dev/null
 printf 'APPL????' >"$contents/PkgInfo"
+
+# Local symbols out of every Mach-O (strip -x keeps the exported ones: a
+# VapourSynth plugin's VapourSynthPluginInit2, a Python module's PyInit_*, every
+# dylib's API). install_name_tool and lipo already invalidated the signatures,
+# which the signing loop below redoes. Measured on parts of the bundle, each
+# re-signed and run afterwards: PySide6 + shiboken6 (237 Mach-O) 348 -> 329 MiB
+# and still building a QApplication; mkvmerge with its 24 libraries 60.6 ->
+# 56.4 MiB and still running; mvtools.dylib keeps VapourSynthPluginInit2. The
+# whole bundle's saving was not measured. Homebrew's files are read-only
+# (0444), hence the chmod; the modes are set for the whole app just below.
+while IFS= read -r -d '' f; do
+    if [[ $(head -c 4 "$f" | xxd -p) =~ ^(cffaedfe|cafebabe|cafebabf)$ ]]; then
+        chmod u+w "$f"
+        strip -x "$f" 2>/dev/null || { echo "strip -x failed on $f" >&2; exit 1; }
+    fi
+done < <(find "$contents" -type f -print0)
 
 # no extended attributes or AppleDouble files from the build machine
 xattr -cr "$app"

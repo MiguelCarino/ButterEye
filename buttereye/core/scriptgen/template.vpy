@@ -725,6 +725,86 @@ def _shrink(clip, cfg):
     return core.resize.Spline36(clip, width=width, height=height, **opts)
 
 
+#: engines that run on the GPU, so znedi3 (CPU) anti-aliasing has the CPU to itself
+GPU_ENGINES = ('rife-ncnn', 'rife-trt', 'mvgpu')
+#: znedi3's cheapest useful network (8x6 neighbourhood, 32 neurons): it runs on
+#: every source frame, twice, on the CPU
+AA_NNEDI3 = {'nsize': 0, 'nns': 1, 'qual': 1}
+
+
+def _aa(clip):
+    # Anti-aliasing before smoothing (Profile.aa): stair-stepped edges (game
+    # captures, cheap upscales) would otherwise be carried into every in-between
+    # frame, where they crawl. znedi3 doubles the luma height, the clip is
+    # transposed and doubled again, and Spline36 scales it back; field=1 keeps
+    # the source rows at odd positions, half a doubled pixel off, which
+    # src_left/src_top take back. Luma only: chroma is half size and aliasing
+    # shows in luma. Without the znedi3 plugin (or its nnedi3_weights.bin) the
+    # clip goes on as it is: AA is an extra, never a reason to stop smoothing.
+    fmt = clip.format
+    if fmt.color_family not in (vs.YUV, vs.GRAY) or fmt.sample_type != vs.INTEGER:
+        return clip
+    try:
+        if not hasattr(core, 'znedi3'):
+            _load('znedi3', 'libznedi3.so')
+        y = core.std.ShufflePlanes(clip, 0, vs.GRAY) if fmt.color_family == vs.YUV else clip
+        up = core.znedi3.nnedi3(y, field=1, dh=True, **AA_NNEDI3)
+        up = core.std.Transpose(up)
+        up = core.znedi3.nnedi3(up, field=1, dh=True, **AA_NNEDI3)
+        up = core.std.Transpose(up)
+        y = core.resize.Spline36(up, y.width, y.height, src_left=0.5, src_top=0.5)
+    except (vs.Error, AttributeError):
+        return clip
+    if fmt.color_family == vs.GRAY:
+        return y
+    return core.std.ShufflePlanes([y, clip], [0, 1, 2], vs.YUV)
+
+
+def _repeat(clip, target):
+    # ``clip`` at ``target`` fps by repeating frames, as mpv shows it unsmoothed:
+    # output frame n is source frame floor(n * src / target). An integer
+    # multiplier interleaves the clip with itself; any other is picked per frame
+    # (a 2x Interleave of mpv's placeholder length still fits a frame count, a
+    # 1001x one for 23.976 -> 60 would not)
+    ratio = target / Fraction(clip.fps_num, clip.fps_den)
+    if ratio.denominator == 1:
+        return core.std.Interleave([clip] * ratio.numerator) if ratio.numerator > 1 else clip
+    p, q = ratio.numerator, ratio.denominator
+    base = core.std.BlankClip(clip, length=min(clip.num_frames * p // q, 2 ** 31 - 1),
+                              fpsnum=target.numerator, fpsden=target.denominator)
+
+    def pick(n):
+        return _shift(clip, n * q // p - n)
+
+    return core.std.FrameEval(base, pick)
+
+
+def _compare(clip, out, target, cfg):
+    # A/B view (compare="split"): the source as it plays unsmoothed on the left
+    # half, the smoothed picture on the right, from the same position in the
+    # film, so the seam shows what interpolation adds. Crops are whole chroma
+    # samples (even for 4:2:0). The right half is still computed at full width.
+    if target <= Fraction(clip.fps_num, clip.fps_den):
+        return out
+    left = _repeat(clip, target)
+    if left.format.id != out.format.id:
+        loc = _chromaloc(cfg, None)
+        left = core.resize.Spline36(left, format=out.format.id, chromaloc_in_s=loc,
+                                    chromaloc_s=loc)
+    n = min(left.num_frames, out.num_frames)
+    left, out = left[:n], out[:n]
+    step = 1 << out.format.subsampling_w
+    half = out.width // 2 // step * step
+    if half <= 0 or half >= out.width or left.width != out.width or left.height != out.height:
+        return out
+    stack = core.std.StackHorizontal([
+        core.std.CropAbs(left, width=half, height=out.height, left=0, top=0),
+        core.std.CropAbs(out, width=out.width - half, height=out.height, left=half, top=0),
+    ])
+    # the smoothed frame's properties (StackHorizontal keeps the first clip's)
+    return core.std.CopyFrameProps(stack, out) if hasattr(core.std, 'CopyFrameProps') else stack
+
+
 def build():
     cfg = _settings()
     clip, props = _source(cfg)
@@ -733,8 +813,11 @@ def build():
     cfg['chromaloc'] = _chromaloc(cfg, props)
     clip = core.std.SetFrameProps(clip, _ChromaLocation=CHROMA_LOCS.index(cfg['chromaloc']))
     clip = _shrink(clip, cfg)
+    plain = clip  # what the A/B view shows unsmoothed
     target = _rate(cfg.get('target_fps'))
     backend = cfg.get('backend')
+    if cfg.get('aa') and backend in GPU_ENGINES:
+        clip = _aa(clip)
     if backend == 'rife-ncnn':
         out = _rife(clip, cfg, props, target)
     elif backend == 'rife-trt':
@@ -745,6 +828,8 @@ def build():
         out = _mvgpu(clip, cfg, target)
     else:
         raise vs.Error('ButterEye: unknown backend')
+    if cfg.get('compare') == 'split':
+        out = _compare(plain, out, target, cfg)
     out = core.std.AssumeFPS(out, fpsnum=target.numerator, fpsden=target.denominator)
     # MVTools reads frames 0 and 1 while the graph is built, before mpv can serve
     # any: mpv hands over black ones, and every filter between the source and

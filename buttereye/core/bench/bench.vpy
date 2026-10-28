@@ -3,8 +3,9 @@
 #
 # ButterEye benchmark script (SCOPE F14). Static: every setting arrives as JSON in
 # ``user_data`` (vspipe: ``-a user_data=<json>``; mpv: ``vf=vapoursynth:user-data=``).
-# Two entry points: inside mpv ``video_in`` is the decoded lavfi test source; under
-# vspipe the source is a generated moving pattern (no files are read).
+# Both entry points interpolate the same generated moving pattern (no files are
+# read): under vspipe it is the source; inside mpv ``video_in`` (the decoded lavfi
+# test source) is still pulled frame by frame, its pixels replaced by the pattern.
 #
 # user_data keys:
 #   backend       "rife" | "mvtools" | "mvgpu"
@@ -16,7 +17,7 @@
 #   matrix        YUV<->RGB matrix name, e.g. "709"
 #   src_num/src_den   source frame rate
 #   out_num/out_den   output frame rate
-#   width/height/frames   size and length of the generated vspipe source
+#   width/height/frames   size and length of the generated pattern
 import json
 import os
 import sys
@@ -40,26 +41,54 @@ def load(namespace, filename):
         core.std.LoadPlugin(os.path.join(cfg['plugin_dir'], filename))
 
 
-def pattern(width, height, length, fpsnum, fpsden):
-    # A smooth pseudo-random texture that pans back and forth: real motion for
-    # the motion search, no scene cuts, nothing read from disk.
-    margin = 64
-    seed = 12345
-    rows = []
-    for _y in range(9):
+def _cells(columns, rows, seed):
+    """columns x rows pseudo-random 1-pixel cells (YUV 4:4:4), and the next seed."""
+    stacked = []
+    for _y in range(rows):
         cells = []
-        for _x in range(16):
+        for _x in range(columns):
             seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
             cells.append(core.std.BlankClip(format=vs.YUV444P8, width=1, height=1, length=1,
                                             color=[16 + seed % 220, 96 + seed % 64, 160 - seed % 64]))
-        rows.append(core.std.StackHorizontal(cells))
-    base = core.resize.Bicubic(core.std.StackVertical(rows), width=width + margin,
-                               height=height + margin, format=vs.YUV420P8)
-    frames = []
+        stacked.append(core.std.StackHorizontal(cells))
+    return core.std.StackVertical(stacked), seed
+
+
+def _path(length, speeds, segment, margin):
+    """Even offsets in [0, margin] moving by speeds[k] px a frame in segment k,
+    bouncing at the ends (4:2:0 crops need even offsets)."""
+    pos, step, out = 0, 1, []
     for i in range(length):
-        left = 2 * min(i % 32, 32 - i % 32)
-        top = 2 * min(i % 16, 16 - i % 16)
-        frames.append(core.std.CropAbs(base, width, height, left=left, top=top))
+        out.append(pos)
+        pos += step * speeds[(i // segment) % len(speeds)]
+        if pos > margin:
+            pos, step = 2 * margin - pos, -1
+        elif pos < 0:
+            pos, step = -pos, 1
+    return out
+
+
+def pattern(width, height, length, fpsnum, fpsden):
+    # A pseudo-random texture that pans: real motion for the motion search, no
+    # scene cuts, nothing read from disk. Two layers: smooth 16x9 shapes, and a
+    # tile of 4-pixel cells with hard edges (fine detail, where block matching
+    # and flow go wrong first). The pan cycles 2, 6, fast and 6 px a frame every
+    # 24 frames, fast ~ width / 120 (16 at 1080p, 32 at 4K: a quick camera pan),
+    # with a slower vertical drift; a gentle 2 px pan alone flattered MVTools.
+    fast = max(8, width // 120 // 2 * 2)
+    margin_x = max(64, 12 * fast)
+    margin_y = 64
+    base, seed = _cells(16, 9, 12345)
+    base = core.resize.Bicubic(base, width=width + margin_x, height=height + margin_y)
+    tile, _ = _cells(24, 16, seed)
+    tile = core.resize.Point(tile, width=96, height=64)
+    tile = core.std.StackHorizontal([tile] * (-(-(width + margin_x) // 96)))
+    tile = core.std.StackVertical([tile] * (-(-(height + margin_y) // 64)))
+    tile = core.std.CropAbs(tile, width + margin_x, height + margin_y)
+    full = core.resize.Bicubic(core.std.Merge(base, tile, weight=0.35), format=vs.YUV420P8)
+    xs = _path(length, (2, 6, fast, 6), 24, margin_x)
+    ys = _path(length, (2, 0, 4, 2), 24, margin_y)
+    frames = [core.std.CropAbs(full, width, height, left=x, top=y) for x, y in zip(xs, ys)]
     return core.std.AssumeFPS(core.std.Splice(frames), fpsnum=fpsnum, fpsden=fpsden)
 
 
@@ -68,10 +97,20 @@ src_den = int(cfg['src_den'])
 out_num = int(cfg['out_num'])
 out_den = int(cfg['out_den'])
 
+clip = pattern(int(cfg['width']), int(cfg['height']), int(cfg['frames']), src_num, src_den)
 if 'video_in' in globals():
-    clip = core.std.AssumeFPS(video_in, fpsnum=src_num, fpsden=src_den)
-else:
-    clip = pattern(int(cfg['width']), int(cfg['height']), int(cfg['frames']), src_num, src_den)
+    # the same content in both passes (vspipe's numbers and mpv's must describe
+    # the same work): mpv's decoded frames are still fetched one for one, so
+    # decoding and uploading them stay in the cost, but their pixels (testsrc2,
+    # much easier to match) are not what is interpolated. Bounded: mpv's
+    # generated source has no end, so video_in is INT_MAX frames long, and every
+    # engine's output length (2x that) overflows - mvgpu refused it as an invalid
+    # VSVideoInfo and mpv aborted (measured, this M2). Four times the timed
+    # frames is past the --frames cut-off at any multiplier the bench runs.
+    n = min(video_in.num_frames, 4 * int(cfg['frames']))
+    clip = core.std.Loop(clip, times=-(-n // clip.num_frames))[:n]
+    clip = core.std.CopyFrameProps(clip, video_in[:n])
+    clip = core.std.AssumeFPS(clip, fpsnum=src_num, fpsden=src_den)
 
 backend = cfg['backend']
 if backend == 'rife':

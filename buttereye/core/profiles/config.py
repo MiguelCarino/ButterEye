@@ -9,7 +9,9 @@
   file).
 - ``save`` refuses a stale ``expected_revision`` (``ConfigConflict``, ``BE-2003``),
   an invalid config (``BE-2004``) and a newer-schema file (``BE-2002``). It writes
-  a ``.bak`` copy first when it replaces a v0 or unreadable file, then writes a
+  a ``.bak`` copy first when it replaces a v0 or unreadable file, or one that is
+  not what ButterEye would write for it (hand edits: comments, ordering, spacing
+  are not kept by the writer), then writes a
   0600 temporary file in the same directory, fsyncs it and renames it over
   ``config.toml`` (a symlinked ``config.toml`` is followed, so the link survives).
   Writers serialise on a lock of the config directory (``osapi.locked_dir``).
@@ -151,7 +153,7 @@ def save(paths: Paths, cfg: Config, *, expected_revision: str) -> str:
                     )
                 if current == new:
                     return on_disk
-                if old.needs_backup:
+                if old.needs_backup or not _written_by_us(current, old.config):
                     _atomic_write(target.with_name(target.name + BACKUP_SUFFIX), current)
             _atomic_write(target, new)
     except ButterEyeError:
@@ -166,6 +168,15 @@ def save(paths: Paths, cfg: Config, *, expected_revision: str) -> str:
             detail=f"{type(exc).__name__}: {exc}",
         ) from exc
     return revision_of(new)
+
+
+def _written_by_us(current: bytes, cfg: Config) -> bool:
+    """``current`` is byte for byte what the writer makes of what it means, so
+    replacing it loses nothing a ``.bak`` would keep."""
+    try:
+        return current == schema.dumps_config(cfg).encode("utf-8")
+    except schema.TomlWriteError:
+        return False
 
 
 def _reads_back_as(back: Config, cfg: Config) -> bool:

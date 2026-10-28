@@ -284,6 +284,8 @@ def test_live_active_detail_and_facts(make_window: Any, qtbot: Any) -> None:
     assert page.fields["gen"].text() == "7"
     assert page.fields["profile"].text() == "Quality"
     assert page.fields["sync"].text() == "Yes"
+    # 119.88 fps on 120 Hz paces evenly: no pacing row (B3)
+    assert page.fields["pacing"].text() == ""
     assert page.interp.isChecked()
     assert not page.step_button.isVisibleTo(page)
     facts = win.ctx.current_session_facts()

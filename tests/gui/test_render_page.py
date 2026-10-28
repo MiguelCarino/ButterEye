@@ -33,8 +33,16 @@ from buttereye.core.api import (
 )
 from buttereye.core.capabilities import unavailable_state
 from buttereye.core.testing import scenarios as sc
+from buttereye.gui.dialogs import render_job
 from buttereye.gui.dialogs.render_job import RenderJobDialog, default_output
-from buttereye.gui.pages.render import COL_PROGRESS, COL_STATUS, PROGRESS_ROLE, RenderPage
+from buttereye.gui.pages.render import (
+    COL_PROGRESS,
+    COL_STATUS,
+    PROGRESS_ROLE,
+    RenderPage,
+    playback_notice_text,
+    retryable,
+)
 from tests.gui.helpers import fake_core
 
 
@@ -273,7 +281,46 @@ def test_playback_notice_when_a_session_is_active(make_window: Any, qtbot: Any) 
     win = make_window("live_active")
     page = _page(win, qtbot)
     qtbot.waitUntil(lambda: page.playback_notice.isVisibleTo(page), timeout=2000)
-    assert page.playback_notice.text() == "Playback is running: renders use lower priority."
+    # the core stops the render while a video plays (B11); "lower priority" was CPU only
+    assert page.playback_notice.text() == playback_notice_text()
+
+
+def test_playback_notice_says_what_the_platform_does() -> None:
+    assert "paused" in playback_notice_text("darwin")
+    assert "paused" in playback_notice_text("linux")
+    win = playback_notice_text("win32")
+    assert "lower CPU priority" in win and "paused" not in win
+
+
+def test_a_failed_remux_can_be_finished(make_window: Any, qtbot: Any) -> None:
+    spec = RenderJobSpec(
+        Path("/videos/film.mp4"), Path("/videos/film.smooth.mkv"), "quality", "libx265"
+    )
+    err = ButterEyeError(
+        ErrorCode.REMUX_FAILED,
+        Msg("Copying the audio and subtitles into the new file failed."),
+        Msg("The converted video is kept. Add the same copy again to finish it."),
+    )
+    failed = RenderJobState(
+        JobId("j7"), spec, OpState.FAILED, None, 900, 1000, None, None, None, err
+    )
+    other = dataclasses.replace(_job(2, OpState.FAILED), error=ButterEyeError(
+        ErrorCode.ENCODER_FAILED, Msg("The encoder stopped.")
+    ))  # fmt: skip
+    win = make_window(_scenario(render_jobs=(failed, other)))
+    page = _page(win, qtbot)
+    assert retryable(failed) and not retryable(other)
+    page.select_job(JobId("j2"))
+    assert page.detail_banner is not None
+    assert not any("finish" in t for t in _buttons_text(page.detail_banner))
+    page.select_job(JobId("j7"))
+    assert page.detail_banner is not None
+    assert "finish the copy" in _buttons_text(page.detail_banner)
+    page.retry_selected()
+    qtbot.waitUntil(lambda: bool(_calls(win, "render_forget")), timeout=2000)
+    assert _calls(win, "render_enqueue")[0].args[0] == spec
+    assert _calls(win, "render_forget")[0].args[0] == "j7"
+    qtbot.waitUntil(lambda: JobId("j7") not in {j.id for j in page.jobs()}, timeout=2000)
 
 
 def test_show_in_folder_and_open_log(make_window: Any, qtbot: Any, tmp_path: Path) -> None:
@@ -337,7 +384,22 @@ def test_encoder_combo_lists_only_probed_encoders(make_window: Any, qtbot: Any) 
     items = [dlg.encoder_combo.itemText(i) for i in range(dlg.encoder_combo.count())]
     assert tuple(items) == sc.render_probe(Path("/videos/film.mkv")).encoders
     assert dlg.encoder_combo.currentText() == "hevc_nvenc"
+    # 10-bit: offered only to a core whose spec carries it, and only for an
+    # encoder that can write it
+    assert dlg.ten_bit.isVisibleTo(dlg) is render_job.SPEC_TEN_BIT
+    assert dlg.ten_bit.isEnabled()
+    dlg.encoder_combo.setCurrentIndex(dlg.encoder_combo.findData("libx264"))
+    assert not dlg.ten_bit.isEnabled()
     dlg.reject()
+
+
+def test_the_mac_media_engine_is_the_sdr_default() -> None:
+    probe = dataclasses.replace(
+        sc.render_probe(Path("/videos/film.mkv")),
+        encoders=("libsvtav1", "libx265", "hevc_videotoolbox", "prores_videotoolbox"),
+    )
+    assert render_job.pick_encoder(probe, ()) == "hevc_videotoolbox"
+    assert render_job.pick_encoder(probe, ("libx265",)) == "libx265"  # the configured one
 
 
 def test_hdr10_needs_its_capability(make_window: Any, qtbot: Any) -> None:

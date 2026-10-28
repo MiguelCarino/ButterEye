@@ -48,6 +48,8 @@ RIFE_GPU_THREAD_MACOS = 1
 def rife_gpu_thread() -> int:
     """RIFE-ncnn's ``gpu_thread`` on this platform, read at call time."""
     return RIFE_GPU_THREAD_MACOS if osapi.IS_MACOS else RIFE_GPU_THREAD_DEFAULT
+
+
 BUFFERED_FRAMES_DEFAULT = 4
 #: MVTools in mpv: concurrent-frames up to 16, never above the CPU count. On the
 #: dev box (Ryzen 9 5900X, 24 threads) 8 / 16 / 24 give 128 / 148 / 137 fps at
@@ -186,6 +188,17 @@ class FilterParams:
     #: "bottom_left", "bottom"), from mpv's video-params; None = what the source
     #: frames say when the script reads them itself (offline), else left
     chroma_loc: str | None = None
+    #: A/B view (``GeneralSettings.compare``): "split" shows the source, repeated
+    #: to the target rate, on the left half and the smoothed picture on the right
+    compare: str | None = None
+    #: anti-aliasing before smoothing (``Profile.aa``): znedi3 doubles the luma
+    #: both ways and it is scaled back, which smooths jagged edges the engine
+    #: would otherwise carry into every in-between frame. GPU engines only (the
+    #: CPU is free there); skipped when the znedi3 plugin is not installed
+    aa: bool = False
+    #: HDR10 pass-through (``Profile.hdr``): the output keeps at least 10 bits,
+    #: whatever the decoder handed over, so PQ is never cut to 8
+    hdr: bool = False
 
 
 def default_frames(backend: BackendId, *, cpu_count: int | None = None) -> tuple[int, int]:
@@ -241,6 +254,12 @@ def user_data(params: FilterParams) -> str:
     }
     if params.chroma_loc is not None:
         data["chromaloc"] = params.chroma_loc
+    if params.compare == "split":
+        data["compare"] = "split"
+    if params.aa:
+        data["aa"] = True
+    if params.hdr:
+        data["hdr"] = True
     if params.size is not None:
         data["size"] = [int(params.size[0]), int(params.size[1])]
     if params.backend is BackendId.RIFE_NCNN:

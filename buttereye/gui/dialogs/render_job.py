@@ -13,12 +13,14 @@ beside it. Overwriting needs a confirmation: the core answers BE-4008 first.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -66,10 +68,18 @@ _log = logging.getLogger(__name__)
 MKVTOOLNIX_INSTALL = install_command("mkvtoolnix")
 HDR10_ENCODERS = ("libx265", "libsvtav1")
 #: SCOPE §7.5 defaults, best first, after the configured per-vendor encoders.
-SDR_DEFAULTS = ("hevc_nvenc", "hevc_vaapi", "libsvtav1")
+#: VideoToolbox HEVC is the Mac's: the media engine leaves the CPU to the
+#: smoothing (the core offers it only on macOS, after a test encode).
+SDR_DEFAULTS = ("hevc_nvenc", "hevc_vaapi", "hevc_videotoolbox", "libsvtav1")
 #: Software encoders: at the doubled frame rate they keep most CPU cores busy
 #: (x265 ~9 cores, SVT-AV1 ~8 on the dev box; NVENC under 1).
 CPU_ENCODERS = frozenset({"libx265", "libsvtav1", "libx264"})
+#: Encoders that can write 10 bits (the core's ``render.probe.TEN_BIT_ENCODERS``)
+TEN_BIT_ENCODERS = frozenset(
+    {"hevc_nvenc", "av1_nvenc", "hevc_videotoolbox", "libx265", "libsvtav1"}
+)
+#: the job spec carries the 10-bit choice (a core from before it doesn't)
+SPEC_TEN_BIT = "ten_bit" in {f.name for f in dataclasses.fields(RenderJobSpec)}
 
 Confirm = Callable[[QWidget, str, str], bool]
 
@@ -235,6 +245,16 @@ class RenderJobDialog(FitDialog):
         self.encoder_hint.setWordWrap(True)
         self.encoder_hint.setVisible(False)
         form.addRow(self.encoder_hint)
+        self.ten_bit = QCheckBox(self.tr("&10-bit colour"), content)
+        self.ten_bit.setObjectName("tenBit")
+        self.ten_bit.setToolTip(
+            self.tr(
+                "Less banding in skies and dark gradients, at about the same speed and "
+                "size. 10-bit and HDR videos always stay 10-bit."
+            )
+        )
+        self.ten_bit.setVisible(SPEC_TEN_BIT)
+        form.addRow(self.ten_bit)
 
         out_row = QWidget(content)
         orl = QHBoxLayout(out_row)
@@ -460,6 +480,7 @@ class RenderJobDialog(FitDialog):
     def _update_encoder_hint(self) -> None:
         """A software encoder at the doubled rate keeps most CPU cores busy: say so."""
         enc = self.encoder_combo.currentData()
+        self.ten_bit.setEnabled(enc in TEN_BIT_ENCODERS)
         if enc not in CPU_ENCODERS:
             self.encoder_hint.setVisible(False)
             self.encoder_hint.clear()
@@ -558,12 +579,16 @@ class RenderJobDialog(FitDialog):
             return None
         out = self.output_path()
         assert out is not None
+        extra: dict[str, bool] = {}
+        if SPEC_TEN_BIT:
+            extra["ten_bit"] = self.ten_bit.isChecked() and self.ten_bit.isEnabled()
         return RenderJobSpec(
             source=self.source,
             output=out,
             profile_id=str(self.profile_combo.currentData()),
             encoder=str(self.encoder_combo.currentData()),
             overwrite=overwrite,
+            **extra,  # type: ignore[arg-type]
         )
 
     def add(self, *, overwrite: bool = False) -> None:

@@ -523,7 +523,7 @@ async def test_missing_mpv_binary(core: ButterEye, tmp_path: Path) -> None:
     with pytest.raises(ButterEyeError) as info:
         await core.play(clip).result()
     assert info.value.code is ErrorCode.MPV_NOT_FOUND
-    assert info.value.commands == ("sudo dnf install mpv",)
+    assert info.value.commands == launcher.mpv_missing_hint()[1]
 
 
 async def test_unknown_profile_refused_before_launch(core: ButterEye, tmp_path: Path) -> None:
@@ -563,7 +563,8 @@ def test_include_and_argv(tmp_path: Path) -> None:
                                file=Path("-weird name.mkv"))  # fmt: skip
     assert argv[1] == f"--include={inc}" and argv[2] == "--profile=buttereye"
     assert argv[3] == f"--script={launcher.LUA_HELPER}"
-    assert "--hwdec=nvdec-copy,auto-copy" in argv and "--video-sync=display-resample" in argv
+    assert f"--hwdec={launcher.hwdec()}" in argv and "--video-sync=display-resample" in argv
+    assert f"hwdec={launcher.hwdec()}\n" in text  # the profile decodes the same way
     assert argv[-2:] == ["--", "-weird name.mkv"]
     assert not any(a.startswith("--vf") for a in argv)
     lua = launcher.LUA_HELPER.read_text()

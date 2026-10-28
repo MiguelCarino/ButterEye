@@ -108,6 +108,8 @@ def test_table_and_plot_show_the_same_values(make_window: Any, qtbot: Any) -> No
         assert page.model.item(r, COL_MPV).text() == f"{m.mpv_fps:.1f}"
     req = result.request
     assert page.plot.target_fps() == pytest.approx(float(req.source_fps * 2))
+    # B25: the dashed line is the bar that decides "real time", not the target
+    assert page.plot.realtime_fps() == pytest.approx(1.15 * float(req.source_fps * 2))
     assert "1920×1080" in page.result_title.text()
 
 
@@ -424,3 +426,27 @@ def test_run_warns_that_the_gpu_is_pushed_hard(make_window: Any, qtbot: Any) -> 
     assert page.gpu_warning.isVisibleTo(page)
     assert "Save your work first." in page.gpu_warning.text()
     assert page.run_button.accessibleDescription() == page.gpu_warning.text()
+
+
+def test_plot_draws_the_realtime_bar_and_a_fainter_target(qtbot: Any) -> None:
+    from buttereye.gui.widgets.bench_plot import BenchPlot
+
+    plot = BenchPlot()
+    qtbot.addWidget(plot)
+    m = sc.bench_result_4090().measurements[0]
+    plot.set_data([m], 47.952, 55.145)
+    assert plot.realtime_fps() == pytest.approx(55.145) and plot.target_fps() == 47.952
+    plot.resize(plot.sizeHint())
+    assert not plot.grab().toImage().isNull()
+    plot.set_data([m], 47.952)  # no bar: the target is the dashed line, as before
+    assert plot.realtime_fps() is None
+    assert not plot.grab().toImage().isNull()
+
+
+def test_a_single_run_shows_its_verdict_as_repeatable() -> None:
+    """P4: a hopeless candidate is measured once (no spread); the verdict counts."""
+    from buttereye.gui.pages.bench import row_values
+
+    m = dataclasses.replace(sc.bench_result_4090().measurements[0], cov=float("inf"))
+    rep = row_values(dataclasses.replace(m, repeatable=True), False)[4]
+    assert rep == ("Yes", True)

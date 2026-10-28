@@ -589,6 +589,22 @@ async def test_hdr10_encoder_missing(box: Box) -> None:
     assert f.severity is Severity.DEGRADED
 
 
+@pytest.mark.parametrize(
+    ("macos", "command"),
+    [(True, "hwdec=videotoolbox-copy,auto-copy"), (False, "hwdec=nvdec-copy,auto-copy")],
+)
+def test_hwdec_conflict_suggests_this_platforms_copy_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, macos: bool, command: str
+) -> None:
+    """P8: a Mac is told the value ButterEye launches with, never NVDEC."""
+    monkeypatch.setattr(osapi, "IS_MACOS", macos)
+    p: Any = dataclasses.make_dataclass("P", [("user_mpv_conf", Path)])(tmp_path / "mpv.conf")
+    (f,) = checks_mpv.conflict_findings(p, {"hwdec": "auto"}, attach_available=True)
+    assert f.id == "conflicts.hwdec" and f.commands == (command,)
+    assert f.fix is not None and command in f.fix.key
+    assert ("nvdec" in f.fix.key) is not macos
+
+
 async def test_conflicting_user_settings(box: Box) -> None:
     p = paths_for(box)
     p.user_mpv_conf.parent.mkdir(parents=True)

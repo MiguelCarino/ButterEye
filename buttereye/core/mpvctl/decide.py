@@ -66,6 +66,49 @@ def over_display(target: Fraction | None, display_hz: float | None) -> bool:
         return False
     return Fraction(target) > display * DISPLAY_RESAMPLE_TOLERANCE
 
+
+def cadence(target: Fraction | None, display_hz: float | None) -> Fraction | None:
+    """Refreshes per output frame: ``display_rate / target`` (60 Hz at 47.952 fps
+    is 1.2513). None when either rate is unknown."""
+    display = display_rate(display_hz)
+    if target is None or display is None or target <= 0:
+        return None
+    return display / Fraction(target)
+
+
+def uneven_pacing(target: Fraction | None, display_hz: float | None) -> bool:
+    """``target`` can't be shown for the same number of refreshes every frame.
+
+    ButterEye's profile runs ``interpolation=no`` with ``video-sync=display-resample``,
+    which changes the playback speed by up to 1 % (``DISPLAY_RESAMPLE_TOLERANCE``)
+    to land on whole refreshes; anything further off is shown frame by frame on
+    the nearest refresh. 2x of 23.976 on a 60 Hz panel (cadence 1.2513) then holds
+    three frames for one refresh and the fourth for two: 1-1-1-2, a 12 Hz judder on
+    motion that was smoothed to be even. ``mistimed-frame-count`` does not count it
+    (each frame is on a refresh). 144 Hz (3.003) and 30 fps on 60 Hz (2) pace
+    evenly. False when either rate is unknown."""
+    r = cadence(target, display_hz)
+    if r is None:
+        return False
+    n = max(1, round(r))
+    return abs(r - n) > n * (DISPLAY_RESAMPLE_TOLERANCE - 1)
+
+
+def uneven_pacing_notice(target: Fraction, display_hz: float) -> Msg:
+    return Msg(
+        "{target} fps doesn't divide evenly into your {hz} Hz screen, so some frames "
+        "stay up longer than others and motion can judder slightly.",
+        {"target": fmt_rate(target), "hz": fmt_rate(display_rate(display_hz) or Fraction(0))},
+    )
+
+
+def even_pacing_notice(height: int, display_hz: float) -> Msg:
+    return Msg(
+        "Smoothing at {height}p so motion paces evenly on your {hz} Hz screen.",
+        {"height": height, "hz": fmt_rate(display_rate(display_hz) or Fraction(0))},
+    )
+
+
 #: Packaged RIFE ncnn models, best first (§5.3 step 4 conservative defaults).
 DEFAULT_MODELS: tuple[str, ...] = (
     "rife-v4.26_ensembleFalse",
@@ -766,6 +809,58 @@ def pick_size(
     return None
 
 
+def pick_even_size(
+    sized: Sequence[tuple[tuple[int, int], Sequence[EngineOption]]],
+    src: Fraction,
+    display_hz: float | None,
+    kind: TargetKind,
+    fixed: Fraction | None = None,
+    *,
+    auto: bool,
+    animation: bool = False,
+) -> tuple[EnginePick, tuple[int, int]] | None:
+    """B3, cadence first: the largest smaller size where a measured GPU engine
+    reaches a target that paces evenly on the display (``uneven_pacing``) and at
+    least doubles the source (or reaches the best rate the display allows).
+
+    For "Match your display" on a 60 Hz panel, 23.976 fps at 1080p gets 2x
+    (47.952, 1-1-1-2) because 24 -> 60 infers almost every output frame (a load
+    of about 120 against caps of 72-76 on an M2); mvgpu at 720p (about 139 after
+    ``shrink_cap``) reaches 60, which every refresh shows once. Whether that
+    beats 1080p at 48 is a matter of taste, so the session asks only when the
+    user put cadence first. None: no size gives even pacing."""
+    reach = choose_target(src, display_hz, kind, fixed).target
+    need = src * 2 * AUTO_DOUBLING_TOLERANCE
+    if reach is not None:
+        need = min(need, reach)
+    first = RIFE_BACKENDS if animation else GPU_BACKENDS
+    for size, opts in sized:
+        gpu = [o for o in opts if o.backend in first and o.sustainable_fps is not None]
+        if not gpu:
+            continue
+        p = pick_engine(gpu, src, display_hz, kind, fixed, auto=auto, animation=animation)
+        t = p.target.target
+        if (
+            p.backend is not None
+            and p.target.bypass is None
+            and t is not None
+            and t >= need
+            and not uneven_pacing(t, display_hz)
+        ):
+            return p, size
+    return None
+
+
+def prefer_gpu_smaller() -> bool:
+    """P3: on a Mac, mvgpu at a smaller size beats CPU MVTools at the video's own.
+
+    The M2 Air has no fan and four performance cores: MVTools at 1080p keeps them
+    busy (and heats the GPU's package with them), while mvgpu at 720p measured
+    about 139 fps of capacity against MVTools' 76 at 1080p. Elsewhere the old
+    order stays (MVTools at full size first, which a desktop CPU cools)."""
+    return osapi.IS_MACOS
+
+
 def _pick_engine(
     options: Sequence[EngineOption],
     src: Fraction,
@@ -1100,6 +1195,12 @@ __all__ = [
     "AUTO_DOUBLING_TOLERANCE",
     "DISPLAY_RESAMPLE_TOLERANCE",
     "over_display",
+    "cadence",
+    "uneven_pacing",
+    "uneven_pacing_notice",
+    "even_pacing_notice",
+    "pick_even_size",
+    "prefer_gpu_smaller",
     "display_rate",
     "DISPLAY_SNAP",
     "DEFAULT_MODELS",

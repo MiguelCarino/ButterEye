@@ -11,6 +11,11 @@ Hand-drawn 2D animation now plays smoothly instead of still-still-still-jump.
 Scene cuts in dark or similar-looking shots are caught, colours no longer shift
 between frames, and seeking with RIFE is about a second faster.
 
+On a Mac, and on a fanless MacBook Air in particular, smooth copies keep the
+video's full size and finish sooner, the speed test measures what playback can
+hold once the machine is warm, and heat or Low Power Mode no longer teaches
+ButterEye that an engine is slow.
+
 ### New: 2D animation is treated differently from live action and 3D
 
 - **Held drawings are re-timed.** Animation is usually drawn "on twos" or "on
@@ -30,6 +35,59 @@ between frames, and seeking with RIFE is about a second faster.
   badly while re-timing, it is switched off for the rest of that video. Not on the
   TensorRT engine yet.
 
+### New: picture controls
+
+- **Colour controls** in Details → Settings: brightness, contrast, saturation,
+  gamma and hue, applied by mpv after smoothing and saved in `[general.picture]`.
+- **Colour LUTs.** Import a `.cube` 3D LUT once (it is copied into ButterEye's own
+  folder) and it applies to playback and to smooth copies. It is left out of HDR10
+  copies, where it would misread the colours.
+- **Debanding strength and grain:** Light (mpv's own) or Strong, and how much
+  grain hides what is left.
+- **Sharp edges (RAVU),** a third upscaler next to Standard and Sharper: crisp
+  edges for much less GPU time than FSRCNNX.
+- **A/B view:** the original on the left half, smoothed on the right. Turn it on
+  in Details → Settings, or press Alt+C in mpv for the video playing.
+- **Anti-aliasing before smoothing** (a profile setting, off by default): stair-
+  stepped edges are smoothed with znedi3 before the engine sees them. It runs on
+  the CPU and needs the znedi3 plugin; without it the setting does nothing.
+- **Even motion** in Details → Settings, both off by default. 2× of a 24 fps film is
+  48 fps, which a 60 Hz screen shows as frames held 1-1-1-2, a slight regular
+  judder. ButterEye now says so (in mpv's on-screen line, the window and the
+  session details). "Blend frames the display can't show evenly" lets mpv blend
+  the two frames around each in-between refresh, and "Match my display: even
+  motion before size" smooths at a smaller size when that paces every frame
+  evenly, instead of doubling at the full size.
+- **Battery and heat rules.** A rule can match on battery power and on how hot the
+  Mac is (`on_battery`, `thermal_min`, `thermal_max`), and a new built-in Battery
+  profile smooths with GPU motion vectors at 2×. Details → Settings → Power offers
+  "Use the Battery profile on battery" and "…or when the Mac runs hot". The rule
+  tester uses the power state of the moment. The id `battery` is now a built-in
+  one: a hand-written `[[profiles]]` entry with `id = "battery"` becomes an
+  override of the shipped profile (keys it leaves out take the shipped values,
+  and it can be reset but not deleted). ButterEye itself never wrote that id;
+  rename such a profile to keep it as your own.
+- **Rule frame rates written as decimals** (`fps_max = 23.976`, 29.97, 59.94) now
+  mean the NTSC rate, in `config.toml` and in the rule editor; they used to miss
+  NTSC films by a hair. `24000/1001` still means exactly that.
+
+### New: smooth copies
+
+- **The engine is chosen by time, at the video's own size.** A copy used to take
+  RIFE and, when that was too slow, quietly make the file smaller (a 1080p film
+  on an M2 became a 720p file after about 6.5 hours). Each size now shows the
+  engine it would use and how long it takes; the best picture that finishes within
+  twice the video's length is taken, else the fastest, and GPU motion vectors at
+  full size come before RIFE at a smaller one.
+- **A finished encode survives a failed copy of the other streams.** The video is
+  kept and "Finish the copy" completes it without converting again. MP4 text
+  subtitles (`mov_text`) are converted to SRT, which Matroska can hold, so that
+  failure is also rarer.
+- **10-bit colour** for 8-bit videos (less banding in gradients) with HEVC.
+- **Copies pause while a video plays or the speed test runs,** and continue after,
+  instead of sharing the GPU and spoiling both.
+- **The colour LUT** applies to copies too.
+
 ### Improved
 
 - **Scene cuts found by contrast with their surroundings,** not only by a fixed
@@ -48,6 +106,31 @@ between frames, and seeking with RIFE is about a second faster.
   forgotten once.
 - **Identical frames are copied instead of computed:** about 15 % faster on
   animation (more on screen recordings), with no visible difference.
+- **The speed test measures what playback holds.** The engines playback chooses
+  between (GPU motion vectors, MVTools) are measured first, while the machine is
+  cool, and at every size up to 4K; the best of them is then held for 150 s, so a
+  fanless Mac's warm speed is what is kept. RIFE is cut short once it is plainly
+  far too slow (it took minutes per model). It takes a few minutes in all.
+- **One bar for "keeps up".** Setup, the speed test and playback now agree: an
+  engine Setup proposes is one playback will use. "Repeatable" is shown but no
+  longer changes the recommendation, and the speed test's plot draws the real-time
+  bar, with the target as a fainter line.
+- **Speed-test results are kept honest.** A result records the versions it was
+  measured with and the power and heat state; one made while a video played or a
+  copy ran is kept but not used, one from other versions is not used, and one older
+  than 60 days is measured again in the background (still used meanwhile). A
+  failed in-mpv pass is retried once instead of ruling GPU motion vectors out for
+  good.
+- **Speed limits learned during playback recover.** A slow scene lowered an
+  engine's limit for 30 days and nothing raised it. A clean run now raises it
+  again, an unconfirmed limit recovers with age, and nothing is learned while
+  macOS reports serious heat or Low Power Mode. Limits learned by earlier versions
+  are forgotten once.
+- **Sharper (FSRCNNX) only where it shows:** it runs on every smoothed frame, so it
+  is left off when the picture is enlarged less than 1.8×, while smoothing at a
+  smaller size, and on battery or when hot.
+- **Automatic tries GPU motion vectors at a smaller size** before settling for
+  MVTools at the full size.
 - **Faster seeking with RIFE (Fedora).** The RIFE plugin keeps its GPU instance and
   its model across mpv's seeks: seek to playback 1.5–1.9 s → about 0.3–0.4 s.
   When nothing is playing it holds about 116 MiB of video memory.
@@ -75,8 +158,63 @@ between frames, and seeking with RIFE is about a second faster.
   4K film on the CPU. Drops during a TensorRT build now move only that video to
   another engine, near-total drops change nothing (any engine would drop them),
   and what was stored before is forgotten once.
+- **An encoder failure was reported as a smoothing-script failure** ("try another
+  smoothness setting") when ffmpeg stopped first, for example on a full disk.
+- **Variable frame rate was detected where there was none** in MP4s with edit
+  lists, which converted them to an odd rate such as 47.89 fps.
+- **HDR10 copies made without mkvmerge lacked the container's mastering
+  metadata.**
+- **A live mpv was reported as "Lost the connection"** after an unexpected error
+  in ButterEye (a full disk while writing the smoothing script); the filter is now
+  rolled back and the video keeps playing.
+- **Quitting mpv during the first seconds of smoothing said "filter failed".**
+- **The smoothing on/off key in mpv could switch twice** while ButterEye was busy.
+- **ButterEye's own starting mpv was listed as one to attach to.**
+- **A slow detach at quit was reported as failed** although it had completed.
+- **"mpv not found" suggested `sudo dnf install mpv` on a Mac.**
+- **`buttereye render` and `play` with a relative path** failed every copy with
+  "The smoothing script failed" (vspipe runs in another folder).
+- **"Future exception was never retrieved"** was printed when mpv closed while
+  ButterEye was sending it a request.
+- **Setup's wording for GPU motion vectors** now says what playback does with them.
+- **Saving settings over a hand-edited `config.toml`** keeps a `config.toml.bak`
+  of it first (the writer keeps no comments or layout).
 - **The status badge used the theme's coloured icon** on desktops with no icon
   theme chosen (qt6ct, bare Hyprland) instead of the glyph in the text colour.
+
+### macOS
+
+- **Copies keep the Mac awake** while they run (the display can still sleep), and
+  App Nap no longer slows them down.
+- **HEVC and ProRes 422 HQ on the Mac's media engine** (VideoToolbox) for smooth
+  copies; HEVC is the default for SDR. A copy made with GPU motion vectors or
+  MVTools encodes much faster this way.
+- **mpv decodes with VideoToolbox** instead of trying NVIDIA's decoder first.
+- **The GUI's log and settings moved to `~/Library`** (Logs/ButterEye, where
+  Console.app and Storage see them, and Application Support), from
+  `~/.local/state/buttereye`; the old files are moved once.
+- **"Open with ButterEye" and dropping a video on the Dock icon** play it.
+- **Copies started from Finder use Homebrew's mkvmerge** when mkvtoolnix is
+  installed (Finder's PATH has no `/opt/homebrew/bin`), keeping chapters,
+  attachments and HDR10 mastering data. Without it, MP4 subtitles become SubRip
+  and the copy still succeeds. A build can carry mkvmerge with
+  `BUTTEREYE_BUNDLE_MKVMERGE=1`; it is not carried by default because it brings
+  61 MiB of Homebrew's Qt and ICU.
+- **The speed test measured nothing inside mpv on a Mac.** Its generated source
+  has no end, so every engine was handed an endless clip and mvgpu refused it;
+  mpv aborted on every pass, the vspipe speed was shown instead and nothing was
+  marked real time. The clip is now bounded, and `buttereye bench` prints the
+  notices that say when a pass could not be measured.
+- **A rebuilt or re-copied ButterEye.app kept its speed test.** Results are tied
+  to the bundled programs' contents, not their file dates.
+- **The macOS build failed on Homebrew formulae with "@" in their name**
+  (openssl@4): their licence entry is spelled `openssl.40.4` in the SBOM.
+- **A copy run from Downloads** (macOS runs it from a hidden read-only copy) is
+  told to move ButterEye.app to Applications, instead of trying to clear the
+  download mark where it can't.
+- **No "GPU faults can't be checked" notice** and no 0.3 s wait at the end of
+  every GPU session on a Mac.
+- **Smaller app:** debug symbols are stripped from the bundled programs.
 
 ## 0.0.5 — 2026-10-14
 

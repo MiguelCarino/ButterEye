@@ -192,6 +192,73 @@ def test_events_arrive_in_order(make_bridge: Any, qtbot: Any) -> None:
     assert got == [f"n{i}" for i in range(50)]
 
 
+def test_an_idle_bridge_runs_no_timer(make_bridge: Any, qtbot: Any) -> None:
+    """P10: nothing in flight and nothing published -> no drain tick and no
+    watchdog tick (before, 10 + 2 wakeups a second while the window sat idle)."""
+    bridge = make_bridge("all_ready")
+    qtbot.waitUntil(lambda: not bridge.watchdog_active, timeout=3000)
+    assert not bridge._drain_timer.isActive()
+    drains: list[float] = []
+    real = bridge._drain
+    bridge._drain = lambda: (drains.append(time.monotonic()), real())[1]  # type: ignore[method-assign]
+    qtbot.wait(400)
+    assert drains == []
+    assert not bridge.watchdog_active
+
+
+def test_events_wake_the_gui_and_drains_are_rate_limited(make_bridge: Any, qtbot: Any) -> None:
+    """One wake per burst; bursts closer than DRAIN_INTERVAL_MS share a drain."""
+    from buttereye.gui import bridge as bridge_mod
+
+    bridge = make_bridge("all_ready")
+    owner = Owner()
+    got: list[str] = []
+    bridge.event.connect(lambda ev: got.append(ev.message.key) if isinstance(ev, Notice) else None)
+    drains: list[float] = []
+    real = bridge._drain
+
+    def counting() -> None:
+        drains.append(time.monotonic())
+        real()
+
+    bridge._drain = counting  # type: ignore[method-assign]
+    bridge._drain_timer.timeout.disconnect()
+    bridge._drain_timer.timeout.connect(counting)
+
+    async def emit_slowly(core: ButterEye) -> None:
+        for i in range(20):
+            core.fake_emit(Notice(Msg(f"n{i}")))  # type: ignore[attr-defined]
+            await asyncio.sleep(0.01)
+
+    bridge.call(emit_slowly, owner=owner, ok=lambda v: None)
+    qtbot.waitUntil(lambda: len(got) == 20, timeout=3000)
+    assert got == [f"n{i}" for i in range(20)]
+    # 20 events over ~0.2 s: a handful of drains, never one per event
+    assert 1 <= len(drains) <= 6, drains
+    gaps = [b - a for a, b in zip(drains, drains[1:], strict=False)]
+    assert all(g >= bridge_mod.DRAIN_INTERVAL_MS / 1000 * 0.9 for g in gaps), gaps
+
+
+def test_the_watchdog_runs_while_a_request_is_in_flight(make_bridge: Any, qtbot: Any) -> None:
+    bridge = make_bridge("all_ready")
+    qtbot.waitUntil(lambda: not bridge.watchdog_active, timeout=3000)
+    owner = Owner()
+    release = threading.Event()
+    done: list[bool] = []
+
+    async def slow(_core: ButterEye) -> bool:
+        await asyncio.to_thread(release.wait, 5)
+        return True
+
+    bridge.call(slow, owner=owner, ok=done.append)
+    assert bridge.watchdog_active
+    qtbot.wait(700)
+    assert bridge.watchdog_active  # still waiting on the core
+    release.set()
+    qtbot.waitUntil(lambda: done == [True], timeout=3000)
+    qtbot.waitUntil(lambda: not bridge.watchdog_active, timeout=3000)
+
+
 def test_calls_before_start_are_queued(make_bridge: Any, qtbot: Any) -> None:
     bridge = make_bridge("all_ready", start=False)
     owner = Owner()

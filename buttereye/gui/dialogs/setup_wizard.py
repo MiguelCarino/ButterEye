@@ -765,7 +765,7 @@ class FinishPage(QWizardPage):
         self.result_badge = StatusBadge("ok", "", self)
         self.findings = FindingsView(self, accessible_name=_t("Test run result"))
         self.findings.setVisible(False)
-        self.bench = QCheckBox(_t("&Measure my GPU now (about a minute)"), self)
+        self.bench = QCheckBox(_t("&Measure my GPU now (a few minutes)"), self)
         self.bench.setObjectName("setup.offer_bench")
         self.bench.setChecked(False)
         self.include = QCheckBox(

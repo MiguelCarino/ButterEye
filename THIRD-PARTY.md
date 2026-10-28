@@ -21,6 +21,7 @@ package is its source RPM (and, for ButterEye and mvgpu, this repository).
 | Component | Version | Licence | How ButterEye uses it | Package (licence texts) |
 |---|---|---|---|---|
 | FSRCNNX x2 8-0-4-1 mpv shader (igv/FSRCNN-TensorFlow) | release 1.1, unmodified | LGPL-3.0-or-later | data file mpv loads for Picture ▸ Sharper | `buttereye`, bundled in `buttereye/data/shaders/` (`LGPL-3.0.txt`, `GPL-3.0.txt`) |
+| RAVU-lite-AR r3 mpv shader (bjin/mpv-prescalers) | commit `b3f0a59d68f33b7162051ea5970a5169558f0ea2`, unmodified | LGPL-3.0-or-later | data file mpv loads for Picture ▸ Sharp edges (RAVU) | `buttereye`, bundled in `buttereye/data/shaders/` (`LGPL-3.0.txt`, `GPL-3.0.txt`) |
 | VapourSynth-RIFE-ncnn-Vulkan plugin (styler00dollar, HolyWu; from nihui/rife-ncnn-vulkan) | r9_mod_v33 | MIT AND WTFPL AND LGPL-2.1-or-later AND BSD-3-Clause | loaded by mpv and vspipe | `buttereye-vs-rife-ncnn` (`LICENSE`, `LICENSE.rife-ncnn-vulkan`, `LGPL-2.1.txt`, `WTFPL.txt`) |
 | ncnn (Tencent) | commit 305837fd (2025-05-03) | BSD-3-Clause AND BSD-2-Clause AND Zlib | statically linked into the RIFE plugin | `buttereye-vs-rife-ncnn` (`LICENSE.ncnn.txt`) |
 | glslang (nihui fork) | commit a9ac7d5f | BSD-3-Clause AND BSD-2-Clause AND MIT AND Apache-2.0 AND GPL-3.0-or-later WITH Bison-exception-2.2 | statically linked into the RIFE plugin | `buttereye-vs-rife-ncnn` (`LICENSE.glslang.txt`) |

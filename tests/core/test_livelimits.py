@@ -19,7 +19,7 @@ def test_record_and_load_round_trip(tmp_path: Path) -> None:
     limits: dict[str, dict[str, float]] = {}
     ll.record(path, limits, KEY, 0.4, now=1000.0)
     again = ll.load(path, now=1000.0 + 60)
-    assert ll.factor(again, KEY) == 0.4
+    assert ll.factor(again, KEY, now=1060.0) == 0.4
     assert ll.factor(again, ll.LimitKey("gpu-2", "rife-trt", None, 3840, 1616)) == 1.0
     # another GPU, size or flow scale is another key
     assert KEY.text() != ll.LimitKey("gpu-1", "rife-trt", KEY.model, 3840, 1616, 0.5).text()

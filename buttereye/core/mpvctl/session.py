@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 from buttereye.core import capabilities, filelog, osapi
 from buttereye.core import paths as _paths
 from buttereye.core.backends import trt
+from buttereye.core.bench.verdict import LIVE_HEADROOM, REALTIME_HEADROOM, measured_in_mpv
 from buttereye.core.capabilities import ProviderRef
 from buttereye.core.errors import ButterEyeError, ErrorCode, FilterFailed, NotAvailable
 from buttereye.core.events import (
@@ -70,6 +71,8 @@ from buttereye.core.mpvctl.ipc import (
     HELPER_NAME,
     LABEL,
     OBSERVABLE,
+    READABLE,
+    TSCALE_CHOICES,
     VF_LABEL,
     CommandRefused,
     IpcClosed,
@@ -90,6 +93,8 @@ from buttereye.core.scriptgen.generator import (
     write_script,
 )
 from buttereye.core.types import (
+    DEBAND_PRESETS,
+    PICTURE_KEYS,
     BackendId,
     BypassReason,
     CandidateId,
@@ -104,6 +109,7 @@ from buttereye.core.types import (
     Msg,
     Origin,
     Paths,
+    PowerSnapshot,
     Profile,
     RefusalReason,
     SessionId,
@@ -135,17 +141,6 @@ _CHOOSE_DEVICE = ProviderRef("buttereye.core.hw.detect", "choose_device")
 #: the full benchmark's sizes (``bench.runner.FULL_SIZES``; not imported, the bench
 #: is an optional provider)
 _FULL_SIZES: tuple[tuple[int, int], ...] = ((1280, 720), (1920, 1080), (2560, 1440), (3840, 2160))
-#: In-mpv rate must exceed the target by this factor to count as real time (F2);
-#: the same value as ``bench.runner.REALTIME_HEADROOM`` (the bench's own verdict).
-REALTIME_HEADROOM = 1.15
-#: Live playback cap = benchmark ``mpv_fps`` / this (§11.9). The bench measures mpv
-#: untimed with ``--vo=null``; real playback also renders every output frame to the
-#: display and shares the GPU with the desktop compositor, so it sustains less.
-#: 1080p RIFE-ncnn at 61 fps in the bench → ~49 live: enough for 24 → 48, not for
-#: 30 → 60 (which then uses MVTools or plays unsmoothed). The cap is a 2× rate;
-#: other multipliers are costed by their interpolated frames (``decide.load_rate``),
-#: so 23.976 → 60 needs ~120 (almost every frame inferred), not 60.
-LIVE_HEADROOM = 1.25
 #: a measurement scaled *up* to a bigger picture: cost grows faster than the pixel
 #: count (RIFE TensorRT on an RTX 4090: 1080p -> 3840x1616 is 2.99x the pixels and
 #: 3.54x the time; 1080p -> 2160p 4x and 4.3x), so fps / ratio ** 1.15; scaling down
@@ -178,9 +173,8 @@ LIVE_LIMITS = "mpvctl.live_limits"  # livelimits records, loaded once per core
 LITE_GAIN = 1.05
 #: Targets that follow the display rate (re-decided when it changes, §4.11).
 DISPLAY_KINDS = frozenset({TargetKind.DISPLAY, TargetKind.DISPLAY_MAX})
-#: Property changes that wake the controller at once. The others (playback-time,
-#: audio-pts, video-frame-info and the drop counters change every frame, several
-#: times per output frame in all) are only stored and read on the 0.25 s tick.
+#: Property changes that wake the controller at once. The others (the drop
+#: counters, display-sync-active) are only stored and read on the 0.25 s tick.
 WAKE_PROPS = frozenset(
     {
         "vf",
@@ -205,6 +199,26 @@ FILE_PROPS = (
     "playback-time",
     "audio-pts",
 )
+#: P9: per-frame properties read on the controller's own 0.25 s tick instead of
+#: observed. Observed, they arrived as about 100-150 events a second (each one
+#: changes with every frame, several times per output frame in all), every one a
+#: wakeup of ButterEye's process for a value it reads four times a second; now
+#: about 12 replies a second, which keep ``last_rx_mono`` fresh like the events
+#: did. The drop counters and display-sync-active are sent only when they change
+#: and stay observed.
+TICK_PROPS = ("playback-time", "audio-pts", "video-frame-info")
+OBSERVED: frozenset[str] = OBSERVABLE - frozenset(TICK_PROPS)
+#: B4: playback this long without drops (not paused, the Mac not hot) by an
+#: engine Automatic chose gives back one step of a lowered estimate at that size
+#: (``livelimits.raised``)
+CLEAN_RECOVER_S = 600.0
+#: The speed test ran cool and on mains power. While macOS reports a serious or
+#: critical thermal state or Low Power Mode (``PowerSnapshot.constrained``) the
+#: chip runs slower than that: live caps are divided by this as well, on top of
+#: ``LIVE_HEADROOM``, so Automatic leaves room instead of learning drops
+PRESSURE_HEADROOM = 1.2
+#: how often the power state (and the window size, for "sharper") is read again
+POWER_CHECK_S = 5.0
 
 #: Used only when this build has no config provider (U2): automatic settings,
 #: not data. Every value is the documented default (§4.4, §4.9, §5.6).
@@ -320,6 +334,9 @@ class Registry:
         #: the last few ended sessions' final snapshots, newest last, so their
         #: log can still be copied after mpv closed (or crashed)
         self.recent: dict[SessionId, SessionSnapshot] = {}
+        #: sockets of players ``play`` is starting (not in ``sessions`` yet), so
+        #: ``discover`` does not offer ButterEye's own launching mpv as an orphan
+        self.launching: set[Path] = set()
 
 
 def registry(ctx: ProviderContext) -> Registry:
@@ -347,6 +364,41 @@ def _fmt_rate(r: Fraction) -> str:
     return f"{float(r):.3f}".rstrip("0").rstrip(".")
 
 
+#: what mpv uses when it can't report its own value of a property ButterEye
+#: changed (``_whole``): the colour controls' neutral 0, mpv's deband defaults
+_MPV_DEFAULTS: Mapping[str, int] = {
+    **dict.fromkeys(PICTURE_KEYS, 0),
+    **DEBAND_PRESETS["light"],
+    "deband-grain": 32,
+}
+
+
+def _whole(name: str, value: object) -> int:
+    """mpv's value of an ``ipc.INT_RANGES`` property as the whole number the
+    allowlist lets ButterEye send back (mpv 0.41 keeps the colour controls as
+    floats); mpv's default when it gave none."""
+    from buttereye.core.mpvctl.ipc import INT_RANGES
+
+    lo, hi = INT_RANGES.get(name, (-(2**31), 2**31 - 1))
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return max(lo, min(hi, round(value)))
+    return _MPV_DEFAULTS.get(name, max(lo, min(hi, 0)))
+
+
+def deband_values(cfg: Config) -> dict[str, int]:
+    """The deband-* values for ``general.deband_strength``/``deband_grain``
+    with debanding on. "light" is mpv's own default and sets nothing, so
+    deband-* lines in the user's mpv.conf stay; a grain is set only when one
+    was chosen (None: mpv's own, 32)."""
+    general = cfg.general
+    out: dict[str, int] = {}
+    if general.deband_strength != "light":
+        out.update(DEBAND_PRESETS.get(general.deband_strength, {}))
+    if general.deband_grain is not None:
+        out["deband-grain"] = int(general.deband_grain)
+    return out
+
+
 def _follows_setup_choice(profile: Profile) -> bool:
     """A shipped Quality/Balanced/Fast profile still on its shipped engine."""
     if not profile.builtin or profile.id not in SETUP_FOLLOWING_BUILTINS:
@@ -362,15 +414,6 @@ def _when_key(result: Any) -> float:
     """A benchmark result's time for sorting (-inf = undated)."""
     when = getattr(result, "when", None)
     return when.timestamp() if isinstance(when, datetime) else -math.inf
-
-
-def _measured_in_mpv(m: Any) -> bool:
-    """False for a benchmark entry whose in-mpv pass failed: the runner then stores
-    the vspipe speed as ``mpv_fps`` (and the vspipe reload time as ``startup_s``)
-    with ``realtime`` False."""
-    if getattr(m, "realtime", False):
-        return True
-    return not (m.mpv_fps == m.vspipe_fps and m.startup_s == m.reload_s)
 
 
 def _measured_size(label: str, req: Any) -> tuple[int, int]:
@@ -500,6 +543,8 @@ class _Session:
         self.task: asyncio.Task[None] | None = None
         self.busy = False
         self.remove_pending = False
+        #: detach with DetachPolicy.DISABLE_FILTER got mpv's answer to vf remove
+        self.filter_removed = False
         self.want = True
         self.toggle_requested = False
         #: TensorRT engine this session fell back from while it is being built
@@ -508,6 +553,32 @@ class _Session:
         self.shader: Path | None = None
         #: mpv's deband value before ButterEye turned it on (§15.2), or None
         self.deband_restore: bool | None = None
+        #: mpv's own values of what ButterEye changed, to put back when the setting
+        #: returns to neutral and on detach: the deband-* values of a strength or
+        #: grain, and the colour controls (PICTURE_KEYS)
+        self.deband_params_restore: dict[str, int] = {}
+        self.picture_restore: dict[str, int] = {}
+        self.sent_values: dict[str, int] = {}  # what ButterEye last set of those
+        #: the LUT path ButterEye set in mpv (at launch or later), or None
+        self.lut: str | None = None
+        #: mpv's interpolation/tscale before even pacing changed them, or None
+        self.pacing_restore: dict[str, object] | None = None
+        #: the A/B view for this session (Alt+c); None follows general.compare
+        self.compare: bool | None = None
+        self.compare_requested = False
+        #: the power state at the last decision or POWER_CHECK_S tick
+        self.power = PowerSnapshot()
+        self.power_checked_at = self.started_mono
+        #: B4: seconds of clean playback by the running engine, and the last tick
+        self.clean_s = 0.0
+        self.clean_tick: float | None = None
+        #: "GPU faults can't be checked" was said in this session (once)
+        self.fault_unknown_sent = False
+        #: the user's own mpv.conf shaders and scaler were looked at (once)
+        self.foreign_checked = False
+        #: the last uneven-pacing verdict logged (target, display rate)
+        self.pacing_logged: tuple[object, ...] | None = None
+        self.step_errors = 0  # unexpected controller errors logged in full
         self.trt_built = False
         self.failure: list[str] = []
         self.device_lost = False
@@ -711,8 +782,24 @@ class _Session:
         elif ev == "client-message":
             args = msg.get("args")
             if isinstance(args, list) and args[:2] == ["buttereye-request", "toggle"]:
+                # B19: the helper flips the filter itself when no ack arrives in
+                # 0.6 s, and the controller can hold the lock for the 4 s verify
+                # window: the ack goes out now, without the lock, and the toggle
+                # waits for the controller as before
+                ack = self.ack("toggle")
+                try:
+                    self.ctx.spawn(ack, name=f"mpvctl-{self.sid}-ack")
+                except ButterEyeError, RuntimeError:  # the core is shutting down
+                    ack.close()
                 self.toggle_requested = True
+            elif isinstance(args, list) and args[:2] == ["buttereye-request", "compare"]:
+                self.compare_requested = True
         self.wake.set()
+
+    async def ack(self, what: str) -> None:
+        """Tell the Lua helper ButterEye handles ``what`` (no lock taken)."""
+        with contextlib.suppress(IpcClosed, MpvError, TimeoutError):
+            await self.ipc.command("script-message-to", HELPER_NAME, "ack", what, timeout_s=1.0)
 
     def _only_our_vapoursynth(self) -> bool:
         vf = self.props.get("vf")
@@ -730,7 +817,7 @@ class _Session:
             return render(Msg("ButterEye: disconnected"))
         if self.filter is FilterState.ACTIVE and self.source and self.target and self.multiplier:
             engine = decide.BACKEND_NAMES.get(self.backend, "") if self.backend else ""
-            return render(
+            text = render(
                 Msg(
                     "ButterEye: {source} → {target} fps ({multiplier}×) · {engine}{model}",
                     {
@@ -742,6 +829,11 @@ class _Session:
                     },
                 )
             )
+            display = decide.display_rate(self.display_fps)
+            if display is not None and decide.uneven_pacing(self.target, self.display_fps):
+                # B3: 2x of 23.976 on 60 Hz is shown 1-1-1-2
+                text += " · " + render(Msg("uneven pacing on {hz} Hz", {"hz": _fmt_rate(display)}))
+            return text
         if self.filter is FilterState.BYPASSED and self.bypass is not None:
             return render(
                 Msg("ButterEye: {reason}", {"reason": render(Msg(BYPASS_TEXT[self.bypass]))})
@@ -789,7 +881,8 @@ class _Session:
         explain = capabilities.resolve(_RULES_EXPLAIN)
         if explain is not None:
             try:
-                trace = explain(cfg, facts)
+                # power and heat conditions (RuleMatch.on_battery, thermal_*)
+                trace = explain(cfg, facts, self.power)
                 chosen = by_id.get(getattr(trace, "profile_id", ""))
                 if chosen is not None:
                     return chosen, note
@@ -855,7 +948,7 @@ class _Session:
             for m in getattr(result, "measurements", ()):
                 if m.backend is not backend or (model is not None and m.model != model):
                     continue
-                if m.gpu_faults or not _measured_in_mpv(m) or not m.mpv_fps > 0:
+                if m.gpu_faults or not measured_in_mpv(m) or not m.mpv_fps > 0:
                     continue
                 w, h = _measured_size(m.label, req)
                 if w <= 0 or h <= 0:
@@ -873,8 +966,18 @@ class _Session:
         rate = max(found)[2] / LIVE_HEADROOM
         if flow_scale != 1.0:
             rate *= decide.HALF_FLOW_GAIN
+        if self.power.constrained:
+            rate /= PRESSURE_HEADROOM
         key = self.limit_key(backend, model, (facts.width, facts.height), flow_scale, current)
         return rate * livelimits.factor(self.live_limits(), key)
+
+    def read_power(self) -> PowerSnapshot:
+        """``osapi.power_snapshot`` (all None off macOS); never raises."""
+        try:
+            return osapi.power_snapshot()
+        except Exception:
+            self.log.debug("power state unreadable", exc_info=True)
+            return PowerSnapshot()
 
     def live_limits(self) -> dict[str, dict[str, float]]:
         path = self.ctx.paths.state_dir / livelimits.FILE
@@ -914,8 +1017,11 @@ class _Session:
         engine or size that fits, or plays unsmoothed (§11.9).
 
         Not learned, only replaced for this video (``video_limits``), when
-        ``learn`` is False (steady moderate drops) or when a GPU engine dropped
-        while a TensorRT engine was being built. Near-total drops
+        ``learn`` is False (steady moderate drops), when a GPU engine dropped
+        while a TensorRT engine was being built, or while macOS reports a
+        serious thermal state or Low Power Mode (B4: on the fanless Air two hot
+        episodes ruled mvgpu out at 1080p for a month). What is learned carries
+        the power state (``livelimits.record``). Near-total drops
         (``IMPLAUSIBLE_DROP``) never get here (``step``)."""
         self.heavy_since = None
         self.steady_since = None
@@ -948,10 +1054,15 @@ class _Session:
         name = decide.BACKEND_NAMES.get(self.backend, self.backend.value)
         engine = f"{name} {self.model}" if self.model else name
         why: str | None = None
+        self.power = power = self.read_power()
         if not learn:
             why = f"for {STEADY_HOLD_S:.0f} s"
         elif self.backend in decide.GPU_BACKENDS and self.trt_building():
             why = "while a TensorRT engine was being built on the GPU"
+        elif power.constrained:
+            # B4: a hot or Low Power Mode Mac runs everything slower than the
+            # speed test did; learned, it ruled engines out for a month
+            why = "while macOS reported the Mac hot or in Low Power Mode"
         if why is not None:
             self.video_limits.add(key.text())
             self.log.info(
@@ -962,7 +1073,9 @@ class _Session:
         else:
             limits = self.live_limits()
             new = livelimits.lowered(livelimits.factor(limits, key), drop_rate)
-            livelimits.record(self.ctx.paths.state_dir / livelimits.FILE, limits, key, new)
+            livelimits.record(
+                self.ctx.paths.state_dir / livelimits.FILE, limits, key, new, power=power
+            )
             self.log.info(
                 "%s: %s dropped %.0f%% of frames at %s × %s; it is slower here than the "
                 "speed test showed (estimate × %.2f from now on), choosing again",
@@ -1011,7 +1124,7 @@ class _Session:
             for m in getattr(result, "measurements", ()):
                 if m.backend is not BackendId.RIFE_NCNN or m.gpu_faults:
                     continue
-                if not _measured_in_mpv(m) or not m.mpv_fps > 0:
+                if not measured_in_mpv(m) or not m.mpv_fps > 0:
                     continue
                 rates[(m.model, _measured_size(m.label, result.request))] = float(m.mpv_fps)
             for (model, size), fps in rates.items():
@@ -1065,6 +1178,11 @@ class _Session:
                     self.remove_pending = False
         self.active_gen = None
         self.detector.filter_stopped()
+        # even pacing belongs to a running target: turned off, rolled back or
+        # bypassed, mpv's own blending settings come back (an apply that adds a
+        # filter again decides anew)
+        if self.pacing_restore is not None and not self.unresponsive and not self.remove_pending:
+            await self.sync_pacing(None)
 
     async def set_off(self, state: FilterState, notice: Msg | None = None) -> None:
         await self.remove_filter()
@@ -1275,8 +1393,12 @@ class _Session:
 
     async def sync_shader(self, cfg: Config | None) -> None:
         """Add or remove the bundled upscaling shader to match ``general.upscaling``
-        (§15.2). Only ButterEye's own shader is touched; the user's stay."""
-        want = shaders.shader_for(cfg.general.upscaling if cfg is not None else "standard")
+        (§15.2); "sharper" only while ``shaders.sharper_allowed`` says it is worth
+        its GPU time (P5). Only ButterEye's own shader is touched; the user's stay."""
+        setting = cfg.general.upscaling if cfg is not None else "standard"
+        want = shaders.shader_for(setting)
+        if want is not None and setting == "sharper" and not await self.sharper_ok():
+            want = None
         if want == self.shader:
             return
         try:
@@ -1293,10 +1415,60 @@ class _Session:
         except (IpcClosed, MpvError, TimeoutError) as exc:
             self.log.warning("%s: could not change the upscaling shader: %s", self.title, exc)
 
+    async def sharper_ok(self) -> bool:
+        """``shaders.sharper_allowed`` for the running picture: the upscale ratio
+        from mpv's ``osd-dimensions`` when ButterEye may read it, the smoothing
+        size and the power state."""
+        src = self.source
+        size = self.run_size or ((src.width, src.height) if src is not None else None)
+        ratio: float | None = None
+        if size is not None and "osd-dimensions" in READABLE:
+            with contextlib.suppress(IpcClosed, MpvError, TimeoutError):
+                osd_dims = await self.ipc.get("osd-dimensions", timeout_s=1.0)
+                ratio = shaders.video_scale(osd_dims, *size)
+        ok = shaders.sharper_allowed(
+            ratio, reduced_size=self.run_size is not None, power=self.power
+        )
+        if not ok and self.shader is not None:
+            self.log.info(
+                "%s: Sharper upscaling off for now (%s)",
+                self.title,
+                "smoothing at a smaller size"
+                if self.run_size is not None
+                else "on battery, hot or in Low Power Mode"
+                if self.power.on_battery or self.power.constrained
+                else f"the picture is enlarged only {ratio:.2f}x",
+            )
+        return ok
+
+    async def sync_values(
+        self, wanted: Mapping[str, int], restore: dict[str, int], what: str
+    ) -> None:
+        """Set integer player properties to ``wanted``; ``restore`` keeps mpv's own
+        value of each one ButterEye changed, and every name that leaves ``wanted``
+        gets it back. mpv keeps some of them as floats; ButterEye sends whole
+        numbers only (``ipc.INT_RANGES``), so the old value is rounded and clamped,
+        and one mpv can't report goes back to mpv's default."""
+        try:
+            for name in [n for n in restore if n not in wanted]:
+                await self.ipc.command("set_property", name, restore[name])
+                del restore[name]
+                self.sent_values.pop(name, None)
+            for name, value in wanted.items():
+                if name not in restore:
+                    restore[name] = _whole(name, await self.ipc.get(name))
+                elif self.sent_values.get(name) == value:
+                    continue
+                await self.ipc.command("set_property", name, int(value))
+                self.sent_values[name] = int(value)
+        except (IpcClosed, MpvError, TimeoutError) as exc:
+            self.log.warning("%s: could not change %s: %s", self.title, what, exc)
+
     async def sync_deband(self, cfg: Config | None) -> None:
         """Turn mpv's own debanding on for ``general.deband`` and back to its
         previous value when it is turned off (§15.2). A deband=yes from the
-        user's mpv.conf is never turned off."""
+        user's mpv.conf is never turned off. With it on, ``deband_strength`` and
+        ``deband_grain`` set mpv's deband-* values (``deband_values``)."""
         want = bool(cfg.general.deband) if cfg is not None else False
         try:
             if want and self.deband_restore is None:
@@ -1309,12 +1481,146 @@ class _Session:
                 self.deband_restore = None
         except (IpcClosed, MpvError, TimeoutError) as exc:
             self.log.warning("%s: could not change debanding: %s", self.title, exc)
+        values = deband_values(cfg) if want and cfg is not None else {}
+        await self.sync_values(values, self.deband_params_restore, "debanding")
+
+    async def sync_picture(self, cfg: Config | None) -> None:
+        """mpv's colour controls (brightness, contrast, saturation, gamma, hue)
+        to ``general.picture``. mpv applies them when it renders, after
+        smoothing, so motion estimation and the source frames passed through
+        never see them. A control at 0 is left to mpv and the user's mpv.conf;
+        one ButterEye changed gets mpv's own value back at 0 and on detach."""
+        pic = cfg.general.picture if cfg is not None else None
+        wanted = {
+            k: int(getattr(pic, k)) for k in PICTURE_KEYS if pic is not None and getattr(pic, k)
+        }
+        await self.sync_values(wanted, self.picture_restore, "the picture settings")
+
+    async def sync_lut(self, cfg: Config | None) -> None:
+        """mpv's ``lut`` to the imported 3D LUT ``general.lut`` names
+        (``profiles.luts.resolve_lut``: only a file in ButterEye's own private
+        luts folder; the IPC allowlist checks the same). Set at launch
+        (``--lut``) and changed while playing; mpv reloads a LUT whose path
+        changes. A player ButterEye launches takes the LUT chosen in ButterEye:
+        the command line wins over a ``lut=`` in the user's mpv.conf, and on
+        detach the player is left with none (mpv cannot say what the file had
+        set). A player ButterEye attaches to keeps a LUT of its own: it is never
+        replaced or cleared, since the allowlist could not put it back."""
+        from buttereye.core.profiles import luts
+
+        name = cfg.general.lut if cfg is not None else None
+        path = luts.resolve_lut(self.ctx.paths, name) if name else None
+        want = str(path) if path is not None else None
+        if want == self.lut:
+            return
+        try:
+            if self.lut is None:
+                current = await self.ipc.get("lut")
+                if isinstance(current, str) and current and current != want:
+                    self.log.info("%s: mpv already uses its own LUT; leaving it", self.title)
+                    return
+            await self.ipc.command("set_property", "lut", want or "")
+            self.lut = want
+        except (IpcClosed, MpvError, TimeoutError, CommandRefused) as exc:
+            self.log.warning("%s: could not change the LUT: %s", self.title, exc)
+
+    async def sync_pacing(self, cfg: Config | None) -> None:
+        """B3, opt-in even pacing (``general.even_pacing``): for a running target
+        the display can't show evenly (``decide.uneven_pacing``), mpv's own frame
+        blending with ``tscale=oversample``. Oversample blends only the two
+        frames around a refresh that falls between them, so most refreshes still
+        show one whole frame and the 1-1-1-2 judder goes. ButterEye's profile
+        turns blending off on purpose (it must not mix with interpolated frames
+        by default), so this is only ever the user's choice; mpv's own values
+        come back when it no longer applies and on detach."""
+        on = (
+            cfg is not None
+            and cfg.general.even_pacing
+            and self.active_gen is not None
+            and decide.uneven_pacing(self.target, self.display_fps)
+        )
+        try:
+            if on and self.pacing_restore is None:
+                interp = await self.ipc.get("interpolation")
+                tscale = await self.ipc.get("tscale")
+                restore: dict[str, object] = {
+                    "interpolation": interp if isinstance(interp, (bool, str)) else False
+                }
+                if isinstance(tscale, str) and tscale in TSCALE_CHOICES:
+                    restore["tscale"] = tscale
+                await self.ipc.command("set_property", "tscale", "oversample")
+                await self.ipc.command("set_property", "interpolation", True)
+                self.pacing_restore = restore
+                self.log.info("%s: even pacing on (mpv interpolation, oversample)", self.title)
+            elif not on and self.pacing_restore is not None:
+                restore, self.pacing_restore = self.pacing_restore, None
+                for name, value in restore.items():
+                    await self.ipc.command("set_property", name, value)
+        except (IpcClosed, MpvError, TimeoutError) as exc:
+            self.log.warning("%s: could not change frame pacing: %s", self.title, exc)
+
+    async def restore_player(self) -> None:
+        """Detach: put back what ButterEye changed in the player besides the
+        filter (picture, debanding, LUT, pacing). The upscaling shader stays,
+        as before (removing it would sharpen nothing the user chose)."""
+        await self.sync_picture(None)
+        await self.sync_deband(None)
+        if self.lut is not None:
+            await self.sync_lut(None)
+        await self.sync_pacing(None)
+
+    def compare_on(self, cfg: Config | None) -> bool:
+        """The A/B split view: this session's Alt+c choice, else the setting."""
+        if self.compare is not None:
+            return self.compare
+        return cfg is not None and cfg.general.compare == "split"
+
+    async def check_user_render(self, backend: BackendId) -> None:
+        """Once per session, when a GPU engine runs: shaders from the user's own
+        mpv.conf, or an ``ewa_*`` scaler, run on every frame mpv shows, the
+        interpolated ones included, on the GPU the engine uses, and the speed
+        test (``--vo=null``) never saw them. Said once, so drops can be traced."""
+        if self.foreign_checked or backend not in decide.GPU_BACKENDS:
+            return
+        self.foreign_checked = True
+        try:
+            listed = await self.ipc.get("glsl-shaders", timeout_s=1.0)
+            scale = await self.ipc.get("scale", timeout_s=1.0)
+        except IpcClosed, MpvError, TimeoutError:
+            return
+        own = shaders.ALLOWED
+        foreign = [x for x in listed if str(x) not in own] if isinstance(listed, list) else []
+        ewa = isinstance(scale, str) and scale.startswith("ewa_")
+        engine = decide.BACKEND_NAMES.get(backend, backend.value)
+        msgs: list[Msg] = []
+        if foreign:
+            msgs.append(
+                Msg(
+                    "Your mpv.conf adds {count} shader(s); mpv runs them on every smoothed "
+                    "frame, on the GPU {engine} uses. If frames drop, try without them.",
+                    {"count": len(foreign), "engine": engine},
+                )
+            )
+        if ewa:
+            msgs.append(
+                Msg(
+                    "Your mpv.conf uses the {scale} scaler, which is costly on every "
+                    "smoothed frame, on the GPU {engine} uses. If frames drop, try a "
+                    "lighter one.",
+                    {"scale": scale, "engine": engine},
+                )
+            )
+        for m in msgs:
+            self.emit(Notice(m, None, self.sid))
 
     async def apply(self, *, raise_on_fail: bool) -> None:
         """Decide (§4.11, §5.6) and add/replace/remove the filter; verify a new gen."""
         cfg_now = self.config()[0]
+        self.power = self.read_power()
         await self.sync_shader(cfg_now)
         await self.sync_deband(cfg_now)
+        await self.sync_picture(cfg_now)
+        await self.sync_lut(cfg_now)
         props = self.props
         vp = props.get("video-params")
         loaded = self.file_loaded_at is not None
@@ -1430,8 +1736,70 @@ class _Session:
             )
 
         full_size = cfg is not None and cfg.general.full_size
+        #: B3: the user puts even pacing before resolution ("Match your display")
+        cadence_first = cfg is not None and cfg.general.cadence_first
+
+        async def sized_options(
+            cands: Sequence[BackendId], below: int | None = None
+        ) -> list[tuple[tuple[int, int], list[decide.EngineOption]]]:
+            """The engine options at each smaller size (below ``below`` lines)."""
+            return [
+                (
+                    (w, h),
+                    [
+                        dataclasses.replace(
+                            o,
+                            sustainable_fps=decide.shrink_cap(
+                                o.sustainable_fps, facts.width, facts.height
+                            ),
+                        )
+                        for o in await engine_options(
+                            dataclasses.replace(facts, width=w, height=h), cands
+                        )
+                    ],
+                )
+                for w, h in decide.smaller_sizes(facts.width, facts.height)
+                if below is None or h < below
+            ]
 
         async def decide_with(
+            cands: Sequence[BackendId],
+        ) -> tuple[decide.EnginePick, tuple[int, int] | None, bool, list[Msg], bool]:
+            """``decide_size`` with B3's cadence-first step: a display target that
+            would pace unevenly takes a smaller size where a GPU engine reaches an
+            even one, when the user asked for that."""
+            found = await decide_size(cands)
+            pick, size = found[0], found[1]
+            t = pick.target.target
+            if (
+                cadence_first
+                and not full_size
+                and not found[2]
+                and profile.target.kind in DISPLAY_KINDS
+                and t is not None
+                and decide.uneven_pacing(t, facts.display_hz)
+            ):
+                even = decide.pick_even_size(
+                    await sized_options(cands, size[1] if size else None),
+                    facts.fps,
+                    facts.display_hz or None,
+                    profile.target.kind,
+                    profile.target.fps,
+                    auto=wanted is None,
+                    animation=animation,
+                )
+                if even is not None:
+                    ep, es = even
+                    return (
+                        ep,
+                        es,
+                        False,
+                        [decide.even_pacing_notice(es[1], facts.display_hz)],
+                        False,
+                    )
+            return found
+
+        async def decide_size(
             cands: Sequence[BackendId],
         ) -> tuple[decide.EnginePick, tuple[int, int] | None, bool, list[Msg], bool]:
             """(pick, smaller size or None, forced past the speed test, notes,
@@ -1466,25 +1834,44 @@ class _Session:
                 if full.backend is not None and full.target.bypass is None:
                     full = dataclasses.replace(full, notice=decide.full_size_notice())
                     return full, None, True, [], False
+            if (
+                pick.backend is BackendId.MVTOOLS
+                and pick.target.bypass is None
+                and pick.target.target is not None
+                and wanted is None
+                and not animation
+                and not full_size
+                and BackendId.MVGPU in cands
+                and decide.prefer_gpu_smaller()
+            ):
+                # P3: on a fanless Mac, mvgpu at a smaller size before CPU MVTools
+                # at the video's own, when it reaches as high a target; measured
+                # GPU engines only (an unmeasured one would run uncapped)
+                gpu = [b for b in cands if b in decide.GPU_BACKENDS]
+                measured = [
+                    (sz, [o for o in opts if o.sustainable_fps is not None])
+                    for sz, opts in await sized_options(gpu)
+                ]
+                smaller = decide.pick_size(
+                    [(sz, opts) for sz, opts in measured if opts],
+                    facts.fps,
+                    facts.display_hz or None,
+                    profile.target.kind,
+                    profile.target.fps,
+                    auto=True,
+                )
+                if smaller is not None:
+                    gp, gsize = smaller
+                    gt = gp.target.target
+                    if (
+                        gp.backend in decide.GPU_BACKENDS
+                        and gt is not None
+                        and gt >= pick.target.target
+                    ):
+                        return gp, gsize, False, [decide.smaller_size_notice(gsize[1])], False
             if pick.target.bypass is BypassReason.NO_REALTIME:
                 # too demanding at its own size: smooth at a smaller size (§11.9)
-                sized = [
-                    (
-                        (w, h),
-                        [
-                            dataclasses.replace(
-                                o,
-                                sustainable_fps=decide.shrink_cap(
-                                    o.sustainable_fps, facts.width, facts.height
-                                ),
-                            )
-                            for o in await engine_options(
-                                dataclasses.replace(facts, width=w, height=h), cands
-                            )
-                        ],
-                    )
-                    for w, h in decide.smaller_sizes(facts.width, facts.height)
-                ]
+                sized = await sized_options(cands)
                 found = decide.pick_size(
                     sized,
                     facts.fps,
@@ -1644,6 +2031,7 @@ class _Session:
         self.auto_chosen = wanted is None and not forced_used
         self.heavy_since = None
         self.steady_since = None
+        self.clean_s, self.clean_tick = 0.0, None
         self.run_block = bool(mv_block and backend is BackendId.MVTOOLS)
         self.run_fill = hold_fill
         params = FilterParams(
@@ -1672,6 +2060,9 @@ class _Session:
             title=self.title,
             size=size,
             mv_mode="block" if mv_block and backend is BackendId.MVTOOLS else None,
+            compare="split" if self.compare_on(cfg) else None,
+            aa=profile.aa and backend in decide.GPU_BACKENDS,
+            hdr=facts.hdr_class is HdrClass.HDR10,
             trt=(
                 trt.script_settings(
                     trt_inst,
@@ -1701,25 +2092,36 @@ class _Session:
         # one absolute path per plugin, not the search path: the directory that
         # really holds this engine's plugin, which is the directory the doctor
         # reports it in (paths.plugin_dir_for)
-        write_script(
-            self.script_path,
-            ScriptConstants(_paths.plugin_dir_for(paths, decide.BACKEND_PLUGIN.get(backend))),
-        )
         self.failure.clear()
         self.device_lost = False
+        try:
+            write_script(
+                self.script_path,
+                ScriptConstants(_paths.plugin_dir_for(paths, decide.BACKEND_PLUGIN.get(backend))),
+            )
+        except OSError as exc:
+            # B14: a full disk, or the runtime folder removed under a running
+            # player (macOS cleans /var/folders): the new filter can't start, and
+            # the running one goes the normal rollback way instead of the
+            # controller dying with mpv still playing an unmanaged filter
+            self.failure.append(f"could not write the script {self.script_path.name}: {exc}")
         self.busy = True
-        if backend is BackendId.RIFE_NCNN:
+        if backend is BackendId.RIFE_NCNN and not self.failure:
             mark_rife_session(self.ctx.paths, (self.proc.pid,))  # BE-1030 window starts
         try:
-            try:
-                await self.ipc.command("vf", "add", vf_argument(self.script_path, params))
-            except MpvError as exc:
-                self.failure.append(f"vf add: {exc.error}")
+            if not self.failure:
+                try:
+                    await self.ipc.command("vf", "add", vf_argument(self.script_path, params))
+                except MpvError as exc:
+                    self.failure.append(f"vf add: {exc.error}")
             ok = not self.failure and await self.verify(gen, float(tc.target))
         finally:
             self.busy = False
         if backend in _SWITCHABLE:
             self.gpu_used = backend
+        if not ok and self.ipc.closed.is_set():
+            # B22: mpv quit inside the verify window; nothing failed
+            return
         if not ok:
             evidence = tuple(self.failure[:10])
             await self.rollback_failed(evidence)
@@ -1742,6 +2144,22 @@ class _Session:
         self.bypass = None
         self.notice = notes[0] if len(notes) == 1 else (notes[-1] if notes else None)
         self.health, self.health_code = Health.OK, None
+        # B3: the OSD line and the helper's status say it (osd.parts, status_text);
+        # the GUI reads the same from the snapshot (decide.uneven_pacing)
+        pacing = (tc.target, decide.display_rate(facts.display_hz))
+        if decide.uneven_pacing(tc.target, facts.display_hz):
+            if pacing != self.pacing_logged:
+                self.log.info(
+                    "%s: %s fps on a %s Hz display paces unevenly (%.4f refreshes per frame)",
+                    self.title,
+                    decide.fmt_rate(tc.target),
+                    decide.fmt_rate(pacing[1] or Fraction(0)),
+                    float(decide.cadence(tc.target, facts.display_hz) or 0),
+                )
+        self.pacing_logged = pacing
+        await self.sync_shader(cfg)  # the smoothing size is known now (P5)
+        await self.sync_pacing(cfg)
+        await self.check_user_render(backend)
 
     async def verify(self, gen: int, target_fps: float) -> bool:
         """The new gen is in ``vf``, no failure was logged, and (unless paused)
@@ -1764,6 +2182,7 @@ class _Session:
                 return False
             if self.ipc.closed.is_set():
                 return False
+            await self.poll_tick_props(("playback-time", "audio-pts"))
             verdict = self.detector.update(sample_from(self.props, time.monotonic()))
             if verdict.flowing:
                 return True
@@ -1773,6 +2192,21 @@ class _Session:
                     return True
             await asyncio.sleep(0.05)
         return not self.failure
+
+    async def poll_tick_props(self, names: Sequence[str] = TICK_PROPS) -> None:
+        """Read the per-frame properties ButterEye no longer observes (P9), all at
+        once. A value mpv does not have (no audio track: no audio-pts) leaves the
+        last one in place; a property mpv does not answer in time is skipped."""
+        if self.ipc.closed.is_set():
+            return
+
+        async def one(name: str) -> None:
+            with contextlib.suppress(MpvError, TimeoutError):
+                value = await self.ipc.get(name, timeout_s=0.5)
+                if value is not None:
+                    self.props[name] = value
+
+        await asyncio.gather(*(one(n) for n in names))
 
     async def rollback_failed(self, evidence: tuple[str, ...]) -> None:
         """Init/eval failure or device loss: remove @buttereye, report (F4)."""
@@ -1898,18 +2332,24 @@ class _Session:
         """The GPU engine that ran last, as the user sees it (RIFE before any run)."""
         return decide.BACKEND_NAMES[self.gpu_used or BackendId.RIFE_NCNN]
 
-    async def check_gpu_faults(self) -> None:
+    async def check_gpu_faults(self, *, final: bool = False) -> None:
         """Xid lines newer than the last reported one (F1); unknown is reported, never OK.
 
         A per-session cursor starts at the session start and moves past every
         reported fault, so a later failure or the session end never reports the
-        same kernel lines again."""
+        same kernel lines again. "Can't be checked" is said once per session and
+        only after a failure, not at the session end (``final``): on macOS and
+        Windows the scan never can, and 0.0.5 said so at every stall, switch and
+        end of an mvgpu or RIFE video."""
         async with self.fault_lock:
             scan_wall, scan_mono = time.time(), time.monotonic()
             res = await gpu_fault_scan(
                 since_monotonic=self.fault_since_mono, since_wall=self.fault_since_wall
             )
             if res is None:
+                if final or self.fault_unknown_sent:
+                    return
+                self.fault_unknown_sent = True
                 self.emit(
                     Notice(
                         Msg(
@@ -2008,6 +2448,13 @@ class _Session:
                         self.log.warning("session %s: mpv is not answering", self.sid)
                     except ButterEyeError as exc:
                         self.log.warning("session %s: %s", self.sid, exc)
+                    except Exception:
+                        # B14: a bug or an unexpected OS error must not end the
+                        # controller: mpv keeps playing, and the GUI would say
+                        # "Lost the connection" about a player that answers
+                        self.step_errors += 1
+                        if self.step_errors <= 3:
+                            self.log.exception("session %s: the controller step failed", self.sid)
         except asyncio.CancelledError:
             cancelled = True
             raise
@@ -2178,11 +2625,28 @@ class _Session:
         if now - self.log_checked_at >= self.opts.log_check_s:
             self.log_checked_at = now
             launcher.cap_log(self.log_path)
+        await self.poll_tick_props()
+
+        if now - self.power_checked_at >= POWER_CHECK_S:
+            self.power_checked_at = now
+            power = self.read_power()
+            if power != self.power:
+                self.log.info(
+                    "%s: power state now battery=%s low power=%s thermal=%s",
+                    self.title, power.on_battery, power.low_power, power.thermal,
+                )  # fmt: skip
+            self.power = power
+            await self.sync_shader(self.config()[0])  # P5: battery, heat, window size
+
+        if self.compare_requested:
+            self.compare_requested = False
+            self.compare = not self.compare_on(self.config()[0])
+            self.log.info("%s: A/B split view %s", self.title, "on" if self.compare else "off")
+            if self.active_gen is not None and self.want and not self.busy:
+                await self.apply(raise_on_fail=False)  # a new gen with the split
 
         if self.toggle_requested:
-            self.toggle_requested = False
-            with contextlib.suppress(IpcClosed, MpvError, TimeoutError):
-                await self.ipc.command("script-message-to", HELPER_NAME, "ack", "toggle")
+            self.toggle_requested = False  # acknowledged by on_event (B19)
             if self.active_gen is not None:
                 self.want = False
                 await self.set_off(FilterState.OFF)
@@ -2295,6 +2759,7 @@ class _Session:
                 self.steady_since = None
             elif self.steady_since is None:
                 self.steady_since = now
+            self.note_clean(now, rate)
             replace = (self.auto_chosen or self.run_fill) and not self.busy and rate is not None
             if replace and (
                 (self.heavy_since is not None and now - self.heavy_since >= HEAVY_HOLD_S)
@@ -2326,6 +2791,42 @@ class _Session:
         self.publish()
         await self.send_status()
 
+    def note_clean(self, now: float, rate: float | None) -> None:
+        """B4: count clean playback by Automatic's engine; after
+        ``CLEAN_RECOVER_S`` of it, a lowered estimate at this size gets one
+        step back (``livelimits.raised``). Drops, heat and Low Power Mode start
+        the count again; a pause only stops it."""
+        last, self.clean_tick = self.clean_tick, now
+        if not self.auto_chosen or self.backend is None or self.source is None:
+            self.clean_s = 0.0
+            return
+        if rate is not None or self.health is not Health.OK or self.power.constrained:
+            self.clean_s = 0.0
+            return
+        if last is None or self.props.get("pause") is True or not self.detector.flowing:
+            return
+        self.clean_s += min(max(0.0, now - last), 1.0)  # a stalled tick is not 10 s clean
+        if self.clean_s < CLEAN_RECOVER_S:
+            return
+        self.clean_s = 0.0
+        cfg, _ = self.config()
+        size = self.run_size or (self.source.width, self.source.height)
+        key = self.limit_key(self.backend, self.model, size, self.run_flow, self.gpu_device(cfg))
+        limits = self.live_limits()
+        old = livelimits.factor(limits, key)
+        if old >= 1.0:
+            return
+        new = livelimits.raised(old)
+        livelimits.record(
+            self.ctx.paths.state_dir / livelimits.FILE, limits, key, new, power=self.power
+        )
+        self.log.info(
+            "%s: %s ran %.0f min without drops at %s × %s; its estimate there goes "
+            "from × %.2f to × %.2f",
+            self.title, decide.BACKEND_NAMES.get(self.backend, self.backend.value),
+            CLEAN_RECOVER_S / 60, size[0], size[1], old, new,
+        )  # fmt: skip
+
     def reset_health(self) -> None:
         """The user turned interpolation on again: clear the previous failure."""
         if self.health is not Health.OK or self.health_code is not None:
@@ -2340,7 +2841,7 @@ class _Session:
             with contextlib.suppress(TimeoutError):
                 returncode = await asyncio.wait_for(self.proc.wait(), 1.0)
         if self.gpu_used is not None:
-            await self.check_gpu_faults()
+            await self.check_gpu_faults(final=True)
         if returncode is not None:
             # mpv is gone: its socket and script are leftovers (discover would re-probe them)
             launcher.remove_runtime_files(self.socket.parent, self.sid)
@@ -2454,10 +2955,21 @@ async def play(
     script = runtime / f"mpv-{sid}.vpy"
     log_path = paths.logs_dir / f"mpv-{sid}.log"
     try:
-        upscaling = ctx.config().general.upscaling
+        general = ctx.config().general
     except ButterEyeError:
-        upscaling = "standard"
+        general = None
+    upscaling = general.upscaling if general is not None else "standard"
     shader = shaders.shader_for(upscaling)
+    power = osapi.power_snapshot()
+    if upscaling == "sharper" and not shaders.sharper_allowed(
+        None, reduced_size=False, power=power
+    ):
+        shader = None  # P5: on battery or hot; the session adds it when that passes
+    lut = None
+    if general is not None and general.lut:
+        from buttereye.core.profiles import luts
+
+        lut = luts.resolve_lut(paths, general.lut)
     argv = launcher.build_argv(
         opts.mpv,
         include=paths.mpv_include,
@@ -2465,30 +2977,38 @@ async def play(
         file=file,
         extra=opts.extra_args,
         shaders=(shader,) if shader is not None else (),
+        lut=lut,
     )
     launcher.prune_logs(paths.logs_dir, runtime)
     launcher.prepare_socket(socket)
-    proc = await launcher.spawn_mpv(argv, log_path, env=opts.env)
+    reg.launching.add(socket)  # B23: not an orphan for discover() while it starts
     try:
-        op.report(Msg("Connecting to mpv"))
-        ipc = await launcher.connect(socket, proc, log_path, timeout_s=opts.connect_timeout_s)
-        session = _Session(
-            ctx, opts, sid=sid, file=file, proc=proc, ipc=ipc, socket=socket,
-            log_path=log_path, script_path=script, profile_request=profile_id,
-        )  # fmt: skip
-        session.shader = shader  # added at launch
-        ipc.add_handler(session.on_event)
-        ipc.start(lambda coro, name: ctx.spawn(coro, name=f"mpvctl-{sid}-ipc"))
-        await ipc.command("client_name")
-        await ipc.command("request_log_messages", "warn")
-        for prop in sorted(OBSERVABLE):
-            await ipc.observe(prop)
-    except BaseException:
-        with contextlib.suppress(Exception):
-            await asyncio.shield(launcher.terminate(proc, grace_s=2.0))
-        launcher.remove_runtime_files(runtime, sid)
-        raise
-    reg.sessions[sid] = session
+        proc = await launcher.spawn_mpv(argv, log_path, env=opts.env)
+        try:
+            op.report(Msg("Connecting to mpv"))
+            ipc = await launcher.connect(socket, proc, log_path, timeout_s=opts.connect_timeout_s)
+            session = _Session(
+                ctx, opts, sid=sid, file=file, proc=proc, ipc=ipc, socket=socket,
+                log_path=log_path, script_path=script, profile_request=profile_id,
+            )  # fmt: skip
+            session.shader = shader  # added at launch
+            session.lut = str(lut) if lut is not None else None
+            session.power = power
+            ipc.add_handler(session.on_event)
+            ipc.start(lambda coro, name: ctx.spawn(coro, name=f"mpvctl-{sid}-ipc"))
+            await ipc.command("client_name")
+            await ipc.command("request_log_messages", "warn")
+            # the per-frame ones are read on the tick (TICK_PROPS, P9)
+            for prop in sorted(OBSERVED):
+                await ipc.observe(prop)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await asyncio.shield(launcher.terminate(proc, grace_s=2.0))
+            launcher.remove_runtime_files(runtime, sid)
+            raise
+        reg.sessions[sid] = session
+    finally:
+        reg.launching.discard(socket)
     snap = session.snapshot()
     session.mark_published(snap)
     ctx.emit(SessionAdded(snap))
@@ -2562,6 +3082,9 @@ async def detach(ctx: ProviderContext, sid: SessionId, policy: DetachPolicy) -> 
         if not s.unresponsive and not s.ipc.closed.is_set():
             if policy is DetachPolicy.DISABLE_FILTER:
                 await s.remove_filter(timeout_s=3.0)
+                s.filter_removed = not s.remove_pending
+            with contextlib.suppress(Exception):
+                await s.restore_player()  # picture, debanding, LUT, pacing
             with contextlib.suppress(IpcClosed, MpvError, TimeoutError):
                 on = filter_entry(s.props.get("vf")) is not None
                 text = render(
@@ -2625,7 +3148,7 @@ async def discover(ctx: ProviderContext) -> tuple[InstanceCandidate, ...]:
     runtime = ctx.paths.runtime_dir
     if not runtime.is_dir():
         return ()
-    held = {s.socket for s in reg.sessions.values() if not s.ended}
+    held = {s.socket for s in reg.sessions.values() if not s.ended} | reg.launching
     found: list[InstanceCandidate] = []
     for path in sorted(runtime.glob("mpv-*.sock")):
         if path in held:
@@ -2691,14 +3214,31 @@ async def close(ctx: ProviderContext, policy: DetachPolicy, *, timeout_s: float)
     """Detach every live session (mpv keeps playing, §4.10)."""
     live = [s for s in registry(ctx).sessions.values() if not s.ended]
 
+    def done(s: _Session) -> ErrorCode | None:
+        # "turn smoothing off" is done only when the filter is gone: a detach
+        # cut short before or during vf remove (or a player that did not answer
+        # it) leaves @buttereye running in mpv
+        off = s.filter_removed or (
+            s.active_gen is None
+            and not s.remove_pending
+            and filter_entry(s.props.get("vf")) is None
+        )
+        if policy is DetachPolicy.DISABLE_FILTER and not off:
+            return ErrorCode.IPC_LOST
+        return None
+
     async def one(s: _Session) -> tuple[SessionId, ErrorCode | None]:
         try:
             await asyncio.wait_for(detach(ctx, s.sid, policy), timeout_s)
         except ButterEyeError as exc:
             return s.sid, exc.code
+        except TimeoutError:
+            # B24: detach ends the session in its own ``finally``, even when the
+            # timeout cancels it; a session that did end was detached, only late
+            return s.sid, done(s) if s.ended else ErrorCode.IPC_LOST
         except Exception:
             return s.sid, ErrorCode.IPC_LOST
-        return s.sid, None
+        return s.sid, done(s)
 
     results = await asyncio.gather(*(one(s) for s in live))
     detached = tuple(sid for sid, code in results if code is None)
@@ -2707,6 +3247,10 @@ async def close(ctx: ProviderContext, policy: DetachPolicy, *, timeout_s: float)
 
 
 __all__ = [
+    # one definition with the benchmark (bench.verdict imports only the types,
+    # so the benchmark itself stays an optional provider)
+    "LIVE_HEADROOM",
+    "REALTIME_HEADROOM",
     "REGISTRY_KEY",
     "FALLBACK_PROFILE",
     "BYPASS_TEXT",

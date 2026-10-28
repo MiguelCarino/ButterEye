@@ -90,6 +90,7 @@ from buttereye.core.api import (
     SessionSnapshot,
     SourceFacts,
     command_hint,
+    pacing_notice,
     render,
     unavailable_text,
 )
@@ -617,6 +618,7 @@ class SessionsPage(Page):
             ("sync", self.tr("Display sync")),
             ("restore", self.tr("Restored when detaching")),
             ("notice", self.tr("Notice")),
+            ("pacing", self.tr("Pacing")),
         ):
             value = QLabel(self.detail)
             value.setObjectName(f"field.{key}")
@@ -1471,6 +1473,8 @@ class SessionsPage(Page):
         self._set_field("sync", self.tr("Yes") if c.display_sync else self.tr("No"))
         self._set_field("restore", ", ".join(snap.restore_pending) or None)
         self._set_field("notice", render(snap.notice) if snap.notice is not None else None)
+        uneven = pacing_notice(snap)  # B3: 2x of 24 fps on 60 Hz is 1-1-1-2
+        self._set_field("pacing", render(uneven) if uneven is not None else None)
         self.apply_status.setText(track.apply_text)
         self.apply_status.setVisible(bool(track.apply_text))
         self._update_health_banner()

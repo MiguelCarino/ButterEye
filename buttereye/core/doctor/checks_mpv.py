@@ -308,9 +308,7 @@ async def mpv_checks(
                             "Install mpv for Windows (shinchiro's build has the VapourSynth "
                             "filter)."
                         ),
-                        macos=M(
-                            "Install Homebrew's mpv; it is built with the VapourSynth filter."
-                        ),
+                        macos=M("Install Homebrew's mpv; it is built with the VapourSynth filter."),
                     )
                 ),
                 evidence=vf_res.tail(3) if not vf_res.ok else bundle_ev,
@@ -418,6 +416,21 @@ def conflict_findings(
     short_tail = "" if attach else _ATTACH_SHORT
     fix_file = M("Edit {path}. ButterEye never changes it for you.", {"path": str(conf)})
     if "hwdec" in o and not hwdec_is_copy(o["hwdec"]):
+        # the copy-back value ButterEye launches with (``launcher.hwdec``): on a
+        # Mac nvdec-copy only fails its probe first
+        if osapi.IS_MACOS:
+            copy_back = "videotoolbox-copy,auto-copy"
+            hwdec_fix = M(
+                "Use a copy-back mode in {path}: hwdec=videotoolbox-copy,auto-copy.",
+                {"path": str(conf)},
+            )
+        else:
+            copy_back = "nvdec-copy,auto-copy"
+            hwdec_fix = M(
+                "Use a copy-back mode in {path}: hwdec=auto-copy, or "
+                "hwdec=nvdec-copy,auto-copy on NVIDIA (less CPU).",
+                {"path": str(conf)},
+            )
         out.append(
             _f(
                 "conflicts.hwdec",
@@ -431,12 +444,8 @@ def conflict_findings(
                     "starts get their own setting.{tail}",
                     {"v": o["hwdec"] or "auto", "tail": short_tail},
                 ),
-                fix=M(
-                    "Use a copy-back mode in {path}: hwdec=auto-copy, or "
-                    "hwdec=nvdec-copy,auto-copy on NVIDIA (less CPU).",
-                    {"path": str(conf)},
-                ),
-                commands=("hwdec=nvdec-copy,auto-copy",),
+                fix=hwdec_fix,
+                commands=(f"hwdec={copy_back}",),
                 evidence=(f"hwdec={o['hwdec']}",),
             )
         )

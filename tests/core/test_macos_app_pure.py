@@ -254,8 +254,10 @@ def test_programs_come_from_the_app_and_never_from_path(
     assert osapi.executable("mpv") == str(res / "bin" / "mpv")
     # a program the app should carry and does not is missing, not Homebrew's
     assert osapi.executable("ffmpeg") is None
+    # mkvmerge is carried too now: the app's own or none
+    assert osapi.executable("mkvmerge") is None
     # a program the app never carries is still looked up
-    assert osapi.executable("mkvmerge") == "/opt/homebrew/bin/mkvmerge"
+    assert osapi.executable("mkvinfo") == "/opt/homebrew/bin/mkvinfo"
 
 
 def test_vspipe_is_the_app_s_own(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

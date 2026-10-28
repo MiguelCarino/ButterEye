@@ -9,10 +9,15 @@
   mpv (SCOPE §4.4), so it is reported as the reload time.
 * mpv (F14 b): ``mpv --no-config --untimed --vo=null --ao=null
   --vf=vapoursynth=file=bench.vpy:...:user-data=<json>
-  av://lavfi:testsrc2=size=WxH:rate=R,format=nv12 --frames=N``. ``--msg-time``
-  timestamps give the first filtered frame (startup) and video EOF; throughput is
-  ``(N - 1) / (t_eof - t_first)``. A run where mpv disabled the filter (it then
-  plays unfiltered, much faster) is a failure, never a number.
+  av://lavfi:testsrc2=size=WxH:rate=R,format=nv12 --frames=N``. ``bench.vpy``
+  times the same generated pattern there as under vspipe: mpv's decoded frames
+  are still fetched (decode and upload stay in the cost), their pixels are not
+  used. ``--msg-time`` timestamps give the first filtered frame (startup) and video
+  EOF; throughput is ``(N - P) / (t_eof - t_first)``, where ``P`` (the filter's
+  concurrent frames) is the pipeline fill: frames that were computed alongside
+  the first one before the clock started. Counting them made the rate up to ~4 %
+  too high at 1080p, the dangerous direction. A run where mpv disabled the filter
+  (it then plays unfiltered, much faster) is a failure, never a number.
 
 Processes are started with ``OpContext.spawn`` (own process group, killed when
 the op ends); a timed-out pass terminates its group at once.
@@ -98,8 +103,11 @@ def parse_vspipe(stderr: str, *, wall_s: float = 0.0) -> VspipeRun:
     return VspipeRun(frames, secs, fps, float(ev.group(1)) if ev else None, wall_s)
 
 
-def parse_mpv(log: str, frames: int) -> MpvRun:
-    """Parse ``mpv --msg-time --msg-level=all=v`` output of an ``--frames=N`` run."""
+def parse_mpv(log: str, frames: int, prefilled: int = 1) -> MpvRun:
+    """Parse ``mpv --msg-time --msg-level=all=v`` output of an ``--frames=N`` run.
+
+    ``prefilled`` frames (at least the first one) were done when the clock
+    started, so ``frames - prefilled`` are timed."""
     t_first: float | None = None
     t_eof: float | None = None
     vo_fmt: str | None = None
@@ -124,9 +132,10 @@ def parse_mpv(log: str, frames: int) -> MpvRun:
         # the filter is not in the chain.
         raise MeasureFailed("mpv played without the benchmark filter", tail(log))
     span = t_eof - t_first
-    if frames < 2 or span <= 0:
+    timed = frames - max(1, prefilled)
+    if timed < 1 or span <= 0:
         raise MeasureFailed("mpv run too short to time", tail(log))
-    return MpvRun(frames, (frames - 1) / span, t_first)
+    return MpvRun(frames, timed / span, t_first)
 
 
 def cov(values: Sequence[float]) -> float:
@@ -253,13 +262,14 @@ async def run_mpv(
     *,
     frames: int,
     timeout_s: float,
+    prefilled: int = 1,
     env: Mapping[str, str] | None = None,
     pids: set[int] | None = None,
 ) -> MpvRun:
     rc, text, _wall = await _run(op, argv, timeout_s, env, None, pids)
     if rc != 0:
         raise MeasureFailed(f"mpv exited with status {rc}", tail(text))
-    return parse_mpv(text, frames)
+    return parse_mpv(text, frames, prefilled)
 
 
 # ---------------------------------------------------------------- VRAM (NVIDIA only)

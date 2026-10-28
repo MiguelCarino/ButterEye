@@ -183,9 +183,7 @@ def test_trt_opted_in_but_not_set_up(cfg: Config) -> None:
     assert select(r, c, ()).backend is BackendId.RIFE_NCNN
 
 
-def test_trt_opted_in_all_ok_is_available(
-    cfg: Config, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_trt_opted_in_all_ok_is_available(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     # backends.trt.build_engine exists (spike M0(l)): an opted-in, clean report offers TRT
     # on a platform a TensorRT plugin can exist on. macOS is not one of those and has
     # its own case below, so say which kind of machine this is.
@@ -197,9 +195,7 @@ def test_trt_opted_in_all_ok_is_available(
     assert st[BackendId.RIFE_TRT].code is None
 
 
-def test_trt_is_never_offered_without_vstrt(
-    cfg: Config, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_trt_is_never_offered_without_vstrt(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     """macOS (``osapi.HAS_VSTRT`` False): TensorRT needs CUDA and an NVIDIA GPU, so
     it is refused however clean the report is and whatever the opt-in says.
 
@@ -379,9 +375,7 @@ def test_an_mvgpu_recommendation_stands_in_with_the_best_rankable_real_time_row(
     assert s.backend is BackendId.RIFE_NCNN and s.model == lite and s.from_benchmark
     assert s.reason.params == {"label": "lite"}
 
-    rife_slow = _run(
-        "mvgpu", _m("lite", BackendId.RIFE_NCNN, lite, realtime=False), mvgpu, mvtools
-    )
+    rife_slow = _run("mvgpu", _m("lite", BackendId.RIFE_NCNN, lite, realtime=False), mvgpu, mvtools)
     assert select(r, cfg, ()).backend is BackendId.RIFE_NCNN  # what discarding it gave
     s = select(r, cfg, (rife_slow,))
     assert s.backend is BackendId.MVTOOLS and s.from_benchmark and s.profile_id == "cpu"
@@ -391,9 +385,10 @@ def test_an_mvgpu_recommendation_stands_in_with_the_best_rankable_real_time_row(
     assert select(r, cfg, (only_mvgpu,)) == select(r, cfg, ())
 
 
-def test_a_repeatable_stand_in_is_preferred_like_the_runner_prefers_one(cfg: Config) -> None:
+def test_the_stand_in_is_the_best_quality_one_that_keeps_up(cfg: Config) -> None:
     """``bench.runner.recommend``'s rule, applied to the rankable rows: quality
-    order, but a repeatable measurement before an unrepeatable better one."""
+    order. ``repeatable`` is shown, never a tie-breaker (B6): an unrepeatable
+    better engine used to lose to a worse one that passed a 5 % spread test."""
     full, lite = "rife-v4.26_ensembleFalse", "rife-v4.22_lite_ensembleFalse"
     shaky = dataclasses.replace(
         _m("full", BackendId.RIFE_NCNN, full, realtime=True), repeatable=False
@@ -401,4 +396,42 @@ def test_a_repeatable_stand_in_is_preferred_like_the_runner_prefers_one(cfg: Con
     steady = _m("lite", BackendId.RIFE_NCNN, lite, realtime=True)
     mvgpu = _m("mvgpu", BackendId.MVGPU, None, realtime=True)
     s = select(report(extra=(f("packages.mvgpu"),)), cfg, (_run("mvgpu", shaky, mvgpu, steady),))
-    assert s.model == lite
+    assert s.model == full
+
+
+def test_bench_rows_below_the_live_bar_are_not_used(cfg: Config) -> None:
+    """B5: 57 fps in mpv at 23.976 -> 47.95 is the benchmark's "real time" (55.14)
+    but under what playback needs (59.94): Setup must not propose it."""
+    lite = "rife-v4.22_lite_ensembleFalse"
+    between = dataclasses.replace(
+        _m("lite", BackendId.RIFE_NCNN, lite, realtime=True), mpv_fps=57.0
+    )
+    mvtools = _m("mvtools", BackendId.MVTOOLS, None, realtime=True)
+    s = select(report(), cfg, (_run("lite", between, mvtools),))
+    assert s.backend is BackendId.MVTOOLS and s.from_benchmark
+    alone = select(report(), cfg, (_run("lite", between),))
+    assert not alone.from_benchmark
+
+
+def test_setup_wording_matches_what_playback_picks(cfg: Config) -> None:
+    """B28: a run recommending mvgpu proposes a rankable stand-in; the reason says
+    playback uses GPU motion vectors where they keep up, not that they are never
+    used."""
+    mvgpu = _m("mvgpu", BackendId.MVGPU, None, realtime=True)
+    mvtools = _m("mvtools", BackendId.MVTOOLS, None, realtime=True)
+    s = select(report(extra=(f("packages.mvgpu"),)), cfg, (_run("mvgpu", mvgpu, mvtools),))
+    assert s.backend is BackendId.MVTOOLS
+    assert "Videos play with GPU motion vectors" in s.reason.key
+    assert "never" not in s.reason.key
+    assert s.reason.params == {"label": "mvtools"}
+
+
+def test_bigger_size_rows_never_stand_in(cfg: Config) -> None:
+    """The live engines are measured at 1440p and 2160p too; Setup answers from
+    the rows at the run's own size."""
+    lite = "rife-v4.22_lite_ensembleFalse"
+    slow = _m("lite", BackendId.RIFE_NCNN, lite, realtime=False)
+    big = _m("mvtools @ 2160p", BackendId.MVTOOLS, None, realtime=True)
+    mvgpu = _m("mvgpu", BackendId.MVGPU, None, realtime=True)
+    s = select(report(extra=(f("packages.mvgpu"),)), cfg, (_run("mvgpu", slow, mvgpu, big),))
+    assert not s.from_benchmark

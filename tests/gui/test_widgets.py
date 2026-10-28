@@ -448,7 +448,10 @@ def test_real_build_marks_every_page_hint(make_window: Any) -> None:
         ("24000/1001", Fraction(24000, 1001)),
         ("60", Fraction(60)),
         (" 30000 / 1001 ", Fraction(30000, 1001)),
-        ("23.976", Fraction("23.976")),
+        ("23.976", Fraction(24000, 1001)),  # as config.toml reads it (B16)
+        ("59.94", Fraction(60000, 1001)),
+        ("23.97", Fraction("23.97")),  # not near an NTSC rate: literal
+        ("24", Fraction(24)),
         ("0", None),
         ("1/0", None),
         ("abc", None),

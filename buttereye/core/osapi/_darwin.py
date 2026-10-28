@@ -25,6 +25,7 @@ every process: nothing here needs Homebrew, a compiler or a wheel.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import errno
 import os
@@ -35,6 +36,7 @@ import struct
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 assert sys.platform == "darwin"  # mypy: the rest is checked only for --platform darwin
 
@@ -426,3 +428,261 @@ def _number_first(name: str) -> tuple[int, str]:
     """
     digits = name[: len(name) - len(name.lstrip("0123456789"))]
     return int(digits) if digits else -1, name
+
+
+# ======================================================================== power and heat
+# A fanless Air slows its GPU down when it heats up, and a MacBook on battery or in
+# Low Power Mode runs at lower clocks: the speed test's answer stops being true. These
+# read what macOS itself says about it. pyobjc is not bundled, so the Objective-C
+# half goes through libobjc by hand: objc_msgSend is called through a function
+# pointer cast to the exact signature of each message, because on arm64 a variadic
+# call passes its arguments somewhere the method does not look for them.
+#
+# Every function here answers None (or does nothing) when a framework, a class or a
+# selector is missing, rather than raising: what they feed is advice and caps, and
+# must never stop a video playing.
+
+#: ``NSProcessInfoThermalState``: nominal, fair, serious, critical
+THERMAL_CRITICAL = 3
+
+#: ``NSActivityOptions`` from ``<Foundation/NSProcessInfo.h>``. UserInitiated already
+#: contains IdleSystemSleepDisabled; it is or-ed in again so the intent is on the page.
+NS_ACTIVITY_IDLE_SYSTEM_SLEEP_DISABLED = 1 << 20
+NS_ACTIVITY_USER_INITIATED = 0x00FFFFFF | NS_ACTIVITY_IDLE_SYSTEM_SLEEP_DISABLED
+
+#: ``kIOPSBatteryPowerValue`` and ``kIOPSUPSPowerValue`` (``<IOKit/ps/IOPSKeys.h>``):
+#: the two answers that mean "not running from the wall". A desktop Mac answers
+#: ``"AC Power"``, the same as a plugged-in laptop.
+_STORED_POWER = frozenset({"Battery Power", "UPS Power"})
+
+_FOUNDATION = "/System/Library/Frameworks/Foundation.framework/Foundation"
+_IOKIT = "/System/Library/Frameworks/IOKit.framework/IOKit"
+_COREFOUNDATION = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+_LIBOBJC = "/usr/lib/libobjc.A.dylib"
+#: ``kCFStringEncodingUTF8``
+_CF_UTF8 = 0x08000100
+
+
+class _ObjC:
+    """libobjc, Foundation loaded so ``NSProcessInfo`` and ``NSString`` exist, and
+    the one ``objc_msgSend`` address every typed call is cast from. Loaded on the
+    first question, not at import: the rest of ``_darwin`` needs only libSystem."""
+
+    def __init__(self) -> None:
+        ctypes.CDLL(_FOUNDATION)  # registers the classes; the handle is not needed
+        lib = ctypes.CDLL(_LIBOBJC)
+        lib.objc_getClass.restype = ctypes.c_void_p
+        lib.objc_getClass.argtypes = (ctypes.c_char_p,)
+        lib.sel_registerName.restype = ctypes.c_void_p
+        lib.sel_registerName.argtypes = (ctypes.c_char_p,)
+        self._lib = lib
+        send = ctypes.cast(lib.objc_msgSend, ctypes.c_void_p).value
+        if not send:
+            raise OSError("libobjc has no objc_msgSend")
+        self._send: int = send
+        self._fns: dict[tuple[object, ...], Any] = {}
+
+    def cls(self, name: str) -> int | None:
+        return self._lib.objc_getClass(name.encode()) or None
+
+    def send(self, restype: Any, receiver: int, selector: str, *args: tuple[Any, object]) -> Any:
+        """``[receiver selector …]`` with ``args`` as ``(ctype, value)`` pairs."""
+        argtypes = tuple(t for t, _ in args)
+        key = (restype, argtypes)
+        fn = self._fns.get(key)
+        if fn is None:
+            proto = ctypes.CFUNCTYPE(restype, ctypes.c_void_p, ctypes.c_void_p, *argtypes)
+            fn = self._fns[key] = proto(self._send)
+        sel = self._lib.sel_registerName(selector.encode())
+        return fn(receiver, sel, *(v for _, v in args))
+
+    def process_info(self) -> int | None:
+        """``[NSProcessInfo processInfo]``: a shared singleton, never released."""
+        klass = self.cls("NSProcessInfo")
+        if klass is None:
+            return None
+        return self.send(ctypes.c_void_p, klass, "processInfo") or None
+
+
+_objc_cache: list[_ObjC | None] = []
+
+
+def _objc() -> _ObjC | None:
+    """The loaded runtime, or None when it cannot be loaded (asked once)."""
+    if not _objc_cache:
+        try:
+            _objc_cache.append(_ObjC())
+        except OSError, AttributeError:
+            _objc_cache.append(None)
+    return _objc_cache[0]
+
+
+def thermal_state() -> int | None:
+    """``NSProcessInfo.thermalState``: 0 nominal, 1 fair, 2 serious, 3 critical.
+
+    The same level Activity Monitor and ``pmset -g therm`` report. On an M2 Air
+    "fair" comes within minutes of sustained GPU load and is the point where the
+    clocks start to come down; "serious" means they already have. None when it
+    cannot be read or answers outside 0-3.
+    """
+    rt = _objc()
+    if rt is None:
+        return None
+    try:
+        info = rt.process_info()
+        if info is None:
+            return None
+        state = int(rt.send(ctypes.c_long, info, "thermalState"))
+    except OSError, ctypes.ArgumentError:
+        return None
+    return state if 0 <= state <= THERMAL_CRITICAL else None
+
+
+def low_power_mode() -> bool | None:
+    """``NSProcessInfo.isLowPowerModeEnabled`` (System Settings > Battery), or None."""
+    rt = _objc()
+    if rt is None:
+        return None
+    try:
+        info = rt.process_info()
+        if info is None:
+            return None
+        return bool(rt.send(ctypes.c_bool, info, "isLowPowerModeEnabled"))
+    except OSError, ctypes.ArgumentError:
+        return None
+
+
+class _PowerSources:
+    """IOKit's power-source calls and the CoreFoundation ones to read and free
+    their answer. Both frameworks are loaded by path: neither is in a process
+    that has not asked for it, and ``CDLL(None)`` would not find their symbols."""
+
+    def __init__(self) -> None:
+        iokit = ctypes.CDLL(_IOKIT)
+        cf = ctypes.CDLL(_COREFOUNDATION)
+        self.copy_info = iokit.IOPSCopyPowerSourcesInfo
+        self.copy_info.restype = ctypes.c_void_p
+        self.copy_info.argtypes = ()
+        self.providing = iokit.IOPSGetProvidingPowerSourceType
+        self.providing.restype = ctypes.c_void_p
+        self.providing.argtypes = (ctypes.c_void_p,)
+        self.get_cstring = cf.CFStringGetCString
+        self.get_cstring.restype = ctypes.c_bool
+        self.get_cstring.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_long,
+            ctypes.c_uint32,
+        )
+        self.release = cf.CFRelease
+        self.release.restype = None
+        self.release.argtypes = (ctypes.c_void_p,)
+
+
+_ps_cache: list[_PowerSources | None] = []
+
+
+def _power_sources() -> _PowerSources | None:
+    if not _ps_cache:
+        try:
+            _ps_cache.append(_PowerSources())
+        except OSError, AttributeError:
+            _ps_cache.append(None)
+    return _ps_cache[0]
+
+
+def providing_power_source() -> str | None:
+    """``IOPSGetProvidingPowerSourceType``: ``"AC Power"``, ``"Battery Power"`` or
+    ``"UPS Power"``, or None when IOKit does not answer.
+
+    The snapshot ``IOPSCopyPowerSourcesInfo`` returns is owned by the caller (the
+    Copy rule) and released here; the string read out of it is not (the Get rule)
+    and is copied out before the snapshot goes.
+    """
+    ps = _power_sources()
+    if ps is None:
+        return None
+    blob = ps.copy_info()
+    if not blob:
+        return None
+    try:
+        name = ps.providing(blob)
+        if not name:
+            return None
+        buf = ctypes.create_string_buffer(64)
+        if not ps.get_cstring(name, buf, len(buf), _CF_UTF8):
+            return None
+        return buf.value.decode("utf-8", errors="replace")
+    finally:
+        ps.release(blob)
+
+
+def on_battery(source: str | None = None) -> bool | None:
+    """Is this Mac running from stored power (battery, or a UPS that says so)?
+    None when the power source cannot be read. ``source`` is for tests: an answer
+    ``providing_power_source`` might have given."""
+    name = providing_power_source() if source is None else source
+    if name is None:
+        return None
+    return name in _STORED_POWER
+
+
+#: what ``caffeinate`` is, by full path: never whatever ``PATH`` finds first
+CAFFEINATE = "/usr/bin/caffeinate"
+
+
+def caffeinate_argv(pid: int) -> list[str]:
+    """``caffeinate -i -w <pid>``: no idle system sleep until ``pid`` exits. The
+    display may still sleep (no ``-d``): an unattended render needs the machine,
+    not the screen."""
+    return [CAFFEINATE, "-i", "-w", str(pid)]
+
+
+def begin_activity(reason: str) -> int | None:
+    """``[[NSProcessInfo processInfo] beginActivityWithOptions:reason:]`` with
+    ``NSActivityUserInitiated``: no idle system sleep and no App Nap for this
+    process until ``end_activity``. The token is retained here, because the method
+    hands it back autoreleased and Qt's run loop drains its pools between events;
+    None when any step fails, and then nothing is held.
+    """
+    rt = _objc()
+    if rt is None:
+        return None
+    try:
+        info = rt.process_info()
+        ns_string = rt.cls("NSString")
+        if info is None or ns_string is None:
+            return None
+        text = rt.send(ctypes.c_void_p, ns_string, "alloc")
+        text = rt.send(
+            ctypes.c_void_p, text, "initWithUTF8String:", (ctypes.c_char_p, reason.encode())
+        )
+        if not text:
+            return None
+        try:
+            token = rt.send(
+                ctypes.c_void_p,
+                info,
+                "beginActivityWithOptions:reason:",
+                (ctypes.c_uint64, NS_ACTIVITY_USER_INITIATED),
+                (ctypes.c_void_p, text),
+            )
+        finally:
+            rt.send(None, text, "release")  # the activity keeps its own copy
+        if not token:
+            return None
+        rt.send(ctypes.c_void_p, token, "retain")
+        return int(token)
+    except OSError, ctypes.ArgumentError:
+        return None
+
+
+def end_activity(token: int) -> None:
+    """End what ``begin_activity`` started and let go of its token. Never raises."""
+    rt = _objc()
+    info = rt.process_info() if rt is not None else None
+    if rt is None or info is None:
+        return
+    with contextlib.suppress(OSError, ctypes.ArgumentError):
+        rt.send(None, info, "endActivity:", (ctypes.c_void_p, token))
+        rt.send(None, token, "release")

@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import re
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
+from buttereye.core import api as core_api
 from buttereye.core.api import (
     BackendId,
     BypassReason,
@@ -56,6 +58,13 @@ from tests.gui.test_sessions_page import in_core
 CODE = re.compile(r"BE-\d+")
 
 Make = Callable[..., Any]
+#: three weeks after the scenarios' speed test (2026-10-07): current, not stale
+NOW = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _fixed_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sw, "_now", lambda: NOW)
 
 
 @pytest.fixture
@@ -141,6 +150,17 @@ def test_text_helpers() -> None:
     assert sw.without_code("Only local files can be opened. (BE-3007)") == (
         "Only local files can be opened."
     )
+
+
+def test_row_view_flags_uneven_pacing() -> None:
+    """B3: 2x of 23.976 on a 60 Hz panel holds frames 1-1-1-2; the row says so
+    when nothing more urgent is to be said. 24 -> 120 on 120 Hz is even."""
+    active = sc.session(1)
+    assert sw.row_view(active).notice == ""
+    uneven = dataclasses.replace(active, target_fps=Fraction(48000, 1001), display_fps=60.0)
+    assert sw.row_view(uneven).notice.startswith("47.952 fps doesn't divide evenly into your 60 Hz")
+    assert core_api.pacing_notice(dataclasses.replace(uneven, filter=FilterState.OFF)) is None
+    assert core_api.pacing_notice(dataclasses.replace(uneven, display_fps=None)) is None
 
 
 def test_row_view_plain_words() -> None:
@@ -329,6 +349,20 @@ def test_copy_log_per_file(make_simple: Make, qtbot: Any) -> None:
     job_row.log_button.click()
     qtbot.waitUntil(lambda: "log for a.smooth.mkv" in clip.text(), timeout=5000)
     assert [c.args[0] for c in calls(win, "job_log")] == [job_row.job.id]
+
+
+def test_finish_the_copy_queues_the_spec_again_and_drops_the_row(
+    make_simple: Make, qtbot: Any
+) -> None:
+    win = make_simple("live_active")
+    job_row = _copy_and_job(win, qtbot)
+    assert job_row.on_retry == win.retry_job  # the row can offer "Finish the copy"
+    old = job_row.job
+    win.retry_job(old)
+    qtbot.waitUntil(lambda: bool(calls(win, "render_forget")), timeout=5000)
+    enq = calls(win, "render_enqueue")
+    assert len(enq) == 2 and enq[-1].args[0] == old.spec
+    assert [c.args[0] for c in calls(win, "render_forget")] == [old.id]
 
 
 def test_busy_window_fits_without_squashing(make_simple: Make, qtbot: Any) -> None:
@@ -986,7 +1020,7 @@ def test_picture_choice_saves_upscaling_and_deband(make_simple: Make, qtbot: Any
     win = make_simple("all_ready")
     combo = win.picture_combo
     assert [combo.itemData(i) for i in range(combo.count())] == [
-        "standard", "sharper", "deband", "sharper-deband",
+        "standard", "sharper", "ravu", "deband", "sharper-deband", "ravu-deband",
     ]  # fmt: skip
     assert win.picture() == "standard"
     pick(combo, "sharper")
@@ -995,10 +1029,16 @@ def test_picture_choice_saves_upscaling_and_deband(make_simple: Make, qtbot: Any
     pick(combo, "sharper-deband")
     qtbot.waitUntil(lambda: saved(win).general.deband is True, timeout=5000)
     assert saved(win).general.upscaling == "sharper"
+    pick(combo, "ravu-deband")
+    qtbot.waitUntil(lambda: saved(win).general.upscaling == "ravu", timeout=5000)
+    assert saved(win).general.deband is True
     pick(combo, "deband")
     qtbot.waitUntil(lambda: saved(win).general.upscaling == "standard", timeout=5000)
     assert saved(win).general.deband is True
     assert sw.is_simple(saved(win))
+    tip = Qt.ItemDataRole.ToolTipRole
+    assert "1.8×" in str(combo.itemData(combo.findData("sharper"), tip))
+    assert "RAVU" in str(combo.itemData(combo.findData("ravu-deband"), tip))
     label = next(w for w in win.findChildren(QLabel) if w.buddy() is combo)
     assert label.text() == "&Picture"
 
@@ -1012,6 +1052,21 @@ def test_picture_choice_follows_the_config(make_simple: Make, qtbot: Any) -> Non
     )
     win = make_simple(scen)
     assert win.picture_combo.currentData() == "sharper-deband"
+
+
+def test_ravu_from_details_survives_a_save_from_here(make_simple: Make, qtbot: Any) -> None:
+    base = sc.get("all_ready")
+    cfg = base.config_load.config
+    general = dataclasses.replace(cfg.general, upscaling="ravu")
+    scen = dataclasses.replace(
+        base, name="ravu", config_load=sc.config_load(dataclasses.replace(cfg, general=general))
+    )
+    win = make_simple(scen)
+    assert win.picture_combo.currentData() == "ravu"
+    before = len(calls(win, "save_config"))
+    pick(win.resolution_combo, "full")
+    qtbot.waitUntil(lambda: len(calls(win, "save_config")) > before, timeout=5000)
+    assert saved(win).general.upscaling == "ravu"
 
 
 def test_resolution_choice_saves_full_size(make_simple: Make, qtbot: Any) -> None:
@@ -1055,3 +1110,84 @@ def test_files_play_once_the_window_is_ready(make_simple: Make, qtbot: Any, tmp_
     assert calls(win, "play")[0].args[0] == video
     win._ready()  # a later "Ready." doesn't play it again
     assert len(calls(win, "play")) == 1
+
+
+# ---------------------------------------------------------------- speed test review fixes
+def _failed_mvgpu(res: Any) -> Any:
+    """An mvgpu row whose in-mpv pass failed: the runner stored the vspipe speed
+    as mpv_fps (and the vspipe reload time as startup), realtime False."""
+    m = res.measurements[0]
+    return dataclasses.replace(
+        m, label="mvgpu", backend=BackendId.MVGPU, model=None, mpv_fps=m.vspipe_fps,
+        startup_s=m.reload_s, realtime=False,
+    )  # fmt: skip
+
+
+def test_mvgpu_unmeasured_counts_only_real_measurements() -> None:
+    """B10: a failed in-mpv pass or a GPU fault is no measurement of mvgpu."""
+    res = sc.bench_result_4090()
+    failed = dataclasses.replace(res, measurements=res.measurements + (_failed_mvgpu(res),))
+    assert sw.mvgpu_unmeasured((failed,))
+    good = dataclasses.replace(
+        res.measurements[0], label="mvgpu", backend=BackendId.MVGPU, model=None, gpu_faults=0
+    )
+    faulted = dataclasses.replace(good, gpu_faults=2)
+    assert not sw.mvgpu_unmeasured((dataclasses.replace(res, measurements=(good,)),))
+    assert sw.mvgpu_unmeasured((dataclasses.replace(res, measurements=(faulted,)),))
+
+
+def test_bench_reason_and_backoff() -> None:
+    res = sc.bench_result_4090()
+    assert sw.bench_reason((), mvgpu=False, now=NOW) == "none"
+    assert sw.bench_reason((res,), mvgpu=False, now=NOW) is None
+    assert sw.bench_reason((res,), mvgpu=True, now=NOW) == "mvgpu"
+    later = res.when + timedelta(days=61)
+    assert sw.bench_reason((res,), mvgpu=False, now=later) == "stale"
+    newer = dataclasses.replace(res, when=later - timedelta(days=1))
+    assert sw.bench_reason((res, newer), mvgpu=False, now=later) is None
+    assert [sw.retry_backoff(n).days for n in range(7)] == [1, 2, 4, 8, 16, 30, 30]
+
+
+def test_mvgpu_rerun_backs_off(make_simple: Make, qtbot: Any, tmp_path: Path) -> None:
+    """B10: the re-run for an unmeasured mvgpu is recorded; until its backoff ends
+    the app does not measure again at every start."""
+    base = _with_mvgpu()
+    win = make_simple(base, auto_bench=True)
+    qtbot.waitUntil(lambda: bool(calls(win, "bench")), timeout=5000)
+    after = datetime.fromisoformat(str(win.settings.value(sw.BENCH_RETRY_KEY)))
+    assert after == NOW + timedelta(days=1)
+    assert int(win.settings.value(sw.BENCH_TRIES_KEY)) == 1
+    # the fake's result has no mvgpu row: the reason stands, the backoff holds
+    qtbot.waitUntil(lambda: not win._bench_running, timeout=10000)
+    assert win.settings.value(sw.BENCH_RETRY_KEY) is not None
+    win.bench_started = False
+    win._maybe_bench()
+    qtbot.wait(200)
+    assert len(calls(win, "bench")) == 1
+
+
+def test_stale_results_are_measured_again_quietly(
+    make_simple: Make, qtbot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B9: results older than STALE_AFTER are re-measured in the background."""
+    monkeypatch.setattr(sw, "_now", lambda: NOW + timedelta(days=90))
+    win = make_simple("all_ready", auto_bench=True)
+    qtbot.waitUntil(lambda: bool(calls(win, "bench")), timeout=5000)
+    qtbot.waitUntil(lambda: not win._bench_running, timeout=10000)
+    assert win.settings.value(sw.BENCH_RETRY_KEY) is None  # answered: no backoff left
+
+
+def test_speed_test_waits_while_a_video_plays(make_simple: Make, qtbot: Any) -> None:
+    """B8: the background speed test never runs next to playback (its numbers
+    would be too low and kept); it starts once the last player is gone."""
+    base = dataclasses.replace(sc.get("live_active"), bench_history=())
+    win = make_simple(base, auto_bench=True)
+    sid = SessionId("s1")
+    qtbot.waitUntil(lambda: sid in win.rows)
+    qtbot.waitUntil(lambda: bool(calls(win, "bench_history")), timeout=5000)
+    qtbot.wait(200)
+    assert calls(win, "bench") == [] and win._bench_when_idle
+    gone = dataclasses.replace(win.live_sessions[0], ended=True, exit_code=0)
+    in_core(qtbot, win.bridge, lambda c: c.fake_set_session(gone))
+    qtbot.waitUntil(lambda: bool(calls(win, "bench")), timeout=5000)
+    assert calls(win, "bench")[0].args[0] == sw.FIRST_BENCH

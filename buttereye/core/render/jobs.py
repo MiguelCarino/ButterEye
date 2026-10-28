@@ -8,13 +8,22 @@ source (ffms2, spike M0(e)) → ``vspipe | ffmpeg`` into a hidden video-only MKV
 to the output → ``mkvmerge`` (or ``ffmpeg``) copies every other stream of the
 source → rename into place. vspipe and ffmpeg share one process group, recorded in
 a manifest under ``jobs_dir`` so a job left by a crashed GUI can be found and
-stopped (``stale_jobs``). Cancel and failure delete every partial file.
+stopped (``stale_jobs``). Cancel and failure delete every partial file, except
+the encoded video when only the remux failed: hours of encoding are kept, and
+adding the same copy again finishes it without converting again.
+
+The group stops (SIGSTOP) while a video plays in ButterEye or a benchmark runs,
+and continues (SIGCONT) after: the render and the player are separate processes
+on the same GPU, and lower CPU priority does nothing for the GPU. On macOS the
+Mac doesn't idle-sleep while a job runs (``osapi.begin_activity`` and
+``caffeinate -i -w`` on vspipe).
 
 HDR (§7.4): HDR10 sources, and HDR10+ / Dolby Vision ones with an HDR10 base
 layer (their dynamic metadata dropped, with a warning), become HDR10 copies through
 x265 or SVT-AV1, with the mastering display and content light level carried into
-the encoder and the container. HLG, Dolby Vision profile 5 and Dolby Vision without
-an HDR10 base layer are refused.
+the encoder's stream; mkvmerge also writes them into the container, ffmpeg's
+remux can't. HLG, Dolby Vision profile 5 and Dolby Vision without an HDR10 base
+layer are refused.
 """
 
 from __future__ import annotations
@@ -27,7 +36,9 @@ import logging
 import math
 import os
 import shutil
+import signal
 import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -47,6 +58,7 @@ from buttereye.core.errors import ButterEyeError, ErrorCode, InsufficientSpace, 
 from buttereye.core.events import JobChanged
 from buttereye.core.mpvctl import decide
 from buttereye.core.ops import _own_group, terminate_group
+from buttereye.core.profiles import luts
 from buttereye.core.render import pipeline
 from buttereye.core.render import probe as rprobe
 from buttereye.core.scriptgen.generator import (
@@ -100,14 +112,15 @@ RENICE = 10  # §7.6: renders always run at lower CPU priority than the desktop
 #: ``ffms2`` is not a key in the DNF/WINGET/BREW maps, because those three are
 #: kept the same shape and Windows installs it rather than naming it.
 INSTALL_FFMS2 = (
-    ""
-    if osapi.IS_WINDOWS
-    else "brew install ffms2"
-    if osapi.IS_MACOS
-    else "sudo dnf install ffms2"
+    "" if osapi.IS_WINDOWS else "brew install ffms2" if osapi.IS_MACOS else "sudo dnf install ffms2"
 )
 INSTALL_MKVTOOLNIX = install_command("mkvtoolnix")
 PROGRESS_INTERVAL_S = 0.5
+#: how often a running render checks for playback or a benchmark to stop for
+PAUSE_POLL_S = 0.5
+#: Homebrew's two prefixes: a Mac app started from Finder has neither on PATH
+BREW_BINS = (Path("/opt/homebrew/bin"), Path("/usr/local/bin"))
+ACTIVITY_REASON = "ButterEye is saving a smooth copy"
 
 
 # ---------------------------------------------------------------- state
@@ -124,6 +137,10 @@ class _Job:
     est_bytes: int | None = None
     error: ButterEyeError | None = None
     task: asyncio.Task[None] | None = None
+    #: the encoded video kept after a failed remux, until the job is forgotten
+    kept: Path | None = None
+    #: stopped (SIGSTOP) while a video plays or a benchmark runs
+    paused: bool = False
 
 
 @dataclass(slots=True)
@@ -197,7 +214,66 @@ def _tools() -> _Tools:
     if vspipe is None:
         # Windows: vspipe is part of the installer's bundled VapourSynth
         raise _missing("vspipe", None if osapi.IS_WINDOWS else install_command("vapoursynth"))
-    return _Tools(ffprobe, ffmpeg, vspipe, shutil.which("mkvmerge"))
+    return _Tools(ffprobe, ffmpeg, vspipe, _mkvmerge())
+
+
+def _mkvmerge() -> str | None:
+    """The mkvmerge to remux with: the one the app carries (``Resources/bin``,
+    or the AppImage's ``bin``), then Homebrew's on a Mac, then PATH."""
+    for root in (osapi.MACOS_APP, osapi.LINUX_APP):
+        if root is not None:
+            own = root / osapi.APP_BIN / "mkvmerge"
+            if own.is_file():
+                return os.fspath(own)
+    if osapi.IS_MACOS:
+        for d in BREW_BINS:
+            brew = d / "mkvmerge"
+            if brew.is_file() and os.access(brew, os.X_OK):
+                return os.fspath(brew)
+    return shutil.which("mkvmerge")
+
+
+#: (ffmpeg, its mtime) → the VideoToolbox encoders that encoded a test clip
+_VT_WORKING: dict[tuple[str, int], frozenset[str]] = {}
+
+
+async def _videotoolbox_working(ffmpeg: str, listed: Sequence[str]) -> frozenset[str]:
+    """The listed VideoToolbox encoders that really encode here, with the options
+    a render passes: ``-encoders`` lists them on every macOS build of ffmpeg,
+    with or without the hardware (a VM, an Intel Mac without HEVC). A 6-frame
+    test each, about 0.15 s on an M2, once per ffmpeg."""
+    wanted = [e for e in listed if e in rprobe.VIDEOTOOLBOX_ENCODERS]
+    if not wanted:
+        return frozenset()
+    try:
+        key = (ffmpeg, os.stat(ffmpeg).st_mtime_ns)
+    except OSError:
+        key = (ffmpeg, 0)
+    found = _VT_WORKING.get(key)
+    if found is None:
+        ok = []
+        for enc in wanted:
+            res = await run(pipeline.encoder_test_argv(ffmpeg, enc), timeout_s=15.0)
+            if res.ok:
+                ok.append(enc)
+            else:
+                _log.info("%s is listed but doesn't encode here: %s", enc,
+                          (res.stderr or "").strip()[-300:])  # fmt: skip
+        found = _VT_WORKING[key] = frozenset(ok)
+    return found
+
+
+async def _encoders(tools: _Tools, *, hdr10: bool, nvidia: bool) -> tuple[str, ...]:
+    """``rprobe.usable_encoders`` from this ffmpeg's list, without VideoToolbox
+    encoders that fail their test."""
+    enc = await run((tools.ffmpeg, "-hide_banner", "-encoders"), timeout_s=10.0)
+    listed = parse_encoders(enc.stdout) if enc.ok else ()
+    if osapi.IS_MACOS and not hdr10:
+        broken = set(rprobe.VIDEOTOOLBOX_ENCODERS) - await _videotoolbox_working(
+            tools.ffmpeg, listed
+        )
+        listed = tuple(e for e in listed if e not in broken)
+    return rprobe.usable_encoders(listed, nvidia=nvidia, hdr10=hdr10, apple=osapi.IS_MACOS)
 
 
 async def _ffprobe(tools: _Tools, src: Path) -> Mapping[str, Any]:
@@ -318,19 +394,33 @@ def refusal_for(
     return None
 
 
-def hdr_warnings(info: rprobe.SourceInfo | None) -> list[Finding]:
-    """What an HDR10 copy keeps and drops (§7.4)."""
+def hdr_warnings(info: rprobe.SourceInfo | None, *, mkvmerge: bool = True) -> list[Finding]:
+    """What an HDR10 copy keeps and drops (§7.4). ``mkvmerge`` False: ffmpeg
+    remuxes, and its Matroska muxer has no option for the mastering display or
+    light levels, so they are only in the encoded stream (x265's SEI, SVT-AV1's
+    metadata OBUs), which most players read but some go by the container."""
     if info is None or not rprobe.renders_as_hdr10(info):
         return []
-    out = [
-        Finding(
+    if mkvmerge:
+        hdr10 = Finding(
             "render.hdr10", Section.RENDER, Severity.INFO, None,
             Msg("Will be saved as HDR10"),
             Msg("The copy keeps the PQ picture, BT.2020 colour, mastering display and "
                 "light levels; x265 or SVT-AV1 encodes it."),
             Msg("Nothing to do."),
-        )
-    ]  # fmt: skip
+        )  # fmt: skip
+    else:
+        hdr10 = Finding(
+            "render.hdr10", Section.RENDER, Severity.INFO, None,
+            Msg("Will be saved as HDR10"),
+            Msg("The copy keeps the PQ picture and BT.2020 colour; x265 or SVT-AV1 "
+                "writes the mastering display and light levels into the video stream, "
+                "but without mkvmerge the file itself doesn't list them, which a few "
+                "players need."),
+            Msg("Install mkvtoolnix to have them in the file too."),
+            commands=(INSTALL_MKVTOOLNIX,),
+        )  # fmt: skip
+    out = [hdr10]
     dropped = {HdrClass.HDR10PLUS: "HDR10+", HdrClass.DV: "Dolby Vision"}.get(info.hdr_class)
     if dropped is not None:
         out.append(
@@ -392,16 +482,27 @@ def _profile(cfg: Config | None, profile_id: str | None) -> Profile | None:
     return by_id.get("simple") or cfg.profiles[0]
 
 
+#: RIFE-ncnn render requests on macOS, where ``gpu_thread`` is 1 (MoltenVK has
+#: one queue): 8 would hold about six 4K RGBS frames (100 MB each, out of 16 GB
+#: shared with the GPU) that only wait. gpu_thread + 2 would be 3; one more keeps
+#: the CPU's RGB conversion of the next frames overlapping. Not measured on the
+#: M2 yet (peak memory and fps at 3 / 4 / 8): conservative, not minimal
+RIFE_REQUESTS_MACOS = 4
+
+
 def vspipe_requests(engine: BackendId) -> int | None:
     """vspipe's frame requests in flight for a render. RIFE-ncnn runs only
     ``gpu_thread`` frames at once; vspipe's default (one per CPU thread, 24 on the
     dev box) only holds RGBS frames waiting for the GPU: 4K 24 → 60 used 18.9 GB
     and ran 7.3 fps by default, 14.5 GB and 7.7 fps with 8. At least
-    gpu_thread + 2. mvgpu serialises its GPU work, so requests beyond its live
-    concurrent-frames only hold frames. MVTools (CPU-bound) keeps vspipe's default."""
+    gpu_thread + 2, and ``RIFE_REQUESTS_MACOS`` on a Mac. mvgpu serialises its GPU
+    work, so requests beyond its live concurrent-frames only hold frames. MVTools
+    (CPU-bound) keeps vspipe's default."""
     if engine is BackendId.MVGPU:
         return MVGPU_CONCURRENT_FRAMES_DEFAULT
     if engine is BackendId.RIFE_NCNN:
+        if osapi.IS_MACOS:
+            return max(RIFE_REQUESTS_MACOS, rife_gpu_thread() + 2)
         return max(RIFE_CONCURRENT_FRAMES_DEFAULT, rife_gpu_thread() + 2)
     if engine is BackendId.RIFE_TRT:
         return RIFE_CONCURRENT_FRAMES_DEFAULT  # a few frames per CUDA stream
@@ -443,37 +544,67 @@ def _installed(ctx: ProviderContext, profile: Profile | None = None) -> frozense
     )
 
 
-def _engine(
+def _candidates(
     ctx: ProviderContext, profile: Profile | None
-) -> tuple[BackendId | None, decide.ModelChoice | None]:
+) -> tuple[tuple[BackendId, decide.ModelChoice | None], ...]:
+    """The engines this copy may use, best picture first, each with its model:
+    the profile's own when it is pinned and installed, else every installed one
+    of ``rprobe.OFFLINE_RANKING`` (``ANIMATION_RANKING`` for 2D animation, as
+    live playback ranks it: RIFE-ncnn first, no TensorRT, which has no hold
+    fill). Which one a copy takes is decided by time (``rprobe.pick_offline``)."""
     backend = profile.backend if profile is not None else "auto"
-    installed = _installed(ctx, profile)
+    animation = profile is not None and profile.content is ContentKind.ANIMATION
+    order = rprobe.offline_order(backend, _installed(ctx, profile), animation=animation)
+    out = _with_models(ctx, profile, order)
+    if not out and backend != "auto":
+        # the pinned engine can't run (no RIFE model, TensorRT not set up any
+        # more): the usual order, never TensorRT
+        others = _installed(ctx, None) - {BackendId.RIFE_TRT}
+        out = _with_models(ctx, profile, rprobe.offline_order("auto", others))
+    return out
+
+
+def _with_models(
+    ctx: ProviderContext, profile: Profile | None, order: Sequence[BackendId]
+) -> tuple[tuple[BackendId, decide.ModelChoice | None], ...]:
+    """``order`` with each engine's model; RIFE-ncnn without a model and a
+    TensorRT that isn't set up are left out."""
     p = ctx.paths
     model = profile.model if profile is not None else None
     models = (p.rpm_data_dir / MODEL_SUBDIR, (p.data_dir / USER_MODEL_SUBDIR,))
-    # 2D animation on Automatic: RIFE-ncnn before TensorRT, which has no hold fill
-    # (_hold_fill), as live playback ranks it (session.ANIMATION_RANKING + apply)
-    if (
-        backend == "auto"
-        and profile is not None
-        and profile.content is ContentKind.ANIMATION
-        and BackendId.RIFE_NCNN in installed
-    ):
-        mc = decide.find_model(model, *models)
-        if mc.path is not None:
-            return BackendId.RIFE_NCNN, mc
-    engine = rprobe.engine_for(backend, installed)
-    if engine is BackendId.RIFE_TRT:
-        found = _trt(ctx, profile)
-        if found is not None:
-            return engine, decide.ModelChoice(found[1], None, None)
-        engine = rprobe.engine_for("auto", _installed(ctx, None) - {BackendId.RIFE_TRT})
-    if engine is not BackendId.RIFE_NCNN:
-        return engine, None
-    mc = decide.find_model(model, *models)
-    if mc.path is None:
-        return (BackendId.MVTOOLS if BackendId.MVTOOLS in _installed(ctx) else None), None
-    return engine, mc
+    out: list[tuple[BackendId, decide.ModelChoice | None]] = []
+    for b in order:
+        if b is BackendId.RIFE_TRT:
+            found = _trt(ctx, profile)
+            if found is not None:
+                out.append((b, decide.ModelChoice(found[1], None, None)))
+        elif b is BackendId.RIFE_NCNN:
+            mc = decide.find_model(model, *models)
+            if mc.path is not None:
+                out.append((b, mc))
+        else:
+            out.append((b, None))
+    return tuple(out)
+
+
+def _engine(
+    ctx: ProviderContext, profile: Profile | None
+) -> tuple[BackendId | None, decide.ModelChoice | None]:
+    """The best-picture candidate: what a copy uses without benchmark results."""
+    cands = _candidates(ctx, profile)
+    return cands[0] if cands else (None, None)
+
+
+def _rates(
+    results: Sequence[BenchResult],
+    cands: Sequence[tuple[BackendId, decide.ModelChoice | None]],
+    sizes: Sequence[tuple[int, int]],
+) -> dict[BackendId, dict[tuple[int, int], float | None]]:
+    """``bench_rate`` for every candidate at every size."""
+    return {
+        b: {wh: bench_rate(results, b, mc.name if mc is not None else None, wh) for wh in sizes}
+        for b, mc in cands
+    }
 
 
 async def _trt_engine(
@@ -520,7 +651,8 @@ def bench_rate(
     """In-mpv benchmark fps for ``backend``/``model`` scaled to ``size`` by pixel
     count (closest measured size, then newest), as a 2× output rate
     (``decide.load_rate`` units); None without a clean measurement."""
-    from buttereye.core.mpvctl.session import _measured_in_mpv, _measured_size
+    from buttereye.core.bench.verdict import measured_in_mpv
+    from buttereye.core.mpvctl.session import _measured_size
 
     px = size[0] * size[1]
     if px <= 0:
@@ -531,7 +663,7 @@ def bench_rate(
         for m in result.measurements:
             if m.backend is not backend or (model is not None and m.model != model):
                 continue
-            if m.gpu_faults or not _measured_in_mpv(m) or not m.mpv_fps > 0:
+            if m.gpu_faults or not measured_in_mpv(m) or not m.mpv_fps > 0:
                 continue
             w, h = _measured_size(m.label, result.request)
             if w <= 0 or h <= 0:
@@ -543,20 +675,82 @@ def bench_rate(
     return max(found)[2] if found else None
 
 
+def _lut(ctx: ProviderContext, cfg: Config | None) -> tuple[str | None, Path | None]:
+    """The colour LUT the settings name (``GeneralSettings.lut``) and its file,
+    or (None, None); a name whose file is gone or not safe gives (name, None)."""
+    name = cfg.general.lut if cfg is not None else None
+    if not name:
+        return None, None
+    return name, luts.resolve_lut(ctx.paths, name)
+
+
+def _lut_note(
+    ctx: ProviderContext, cfg: Config | None, info: rprobe.SourceInfo | None
+) -> Finding | None:
+    """What happens to the colour LUT in this copy, or None without one."""
+    name, path = _lut(ctx, cfg)
+    if name is None or info is None:
+        return None
+    if rprobe.renders_as_hdr10(info):
+        return Finding(
+            "render.lut", Section.RENDER, Severity.INFO, None,
+            Msg("The colour LUT isn't used for HDR copies"),
+            Msg("{name} is made for SDR video; an HDR10 copy keeps its own colour.",
+                {"name": name}),
+            Msg("Nothing to do."),
+        )  # fmt: skip
+    if path is None:
+        return Finding(
+            "render.lut", Section.RENDER, Severity.DEGRADED, None,
+            Msg("The colour LUT can't be used"),
+            Msg("{name} is missing from ButterEye's LUT folder, so the copy keeps its "
+                "own colour.", {"name": name}),
+            Msg("Import the LUT again in Settings."),
+        )  # fmt: skip
+    return Finding(
+        "render.lut", Section.RENDER, Severity.INFO, None,
+        Msg("The colour LUT is applied"),
+        Msg("The copy is graded with {name}, as playback is.", {"name": name}),
+        Msg("Nothing to do."),
+    )  # fmt: skip
+
+
+async def _pick(
+    ctx: ProviderContext,
+    profile: Profile | None,
+    info: rprobe.SourceInfo,
+    size: tuple[int, int],
+    target: Fraction,
+    wanted: BackendId | None,
+) -> tuple[BackendId | None, decide.ModelChoice | None]:
+    """The engine for a copy at ``size``: ``wanted`` (the window's choice) when it
+    is one of the candidates, else what ``rprobe.pick_offline`` takes from the
+    benchmark results, as the window showed it; the best picture without them."""
+    cands = _candidates(ctx, profile)
+    if not cands:
+        return None, None
+    by_engine = dict(cands)
+    if wanted is not None and wanted in by_engine:
+        return wanted, by_engine[wanted]
+    rates = _rates(await _bench_results(ctx), cands, (size,))
+    src = (info.width, info.height)
+    options = [(b, rprobe.offline_fps(rates[b][size], size, src)) for b, _ in cands]
+    chosen = rprobe.pick_offline(options, decide.load_rate(info.fps, target))
+    engine = chosen[0] if chosen is not None else cands[0][0]
+    return engine, by_engine[engine]
+
+
 # ---------------------------------------------------------------- provider: probe
 async def probe(ctx: ProviderContext, src: Path, *, profile_id: str | None = None) -> RenderProbe:
     tools = _tools()
     src = Path(src)
     info = await _source_info(tools, src)
     dec = await run((tools.ffmpeg, "-hide_banner", "-decoders"), timeout_s=10.0)
-    enc = await run((tools.ffmpeg, "-hide_banner", "-encoders"), timeout_s=10.0)
     decoders = rprobe.parse_decoders(dec.stdout) if dec.ok else frozenset()
     report = ctx.last_report()
     nvidia = report is None or any(g.vendor == "NVIDIA" for g in report.hardware.gpus)
     hdr10 = info is not None and rprobe.renders_as_hdr10(info)
-    encoders = rprobe.usable_encoders(
-        parse_encoders(enc.stdout) if enc.ok else (), nvidia=nvidia, hdr10=hdr10
-    )
+    encoders = await _encoders(tools, hdr10=hdr10, nvidia=nvidia)
     refusal = refusal_for(info, decoders, _ffms2_lib().exists())
     if refusal is None and hdr10 and not encoders:
         refusal = _refusal(
@@ -572,7 +766,11 @@ async def probe(ctx: ProviderContext, src: Path, *, profile_id: str | None = Non
             "ffmpeg lists none of HEVC (NVENC or x265), AV1 (NVENC or SVT-AV1) or x264.",
             "Install ffmpeg-free or RPM Fusion's ffmpeg.",
         )
-    warnings: list[Finding] = hdr_warnings(info)
+    warnings: list[Finding] = hdr_warnings(info, mkvmerge=tools.mkvmerge is not None)
+    cfg = _config(ctx)
+    lut_note = _lut_note(ctx, cfg, info)
+    if lut_note is not None:
+        warnings.append(lut_note)
     if info is not None and info.vfr:
         warnings.append(
             Finding(
@@ -593,16 +791,34 @@ async def probe(ctx: ProviderContext, src: Path, *, profile_id: str | None = Non
                 commands=(INSTALL_MKVTOOLNIX,),
             )
         )  # fmt: skip
+        if info is not None and any(
+            st.kind == "subtitle" and st.codec == "mov_text" for st in info.streams
+        ):
+            warnings.append(
+                Finding(
+                    "render.mov_text", Section.RENDER, Severity.INFO, None,
+                    Msg("MP4 subtitles become SubRip"),
+                    Msg("Matroska can't hold MP4 text subtitles, so ffmpeg converts them; "
+                        "their text and timing stay, styling such as colour doesn't."),
+                    Msg("Nothing to do."),
+                )
+            )  # fmt: skip
     sizes: tuple[Any, ...] = ()
     if info is not None and info.width > 0 and info.height > 0:
-        engine, mc = _engine(ctx, _profile(_config(ctx), profile_id))
-        results = await _bench_results(ctx) if engine is not None else ()
-        model = mc.name if mc is not None else None
-        rate_at = {
-            (w, h): bench_rate(results, engine, model, (w, h)) if engine is not None else None
-            for w, h in ((info.width, info.height), *decide.smaller_sizes(info.width, info.height))
-        }
-        sizes = rprobe.render_sizes(info.width, info.height, rate_at)
+        profile = _profile(cfg, profile_id)
+        cands = _candidates(ctx, profile)
+        results = await _bench_results(ctx) if cands else ()
+        all_sizes = ((info.width, info.height), *decide.smaller_sizes(info.width, info.height))
+        target = offline_target(
+            profile.target if profile is not None else Target(TargetKind.X2), info.fps
+        )
+        # every engine at every size, each size with the engine that makes it in
+        # time (P1): the window shows engine and time per size, and the job takes
+        # the same one (``_pick``)
+        sizes = rprobe.plan_sizes(
+            info.width, info.height, _rates(results, cands, all_sizes),
+            [b for b, _ in cands], decide.load_rate(info.fps, target),
+        )  # fmt: skip
     try:
         free = shutil.disk_usage(src.parent).free
     except OSError:
@@ -673,6 +889,13 @@ async def jobs(ctx: ProviderContext) -> tuple[RenderJobState, ...]:
     return tuple(_snapshot(j) for j in _reg(ctx).jobs.values())
 
 
+async def busy(ctx: ProviderContext) -> bool:
+    """A conversion is using the machine right now: running and not stopped for
+    playback or a benchmark (a RUNNING job may be either). A benchmark that
+    starts stops the render within ``PAUSE_POLL_S``."""
+    return any(j.state is OpState.RUNNING and not j.paused for j in _reg(ctx).jobs.values())
+
+
 def _get(ctx: ProviderContext, job_id: JobId) -> _Job:
     job = _reg(ctx).jobs.get(job_id)
     if job is None:
@@ -707,10 +930,23 @@ async def cancel(ctx: ProviderContext, job_id: JobId) -> None:
 
 
 async def forget(ctx: ProviderContext, job_id: JobId) -> None:
+    """Remove a finished job from the list; a video it kept after a failed remux
+    is deleted with it, unless a queued or running job will finish from it."""
     job = _get(ctx, job_id)
     if job.state in (OpState.SUCCEEDED, OpState.FAILED, OpState.CANCELLED):
-        _reg(ctx).jobs.pop(job_id, None)
+        reg = _reg(ctx)
+        reg.jobs.pop(job_id, None)
         ctx.forget_coalesced(f"render-{job_id}")
+        if job.kept is not None:
+            out = Path(job.spec.output)
+            reusing = any(
+                Path(j.spec.output) == out
+                and j.state in (OpState.QUEUED, OpState.RUNNING, OpState.CANCELLING)
+                for j in reg.jobs.values()
+            )
+            if not reusing:
+                _remove(job.kept, ctx.paths.jobs_dir / f"render-{job.id}.json")
+            job.kept = None
 
 
 async def shutdown(ctx: ProviderContext, *, cancel: bool, timeout_s: float) -> tuple[JobId, ...]:
@@ -785,6 +1021,76 @@ def _fail(
     return ButterEyeError(code, cause, fix, detail=detail)
 
 
+def encode_key(
+    src: Path,
+    spec: RenderJobSpec,
+    target: Fraction,
+    size: tuple[int, int],
+    lut: Path | None,
+    profile: Profile | None = None,
+) -> str:
+    """What an encoded video track depends on, apart from the engine: the source
+    file as it is now, the encoder, the rate, the size, the bit depth, the LUT and
+    the profile's smoothing (model, scene-cut threshold, content, edge smoothing).
+    A kept track (failed remux) is reused only for the same key."""
+    st = src.stat()
+    lut_id = None
+    if lut is not None:
+        with contextlib.suppress(OSError):
+            lut_id = [os.fspath(lut), lut.stat().st_mtime_ns]
+    data = {
+        "source": [os.fspath(src.resolve()), st.st_size, st.st_mtime_ns],
+        "encoder": spec.encoder,
+        "target": str(target),
+        "size": list(size),
+        "ten_bit": spec.ten_bit,
+        "lut": lut_id,
+    }
+    if profile is not None:  # keys a profile-less copy never had stay out of its key
+        data["profile"] = [
+            profile.model,
+            profile.sc_threshold,
+            profile.content.value,
+            profile.aa,
+        ]
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:32]
+
+
+def _find_kept(
+    ctx: ProviderContext, out: Path, key: str, engine: BackendId | None
+) -> tuple[Path, Path, BackendId | None] | None:
+    """A video track kept by an earlier job for this output and key: (its
+    manifest, the track, the engine that made it)."""
+    video, _part = pipeline.temp_paths(out)
+    for mpath, data in _manifests(ctx):
+        if not data.get("kept") or data.get("output") != os.fspath(out):
+            continue
+        if data.get("encode") != key or not video.is_file():
+            continue
+        try:
+            made_by = BackendId(str(data.get("engine")))
+        except ValueError:
+            made_by = None
+        if engine is not None and made_by is not None and made_by is not engine:
+            continue
+        return mpath, video, made_by
+    return None
+
+
+def _drop_kept_claims(ctx: ProviderContext, out: Path, own_manifest: Path) -> None:
+    """This job is about to encode into ``out``'s video track, which other jobs
+    may have kept after a failed remux. The path depends only on the output, so
+    their claim no longer holds: their manifests go, so a later "same copy" does
+    not finish around this job's track, and their rows stop offering to."""
+    for mpath, data in _manifests(ctx):
+        if mpath != own_manifest and data.get("kept") and data.get("output") == os.fspath(out):
+            _remove(mpath)
+    video, _part = pipeline.temp_paths(out)
+    for other in _reg(ctx).jobs.values():
+        if other.kept == video:
+            other.kept = None
+
+
 async def _run(ctx: ProviderContext, job: _Job) -> None:
     spec = job.spec
     jlog = filelog.for_item(_log, filelog.job_key(job.id))
@@ -805,6 +1111,8 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
     script = paths.cache_dir / "render" / f"job-{job.id}.vpy"
     log_path = paths.logs_dir / f"render-{job.id}.log"
     t0 = time.monotonic()
+    activity: int | None = None
+    keep_video = False
     try:
         job.phase = RenderPhase.PROBE
         _emit(ctx, job)
@@ -825,7 +1133,8 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
                 refusal.fix if refusal is not None else None,
                 commands=refusal.commands if refusal is not None else (),
             )
-        if rprobe.renders_as_hdr10(info) and spec.encoder not in rprobe.HDR10_ENCODERS:
+        hdr10 = rprobe.renders_as_hdr10(info)
+        if hdr10 and spec.encoder not in rprobe.HDR10_ENCODERS:
             raise RenderRefused(
                 ErrorCode.ENCODER_FAILED,
                 Msg("{encoder} can't make an HDR10 copy.", {"encoder": spec.encoder}),
@@ -843,13 +1152,6 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
                 Msg("This video already plays at {fps} fps; choose Double (2×).",
                     {"fps": decide.fmt_rate(info.fps)}),
             )  # fmt: skip
-        engine, mc = _engine(ctx, profile)
-        if engine is None:
-            raise _fail(
-                ErrorCode.PKG_MISSING,
-                Msg("No interpolation engine is installed."),
-                Msg("Install ButterEye's plugins, then try again."),
-            )
         allowed = {(info.width, info.height), *decide.smaller_sizes(info.width, info.height)}
         size = tuple(spec.size) if spec.size is not None else (info.width, info.height)
         if size not in allowed:
@@ -858,9 +1160,28 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
                 Msg("A copy can't be made at {w} × {h}.", {"w": size[0], "h": size[1]}),
             )
         w, h = size[0], size[1]
+        # the window's engine for this size, else the same choice by time it showed
+        wanted: BackendId | None = spec.engine
+        engine, mc = await _pick(ctx, profile, info, (w, h), target, wanted)
+        if engine is None:
+            raise _fail(
+                ErrorCode.PKG_MISSING,
+                Msg("No interpolation engine is installed."),
+                Msg("Install ButterEye's plugins, then try again."),
+            )
+        lut_name, lut = _lut(ctx, cfg)
+        if hdr10:
+            lut = None  # a display-referred LUT would misread PQ values
+        elif lut_name is not None and lut is None:
+            jlog.info("%s: colour LUT %s not found; converting without it", src.name, lut_name)
+        ten_bit = spec.ten_bit
+        key = encode_key(src, spec, target, (w, h), lut, profile)
+        kept = _find_kept(ctx, out, key, wanted)
         est = rprobe.estimate_bytes(
             spec.encoder, (w, h), target, info.duration_s, src.stat().st_size
         )
+        if kept is not None:  # the track exists: only the finished file is new
+            est = max(0, est - kept[1].stat().st_size)
         job.est_bytes = est
         free = shutil.disk_usage(out.parent).free
         if free < est:
@@ -874,64 +1195,89 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
                 free_bytes=free,
             )  # fmt: skip
         job.total = pipeline.target_frames(info, target)
+        manifest.data["encode"] = key
+        manifest.data["engine"] = engine.value
         manifest.save()
+        # macOS: no idle sleep and no App Nap until the copy is saved (B12)
+        activity = osapi.begin_activity(ACTIVITY_REASON)
 
-        # ---- render: vspipe | ffmpeg in one process group
-        job.phase = RenderPhase.RENDER
-        _emit(ctx, job)
-        script.parent.mkdir(parents=True, exist_ok=True)
-        write_script(script, _constants(ctx, engine))
-        trt_settings: dict[str, Any] | None = None
-        if engine is BackendId.RIFE_TRT and mc is not None and mc.name is not None:
-            trt_settings = await _trt_engine(ctx, profile, mc.name, (w, h), script)
-        params = FilterParams(
-            gen=1,
-            backend=engine,
-            src_fps=info.fps,
-            target_fps=target,
-            buffered_frames=4,
-            concurrent_frames=8,
-            matrix=rprobe.vs_matrix(info),
-            range=rprobe.vs_range(info),
-            model_path=mc.path if mc is not None else None,
-            gpu_id=_gpu_index(ctx) if engine in (BackendId.RIFE_NCNN, BackendId.MVGPU) else None,
-            gpu_thread=rife_gpu_thread() if engine is BackendId.RIFE_NCNN else None,
-            uhd=decide.uhd_mode(w, h),
-            sc_threshold=profile.sc_threshold if profile is not None else 0.12,
-            hold_fill=_hold_fill(engine, profile),
-            still_skip=True,
-            title=src.name,
-            size=(w, h) if (w, h) != (info.width, info.height) else None,
-            # offline keeps the finest settings: no real-time limit (§4.4)
-            dither="error_diffusion",
-            mv_pel=2,
-            trt=trt_settings,
-        )
-        ud: dict[str, Any] = json.loads(user_data(params))
-        ud["source"] = {
-            "kind": "file",
-            "path": os.fspath(src),
-            "cache": os.fspath(_index_cache(ctx, src)),
-            "cfr": info.vfr,
-        }
-        jlog.info(
-            "%s: converting %s → %s fps with %s%s at %s × %s (video %s × %s), %s → %s",
-            src.name, decide.fmt_rate(info.fps), decide.fmt_rate(target),
-            decide.BACKEND_NAMES.get(engine, engine.value),
-            f" {mc.name}" if mc is not None else "", w, h, info.width, info.height,
-            spec.encoder, os.fspath(out),
-        )  # fmt: skip
         paths.logs_dir.mkdir(parents=True, exist_ok=True)
         with open(log_path, "a", encoding="utf-8") as log:
-            await _encode(
-                ctx, job, tools, script, ud, info, video_tmp, manifest, log, t0,
-                requests=vspipe_requests(engine),
-            )  # fmt: skip
+            if kept is not None:
+                _remove(kept[0])  # this job's manifest lists the track now
+                for other in _reg(ctx).jobs.values():
+                    if other.kept == kept[1]:
+                        other.kept = None  # its Remove must not delete the track
+                job.done = job.total
+                jlog.info(
+                    "%s: reusing the video converted before (%s); copying the other "
+                    "streams again", src.name, os.fspath(kept[1]),
+                )  # fmt: skip
+            else:
+                _drop_kept_claims(ctx, out, manifest.path)
+                # ---- render: vspipe | ffmpeg in one process group
+                job.phase = RenderPhase.RENDER
+                _emit(ctx, job)
+                script.parent.mkdir(parents=True, exist_ok=True)
+                write_script(script, _constants(ctx, engine))
+                trt_settings: dict[str, Any] | None = None
+                if engine is BackendId.RIFE_TRT and mc is not None and mc.name is not None:
+                    trt_settings = await _trt_engine(ctx, profile, mc.name, (w, h), script)
+                params = FilterParams(
+                    gen=1,
+                    backend=engine,
+                    src_fps=info.fps,
+                    target_fps=target,
+                    buffered_frames=4,
+                    concurrent_frames=8,
+                    matrix=rprobe.vs_matrix(info),
+                    range=rprobe.vs_range(info),
+                    model_path=mc.path if mc is not None else None,
+                    gpu_id=(
+                        _gpu_index(ctx)
+                        if engine in (BackendId.RIFE_NCNN, BackendId.MVGPU)
+                        else None
+                    ),
+                    gpu_thread=rife_gpu_thread() if engine is BackendId.RIFE_NCNN else None,
+                    uhd=decide.uhd_mode(w, h),
+                    sc_threshold=profile.sc_threshold if profile is not None else 0.12,
+                    hold_fill=_hold_fill(engine, profile),
+                    aa=profile.aa if profile is not None else False,
+                    still_skip=True,
+                    title=src.name,
+                    size=(w, h) if (w, h) != (info.width, info.height) else None,
+                    # offline keeps the finest settings: no real-time limit (§4.4)
+                    dither="error_diffusion",
+                    mv_pel=2,
+                    trt=trt_settings,
+                )
+                ud: dict[str, Any] = json.loads(user_data(params))
+                ud["source"] = {
+                    "kind": "file",
+                    "path": os.fspath(src),
+                    "cache": os.fspath(_index_cache(ctx, src)),
+                    "cfr": info.vfr,
+                }
+                jlog.info(
+                    "%s: converting %s → %s fps with %s%s at %s × %s (video %s × %s), "
+                    "%s%s%s → %s",
+                    src.name, decide.fmt_rate(info.fps), decide.fmt_rate(target),
+                    decide.BACKEND_NAMES.get(engine, engine.value),
+                    f" {mc.name}" if mc is not None else "", w, h, info.width, info.height,
+                    spec.encoder, " 10-bit" if ten_bit else "",
+                    f" with LUT {lut.name}" if lut is not None else "", os.fspath(out),
+                )  # fmt: skip
+                await _encode(
+                    ctx, job, tools, script, ud, info, video_tmp, manifest, log, t0,
+                    requests=vspipe_requests(engine), ten_bit=ten_bit, lut=lut,
+                )  # fmt: skip
 
             # ---- remux: every other stream of the source
             job.phase = RenderPhase.REMUX
             job.eta_s = None
             _emit(ctx, job)
+            # from here on the encoded track is worth keeping if the remux fails
+            keep_video = True
             await _remux(tools, video_tmp, src, part, info, log)
 
         job.phase = RenderPhase.CLEANUP
@@ -962,11 +1308,26 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
         if ctx.closing:
             raise
     except ButterEyeError as exc:
-        _remove(video_tmp, part)
+        kept_now = keep_video and exc.code is ErrorCode.REMUX_FAILED and video_tmp.is_file()
+        if kept_now:
+            # B2: hours of encoding are not thrown away for a remux that failed;
+            # the manifest stays (marked kept) so the same copy, added again,
+            # finishes from it, and a later start lists it as a partial file
+            _remove(part)
+            job.kept = video_tmp
+            manifest.data["kept"] = True
+            manifest.data["pgid"] = None
+            with contextlib.suppress(OSError):
+                manifest.save()
+            exc = _kept_error(exc, video_tmp)
+        else:
+            _remove(video_tmp, part)
         job.state = OpState.FAILED
         job.error = exc
         job.eta_s = None
         jlog.info("%s: conversion failed (%s): %s", src.name, exc.code.code, exc.cause.key)
+        if kept_now:
+            jlog.info("%s:   the converted video is kept: %s", src.name, os.fspath(video_tmp))
         if exc.detail:
             for line in exc.detail.splitlines()[-10:]:
                 jlog.info("%s:   %s", src.name, line)
@@ -980,13 +1341,26 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
         )
         _emit(ctx, job)
     finally:
-        manifest.remove()
+        osapi.end_activity(activity)
+        if job.kept is None:
+            manifest.remove()
         cfg_now = _config(ctx)
         if cfg_now is not None and not cfg_now.general.keep_logs:  # opted out of logs
             with contextlib.suppress(OSError):
                 log_path.unlink()
         with contextlib.suppress(OSError):
             script.unlink()
+
+
+def _kept_error(exc: ButterEyeError, video: Path) -> ButterEyeError:
+    """The remux failure, saying the converted video is kept and how to finish."""
+    return ButterEyeError(
+        exc.code,
+        exc.cause,
+        Msg("The converted video is kept. Add the same copy again to finish it without "
+            "converting again; installing mkvtoolnix may help."),
+        detail=exc.detail,
+    )  # fmt: skip
 
 
 def _gib(n: int) -> str:
@@ -1007,6 +1381,105 @@ def _gpu_index(ctx: ProviderContext) -> int | None:
     return None
 
 
+def _signal_group(pgid: int, stop: bool) -> None:
+    """SIGSTOP (``stop``) or SIGCONT to a render's group; nothing on Windows."""
+    if sys.platform == "win32":
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, signal.SIGSTOP if stop else signal.SIGCONT)
+
+
+async def _gpu_wanted_elsewhere(ctx: ProviderContext) -> str | None:
+    """Why a render should stop for now: ``"playback"`` while a video plays in
+    ButterEye, ``"benchmark"`` while one runs (its result would measure the
+    render too, and is kept), else None."""
+    sessions = capabilities.resolve(_LIVE_SESSIONS)
+    if sessions is not None:
+        try:
+            if await sessions(ctx):
+                return "playback"
+        except Exception:
+            _log.debug("render: live sessions unreadable", exc_info=True)
+    from buttereye.core.bench import runner
+
+    with contextlib.suppress(Exception):
+        if runner._state(ctx).lock.locked():
+            return "benchmark"
+    return None
+
+
+@dataclass(slots=True)
+class _Pause:
+    """SIGSTOP / SIGCONT of a render's process group (B11); POSIX only."""
+
+    pgid: int
+    since: float | None = None  # monotonic time it stopped, None = running
+    total_s: float = 0.0  # time spent stopped before ``since``
+
+    def stop(self) -> None:
+        if self.since is None:
+            _signal_group(self.pgid, True)
+            self.since = time.monotonic()
+
+    def resume(self) -> None:
+        if self.since is not None:
+            _signal_group(self.pgid, False)
+            self.total_s += time.monotonic() - self.since
+            self.since = None
+
+    def stopped_s(self) -> float:
+        now = time.monotonic()
+        return self.total_s + (now - self.since if self.since is not None else 0.0)
+
+
+async def _pause_while_busy(ctx: ProviderContext, job: _Job, pause: _Pause, jlog: Any) -> None:
+    """Stop the group while playback or a benchmark runs, continue after."""
+    while True:
+        why = await _gpu_wanted_elsewhere(ctx)
+        if why is not None and pause.since is None:
+            pause.stop()
+            job.paused = True
+            job.eta_s = None
+            jlog.info("%s: paused while %s runs", _title(job), why)
+            _emit(ctx, job, progress=True)
+        elif why is None and pause.since is not None:
+            pause.resume()
+            job.paused = False
+            jlog.info("%s: continuing", _title(job))
+        await asyncio.sleep(PAUSE_POLL_S)
+
+
+#: vspipe's return code when the encoder closed the pipe under it
+if sys.platform == "win32":
+    _BROKEN_PIPE_RC = -13
+else:
+    _BROKEN_PIPE_RC = -int(signal.SIGPIPE)
+
+
+def _failure(
+    vs_rc: int, ff_rc: int, vs_first: bool, encoder: str, vs_lines: Sequence[str], ff_err: str
+) -> ButterEyeError | None:
+    """Which side of ``vspipe | ffmpeg`` failed (B18). An encoder that dies first
+    (a full disk, an option this build lacks) takes vspipe down with it (a broken
+    pipe), which is the encoder's failure, not the smoothing script's."""
+    encoder_error = _fail(
+        ErrorCode.ENCODER_FAILED,
+        Msg("The {encoder} encoder stopped with an error.", {"encoder": encoder}),
+        Msg("Choose another format and try again."),
+        detail=pipeline.tail(ff_err.splitlines()),
+    )
+    if ff_rc != 0 and (vs_rc == 0 or not vs_first or vs_rc == _BROKEN_PIPE_RC):
+        return encoder_error
+    if vs_rc != 0:
+        return _fail(
+            ErrorCode.VSPIPE_FRAME_ERROR,
+            Msg("The smoothing script failed while converting."),
+            Msg("Try another smoothness setting, or check the log."),
+            detail=pipeline.tail(vs_lines),
+        )
+    return None
+
+
 async def _encode(
     ctx: ProviderContext,
     job: _Job,
@@ -1020,11 +1493,17 @@ async def _encode(
     t0: float,
     *,
     requests: int | None = None,
+    ten_bit: bool = False,
+    lut: Path | None = None,
 ) -> None:
     rfd, wfd = os.pipe()
     vs_proc: asyncio.subprocess.Process | None = None
     ff_proc: asyncio.subprocess.Process | None = None
     vs_lines: list[str] = []
+    awake = None
+    pause: _Pause | None = None
+    watcher: asyncio.Task[None] | None = None
+    jlog = filelog.for_item(_log, filelog.job_key(job.id))
     try:
         # vspipe leads a new process group that ffmpeg joins (a group can only be
         # joined from the same session, so no new session here); cancel and the
@@ -1048,7 +1527,9 @@ async def _encode(
             else {"process_group": vs_proc.pid}
         )  # fmt: skip
         ff_proc = await asyncio.create_subprocess_exec(
-            *pipeline.encode_argv(tools.ffmpeg, job.spec.encoder, info, video_tmp),
+            *pipeline.encode_argv(
+                tools.ffmpeg, job.spec.encoder, info, video_tmp, ten_bit=ten_bit, lut=lut
+            ),
             stdin=rfd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -1060,14 +1541,29 @@ async def _encode(
         manifest.data["pgid"] = vs_proc.pid
         manifest.save()
         # §7.6: a render is a batch job; playback, the GUI and the desktop come
-        # first whether they start before or after it (threads started later inherit)
+        # first whether they start before or after it (threads started later
+        # inherit). That is CPU time only; the GPU is shared by stopping (below)
         osapi.lower_group_priority(vs_proc.pid, RENICE)
+        # macOS: no idle sleep while vspipe runs, even if ButterEye dies (B12)
+        awake = osapi.keep_awake(vs_proc.pid)
+        if not osapi.IS_WINDOWS:
+            pause = _Pause(vs_proc.pid)
+            watcher = asyncio.ensure_future(_pause_while_busy(ctx, job, pause, jlog))
 
         async def read_ffmpeg() -> str:
             assert ff_proc is not None and ff_proc.stderr is not None
             return (await ff_proc.stderr.read()).decode("utf-8", "replace")
 
+        exited: list[str] = []  # which of the two ended first (B18)
+
+        async def wait(name: str, proc: asyncio.subprocess.Process) -> int:
+            rc = await proc.wait()
+            exited.append(name)
+            return rc
+
         ff_err_task = asyncio.ensure_future(read_ffmpeg())
+        vs_wait = asyncio.ensure_future(wait("vspipe", vs_proc))
+        ff_wait = asyncio.ensure_future(wait("ffmpeg", ff_proc))
         assert vs_proc.stderr is not None
         buf = ""
         while True:
@@ -1086,31 +1582,32 @@ async def _encode(
             if prog is not None:
                 job.done = min(prog.done, prog.total)
                 job.total = prog.total
-                rate = job.done / max(0.001, time.monotonic() - t0)
-                job.fps = prog.fps or round(rate, 1)
+                stopped = pause.stopped_s() if pause is not None else 0.0
+                rate = job.done / max(0.001, time.monotonic() - t0 - stopped)
+                # vspipe's own fps counts the time it was stopped too
+                job.fps = round(rate, 1) if stopped else (prog.fps or round(rate, 1))
                 job.eta_s = (prog.total - job.done) / job.fps if job.fps else None
                 _emit(ctx, job, progress=True)
-        vs_rc = await vs_proc.wait()
-        ff_rc = await ff_proc.wait()
+        vs_rc = await vs_wait
+        ff_rc = await ff_wait
         ff_err = await ff_err_task
         if ff_err.strip():
             log.write(ff_err)
         log.flush()
-        if vs_rc != 0:
-            raise _fail(
-                ErrorCode.VSPIPE_FRAME_ERROR,
-                Msg("The smoothing script failed while converting."),
-                Msg("Try another smoothness setting, or check the log."),
-                detail=pipeline.tail(vs_lines),
-            )
-        if ff_rc != 0:
-            raise _fail(
-                ErrorCode.ENCODER_FAILED,
-                Msg("The {encoder} encoder stopped with an error.", {"encoder": job.spec.encoder}),
-                Msg("Choose another format and try again."),
-                detail=pipeline.tail(ff_err.splitlines()),
-            )
+        err = _failure(vs_rc, ff_rc, exited[:1] == ["vspipe"], job.spec.encoder, vs_lines, ff_err)
+        if err is not None:
+            raise err
     finally:
+        if watcher is not None:
+            watcher.cancel()
+            with contextlib.suppress(BaseException):
+                await watcher
+        if pause is not None:
+            pause.resume()  # a stopped process acts on SIGTERM only once continued
+            job.paused = False
+        if awake is not None:
+            with contextlib.suppress(OSError):
+                awake.terminate()
         for fd in (rfd, wfd):
             if fd >= 0:
                 with contextlib.suppress(OSError):
@@ -1134,10 +1631,12 @@ async def _remux(
             tools.mkvmerge, video, src, part, start_s=info.start_s, src=info
         )
     else:
-        argv = pipeline.ffmpeg_remux_argv(tools.ffmpeg, video, src, part, start_s=info.start_s)
+        argv = pipeline.ffmpeg_remux_argv(
+            tools.ffmpeg, video, src, part, start_s=info.start_s, src=info
+        )
     res = await run(
         pipeline.low_priority(argv, nice=shutil.which("nice"), ionice=shutil.which("ionice"),
-                              level=RENICE),
+                              level=RENICE, taskpolicy=_taskpolicy()),
         timeout_s=REMUX_TIMEOUT_S,
     )  # fmt: skip
     text = (res.stdout or "") + (res.stderr or "")
@@ -1152,6 +1651,14 @@ async def _remux(
             Msg("Check the log; installing mkvtoolnix may help."),
             detail=pipeline.tail(text.splitlines()),
         )
+
+
+def _taskpolicy() -> str | None:
+    """macOS's ``taskpolicy`` (always in /usr/sbin there), else None."""
+    if not osapi.IS_MACOS:
+        return None
+    path = Path("/usr/sbin/taskpolicy")
+    return os.fspath(path) if path.is_file() else None
 
 
 # ---------------------------------------------------------------- stale jobs
@@ -1210,6 +1717,7 @@ __all__ = [
     "probe",
     "enqueue",
     "jobs",
+    "busy",
     "move",
     "cancel",
     "forget",

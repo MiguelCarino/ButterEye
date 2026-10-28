@@ -70,6 +70,7 @@ from buttereye.core.api import (
     SessionEnded,
     SourceFacts,
     command_hint,
+    realtime_bar,
     render,
 )
 from buttereye.gui.a11y import announce, heading, labelled
@@ -197,8 +198,8 @@ def row_values(m: BenchMeasurement, recommended: bool) -> list[tuple[str, object
         rep = _t("{yes_no} ({cov}%)").format(
             yes_no=_t("Yes") if m.repeatable else _t("No"), cov=f"{m.cov * 100:.1f}"
         )
-    else:
-        rep = _t("No")
+    else:  # one run (a hopeless candidate): no spread, the verdict still counts
+        rep = _t("Yes") if m.repeatable else _t("No")
     return [
         (config, m.label),
         (fmt_fps(m.vspipe_fps) if ok else not_measured, m.vspipe_fps),
@@ -776,7 +777,8 @@ class BenchPage(Page):
                 items.append(item)
             self.model.appendRow(items)
         target = float(target_of(result.request))
-        self.plot.set_data(result.measurements, target)
+        # B25: the dashed line is the bar that decides "real time", not the target
+        self.plot.set_data(result.measurements, target, realtime_bar(target))
         self._update_faults(result)
         self.apply_status.setVisible(False)
         if rec is not None:

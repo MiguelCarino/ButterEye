@@ -80,6 +80,28 @@ PYSIDE_SRC_SHA256=cba47efbaad1bedd529725cbc14e21f156c7a19366f07b3edfbb076ffd7afd
 VAPOURSYNTH_SRC_URL=https://files.pythonhosted.org/packages/69/6a/f9441173c91a3355a32b870522726ed2252cd3c7b04b45e499f30b1a2c98/vapoursynth-81.tar.gz
 VAPOURSYNTH_SRC_SHA256=3bf6c90ad737e8ffc5605b05a1ff29cd884f8632fbe0eb49a2705942073a96be
 
+# ---------------------------------------------------------------- znedi3 (opt-in plugin)
+# build-plugins.sh's BUTTEREYE_ZNEDI3=1 step: sekrit-twc's znedi3 (the
+# anti-aliasing before smoothing, Profile.aa) at tag r3.3, and the two git
+# submodules that tag names, each as GitHub's archive of the exact commit.
+# GitHub publishes no checksum for such an archive, so these SHA-256 are of the
+# archives as downloaded on 2026-10-28; what was checked against the publisher
+# is the weights file inside: its git blob id, 936760ea..., is the one GitHub's
+# API lists for nnedi3_weights.bin at r3.3 (13574928 bytes; SHA-256 below). The
+# commits are the tag's and its tree's submodule entries. A mismatch here stops
+# the step, never the plugin build: GitHub has re-compressed archives before.
+ZNEDI3_VER=r3.3
+ZNEDI3_COMMIT=fc540224e887dbce773c02c2eba22ca53252b614
+ZNEDI3_URL=https://codeload.github.com/sekrit-twc/znedi3/tar.gz/$ZNEDI3_COMMIT
+ZNEDI3_SHA256=b13c6c6475a14bbf5ae1111469dd0470cca4ed278f8c1f474117c7217f1ebba8
+ZNEDI3_VSXX_COMMIT=11eb026af5517d69e1d3d6258d1b2c2040c508e7
+ZNEDI3_VSXX_URL=https://codeload.github.com/sekrit-twc/vsxx/tar.gz/$ZNEDI3_VSXX_COMMIT
+ZNEDI3_VSXX_SHA256=2f0a453543b62386ef6050d56d12a991507d733f15aae0b5e1930ac4bcb2f0e7
+ZNEDI3_GRAPHENGINE_COMMIT=7bb77a5c062c610e7f44df6a59155cc3ab3e452a
+ZNEDI3_GRAPHENGINE_URL=https://codeload.github.com/sekrit-twc/graphengine/tar.gz/$ZNEDI3_GRAPHENGINE_COMMIT
+ZNEDI3_GRAPHENGINE_SHA256=8a73a9ee1cbb2e62e182b0501365d71969165157e8ef6308cf76e2e053e44102
+NNEDI3_WEIGHTS_SHA256=27f382430435bb7613deb1c52f3c79c300c9869812cfe29079432a9c82251d42
+
 # ---------------------------------------------------------------- fetch
 macos_dl=${XDG_CACHE_HOME:-$HOME/.cache}/buttereye/macos-dl
 

@@ -88,6 +88,9 @@ async def test_bench_mvtools_real(
     tmp_path: Path, config_stub: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(runner, "MVGPU_PLUGIN", "absent-in-this-test.so")
+    # one size, no 150 s sustained phase: this checks the passes, not the plan
+    monkeypatch.setattr(runner, "AUTO_LIVE_SIZES", False)
+    monkeypatch.setattr(runner, "SUSTAINED_S", 0.0)
     paths = _paths(tmp_path, ())  # no models -> MVTools only
     core = await ButterEye.open(paths)
     progress: list[Progress] = []
@@ -115,6 +118,7 @@ async def test_bench_rife_one_model_real(
         pytest.skip(f"{MODEL} not installed")
     monkeypatch.setattr(runner, "MVTOOLS_PLUGIN", "absent-in-this-test.so")
     monkeypatch.setattr(runner, "MVGPU_PLUGIN", "absent-in-this-test.so")
+    monkeypatch.setattr(runner, "SUSTAINED_S", 0.0)
     paths = _paths(tmp_path, (MODEL,))
     core = await ButterEye.open(paths)
     result = await core.bench(BenchRequest(1280, 720, Fraction(24000, 1001))).result()

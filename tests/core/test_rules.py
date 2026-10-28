@@ -15,6 +15,7 @@ from buttereye.core.profiles import defaults, rules, schema
 from buttereye.core.types import (
     Config,
     HdrClass,
+    PowerSnapshot,
     Rule,
     RuleMatch,
     SourceFacts,
@@ -184,11 +185,15 @@ def test_each_key(match: RuleMatch, source: SourceFacts, ok: bool, text: str) ->
 def test_ntsc_fractions_are_exact() -> None:
     exact = cfg_with(Rule(RuleMatch(fps_min=NTSC_FILM, fps_max=NTSC_FILM), "fast"))
     assert rules.explain(exact, facts()).matched_index == 0
-    # 23.976 written as a decimal is 2997/125, just below 24000/1001
+    # 23.976 as a plain fraction is 2997/125, just below 24000/1001: that is what a
+    # rule bound used to be, and it matched no NTSC film
     decimal = cfg_with(Rule(RuleMatch(fps_max=schema.parse_fraction(23.976)), "fast"))
     trace = rules.explain(decimal, facts())
     assert trace.matched_index is None
     assert why(trace.steps[0].why) == "fps 24000/1001 (23.976) > fps_max 2997/125 (23.976)"
+    # B16: a rule bound reads it as the NTSC rate it stands for
+    snapped = cfg_with(Rule(RuleMatch(fps_max=schema.parse_rule_fps(23.976)), "fast"))
+    assert rules.explain(snapped, facts()).matched_index == 0
     # and through TOML text
     loaded = schema.parse_text(
         'schema_version = 1\n[[rules]]\nprofile = "fast"\n'
@@ -236,3 +241,143 @@ def test_trace_is_immutable() -> None:
     trace = rules.explain(defaults.default_config(), facts(fps=Fraction(60)))
     with pytest.raises(TypeError):
         trace.steps[0].why.params["value"] = "x"  # type: ignore[index]
+
+
+# ---------------------------------------------------------------- NTSC decimals (B16)
+
+
+@pytest.mark.parametrize(
+    ("written", "read"),
+    [
+        (23.976, Fraction(24000, 1001)),
+        ("23.976", Fraction(24000, 1001)),
+        (29.97, Fraction(30000, 1001)),
+        (59.94, Fraction(60000, 1001)),
+        ("119.88", Fraction(120000, 1001)),
+        (47.952, Fraction(48000, 1001)),
+        (23.975, Fraction(24000, 1001)),  # 1.0e-3 away: still meant
+        # left exactly as written
+        ("2997/125", Fraction(2997, 125)),  # an explicit n/d is never moved
+        (24, Fraction(24)),
+        (24.0, Fraction(24)),
+        ("30", Fraction(30)),
+        (23.97, Fraction(2397, 100)),  # 6e-3 away: a different rate
+        (25.0, Fraction(25)),
+        (0.5, Fraction(1, 2)),
+    ],
+)
+def test_rule_fps_snaps_decimal_ntsc_rates(written: object, read: Fraction) -> None:
+    assert schema.parse_rule_fps(written) == read
+
+
+def test_ntsc_decimal_bounds_through_toml() -> None:
+    text = (
+        'schema_version = 1\n[[rules]]\nprofile = "fast"\n'
+        'match = { fps_min = 23.976, fps_max = "29.97" }\n'
+    )
+    loaded = schema.parse_text(text)
+    assert loaded.issues == []
+    match = loaded.config.rules[0].match
+    assert (match.fps_min, match.fps_max) == (NTSC_FILM, Fraction(30000, 1001))
+    assert rules.explain(loaded.config, facts()).matched_index == 0
+    # and written back as the exact fraction
+    again = schema.parse_text(schema.dumps_config(loaded.config))
+    assert again.config.rules == loaded.config.rules
+    assert 'fps_min = "24000/1001"' in schema.dumps_config(loaded.config)
+
+
+# ---------------------------------------------------------------- power
+
+
+HOT_BATTERY = PowerSnapshot(on_battery=True, low_power=False, thermal=2)
+
+
+@pytest.mark.parametrize(
+    ("match", "power", "ok", "text"),
+    [
+        (
+            RuleMatch(on_battery=True),
+            HOT_BATTERY,
+            True,
+            "on battery true = on_battery true",
+        ),
+        (
+            RuleMatch(on_battery=True),
+            PowerSnapshot(on_battery=False),
+            False,
+            "on battery false ≠ on_battery true",
+        ),
+        (
+            RuleMatch(thermal_min=2),
+            HOT_BATTERY,
+            True,
+            "temperature serious ≥ thermal_min serious",
+        ),
+        (
+            RuleMatch(thermal_min=2),
+            PowerSnapshot(thermal=1),
+            False,
+            "temperature fair < thermal_min serious",
+        ),
+        (
+            RuleMatch(thermal_max=1),
+            HOT_BATTERY,
+            False,
+            "temperature serious > thermal_max fair",
+        ),
+        (
+            RuleMatch(thermal_max=1),
+            PowerSnapshot(thermal=0),
+            True,
+            "temperature nominal ≤ thermal_max fair",
+        ),
+    ],
+)
+def test_power_conditions(match: RuleMatch, power: PowerSnapshot, ok: bool, text: str) -> None:
+    trace = rules.explain(cfg_with(Rule(match, "fast")), facts(), power)
+    assert (trace.matched_index == 0) is ok
+    assert why(trace.steps[0].why) == text
+
+
+@pytest.mark.parametrize("power", [None, PowerSnapshot()])
+def test_unknown_power_is_mains_at_nominal(power: PowerSnapshot | None) -> None:
+    """What Linux and Windows always answer: a Mac rule keeps working there."""
+    cfg = cfg_with(
+        Rule(RuleMatch(on_battery=True), "cpu"),
+        Rule(RuleMatch(thermal_min=1), "cpu"),
+        Rule(RuleMatch(on_battery=False, thermal_max=0), "fast"),
+    )
+    trace = rules.explain(cfg, facts(), power)
+    assert trace.matched_index == 2 and trace.profile_id == "fast"
+    assert why(trace.steps[0].why) == "on battery false ≠ on_battery true"
+    assert why(trace.steps[1].why) == "temperature nominal < thermal_min fair"
+
+
+def test_battery_rule_sends_a_mac_on_battery_to_the_battery_profile() -> None:
+    cfg = cfg_with(defaults.BATTERY_RULE, *defaults.default_rules())
+    on_battery = rules.explain(cfg, facts(), PowerSnapshot(on_battery=True))
+    assert on_battery.profile_id == defaults.BATTERY_PROFILE_ID
+    on_mains = rules.explain(cfg, facts(), PowerSnapshot(on_battery=False))
+    assert on_mains.profile_id == "quality"
+
+
+def test_power_bounds_through_toml() -> None:
+    text = (
+        'schema_version = 1\n[[rules]]\nprofile = "battery"\n'
+        'match = { on_battery = true, thermal_min = "fair", thermal_max = 3 }\n'
+    )
+    loaded = schema.parse_text(text)
+    assert loaded.issues == []
+    assert loaded.config.rules[0].match == RuleMatch(on_battery=True, thermal_min=1, thermal_max=3)
+    out = schema.dumps_config(loaded.config)
+    assert 'match = { on_battery = true, thermal_min = "fair", thermal_max = "critical" }' in out
+    assert schema.parse_text(out).config.rules == loaded.config.rules
+
+
+@pytest.mark.parametrize("bad", ['"warm"', "4", "-1", "true", "1.5"])
+def test_bad_thermal_bound_is_reported(bad: str) -> None:
+    loaded = schema.parse_text(
+        f'schema_version = 1\n[[rules]]\nprofile = "fast"\nmatch = {{ thermal_max = {bad} }}\n'
+    )
+    assert [i.field for i in loaded.issues] == ["rules[0].match.thermal_max"]
+    assert loaded.config.rules[0].match.thermal_max is None

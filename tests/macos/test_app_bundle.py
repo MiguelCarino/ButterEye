@@ -35,6 +35,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Iterator
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -142,6 +143,9 @@ def test_the_bundle_is_signed_and_says_what_it_is(app: Path) -> None:
     assert info["CFBundleIdentifier"] == "io.github.buttereye.ButterEye"
     assert info["CFBundleExecutable"] == "ButterEye"
     assert info["LSArchitecturePriority"] == ["arm64"]
+    # Open With / the Dock icon (gui/app.py FileOpenRouter)
+    (doc,) = info["CFBundleDocumentTypes"]
+    assert doc["LSHandlerRank"] == "Alternate" and "public.movie" in doc["LSItemContentTypes"]
     out = _cli(app, Path("/tmp"), "--version").stdout
     assert f"ButterEye {info['CFBundleShortVersionString']}" in out
     # the oldest macOS dyld will start it on: the newest minos in the bundle
@@ -152,6 +156,20 @@ def test_the_bundle_is_signed_and_says_what_it_is(app: Path) -> None:
     )  # fmt: skip
     minos = re.search(r"^minos (\S+)", check.stdout, re.M)
     assert minos is not None and minos.group(1) == info["LSMinimumSystemVersion"]
+
+
+def test_the_bundled_mkvmerge_runs_from_the_app(res: Path) -> None:
+    """The offline render's remux tool, relocated like mpv: nothing from Homebrew.
+    Carried only by a BUTTEREYE_BUNDLE_MKVMERGE=1 build (packaging/macos/build-app.sh)."""
+    if not (res / "bin" / "mkvmerge").exists():
+        pytest.skip("built without BUTTEREYE_BUNDLE_MKVMERGE=1")
+    env = {"PATH": "/usr/bin:/bin", "DYLD_PRINT_LIBRARIES": "1"}
+    done = subprocess.run(
+        [str(res / "bin" / "mkvmerge"), "--version"],
+        capture_output=True, text=True, env=env, timeout=60, check=True,
+    )  # fmt: skip
+    assert done.stdout.startswith("mkvmerge v")
+    assert "/opt/homebrew" not in done.stderr and "/usr/local/" not in done.stderr
 
 
 def test_no_library_from_outside_the_app_is_loaded(res: Path, home: Path, clips: Path) -> None:
@@ -199,6 +217,35 @@ def test_every_engine_loads_in_the_app_s_vapoursynth(res: Path, home: Path) -> N
     assert done.returncode == 0, done.stderr[-2000:]
     names = set(done.stderr.split())
     assert {"mv", "ffms2", "rife", "mvgpu"} <= names, done.stderr
+
+
+@pytest.mark.parametrize("backend", ["mvgpu", "mvtools"])
+def test_the_benchmark_times_the_live_engines_inside_the_app_s_mpv(
+    res: Path, home: Path, backend: str
+) -> None:
+    """The in-mpv pass the benchmark runs (core/bench/measure.py), for real: its
+    generated source is endless, so bench.vpy must bound what it hands the
+    engine. Unbounded, mvgpu refused the INT_MAX-frame clip and mpv aborted on
+    every pass, so no engine was ever measured in mpv on a Mac."""
+    from buttereye.core.bench import measure
+
+    vpy = res / "python/lib/python3.14/site-packages/buttereye/core/bench/bench.vpy"
+    data = {
+        "backend": backend, "frames": 50, "gpu_id": None, "gpu_thread": 1,
+        "width": 640, "height": 360, "matrix": "170m", "model_path": None,
+        "src_num": 24000, "src_den": 1001, "out_num": 48000, "out_den": 1001,
+        "plugin_dir": str(res / "vapoursynth"), "uhd": False,
+    }  # fmt: skip
+    argv = measure.mpv_argv(
+        str(res / "bin" / "mpv"), vpy, data, width=640, height=360,
+        source_fps=Fraction(24000, 1001), frames=96, concurrent_frames=4,
+    )  # fmt: skip
+    done = subprocess.run(
+        argv, env=_child_env(res, home), capture_output=True, text=True, timeout=120
+    )
+    log = done.stdout + done.stderr
+    assert done.returncode == 0, log[-3000:]
+    assert measure.parse_mpv(log, 96, prefilled=4).fps > 0
 
 
 # ---------------------------------------------------------------- ButterEye, from the app

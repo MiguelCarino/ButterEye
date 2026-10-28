@@ -45,6 +45,10 @@
 #                source duties the RIFE section spells out.
 #   vulkaninfo   Homebrew's vulkan-tools provides it. The Windows build compiles
 #                its own only because Windows ships none.
+#   znedi3       only with BUTTEREYE_ZNEDI3=1 (below): the anti-aliasing step
+#                before smoothing (Profile.aa) needs it and nnedi3_weights.bin.
+#                Opt-in because it is the one step here that downloads, and
+#                because its arm64 build has not been run on the dev Mac yet.
 #
 # Assumes installed, all from Homebrew, none of it installed by this script:
 #   build:  meson, ninja, glslang, pkgconf, vapoursynth, vulkan-headers,
@@ -52,10 +56,12 @@
 #   to run the result: molten-vk (there is no native Vulkan on macOS, so
 #           libmvgpu.dylib reaches the GPU through MoltenVK as a portability
 #           driver) and vapoursynth. A missing molten-vk does not stop a build.
-# Nothing is downloaded: everything built here is in this repository, and
-# everything else comes from a bottle the user installs. That is why this script
-# has no pins.sh (packaging/windows/pins.sh's fetch() also calls sha256sum,
-# which macOS does not have; the checksum tool here is shasum -a 256).
+# Nothing is downloaded by default: everything built here is in this repository,
+# and everything else comes from a bottle the user installs. The one exception
+# is the opt-in znedi3 step, which takes its three source archives through
+# pins.sh's fetch(), SHA-256-checked like the app build's downloads
+# (packaging/windows/pins.sh's fetch() calls sha256sum, which macOS does not
+# have; the checksum tool here is shasum -a 256).
 #
 # Nothing here is signed or notarised, and a phase-3 build does not need to be.
 # The only signature on what this builds is the ad-hoc one Apple's linker
@@ -245,6 +251,105 @@ if [[ -e $out/vapoursynth/librife.dylib ]]; then
     fi
 fi
 
+# ---------------------------------------------------------------- znedi3 (opt-in)
+# sekrit-twc's znedi3 at the tag pins.sh names, with its vsxx and graphengine
+# submodules at the commits that tag records. Its Makefile builds the generic
+# C++ kernels unless X86=1 is given, which is the arm64 build (clang -O2
+# auto-vectorises them to NEON; the speed on the Air is unmeasured). It finds
+# nnedi3_weights.bin beside the plugin (vsznedi3.cpp: the plugin's own path),
+# so both go in vapoursynth/. GPL-2.0 (gpl2.txt), with vsxx's copies of
+# VapourSynth's LGPL-2.1-or-later headers and graphengine's WTFPL, so it owes
+# what librife.dylib owes: licence texts, a source offer, the source itself in
+# sources/, and an install-record entry. A failure, or a download whose SHA-256
+# is not the pinned one, leaves znedi3 out and the rest of the build standing:
+# Profile.aa is off by default and ButterEye runs without it.
+znedi3_note="NOT BUILT: set BUTTEREYE_ZNEDI3=1 to build it (downloads its pinned source)"
+if [[ ${BUTTEREYE_ZNEDI3:-0} == 1 ]]; then
+    echo "==> znedi3 (BUTTEREYE_ZNEDI3=1)"
+    # shellcheck source=pins.sh
+    source "$here/pins.sh"
+    # Everything after the downloads runs in a subshell with its own errexit,
+    # outside any condition (where bash would ignore set -e, even inside it): a
+    # failed tar, strip, cp or a renamed licence file ends only the subshell,
+    # every znedi3 artefact is removed, and the rest of the build goes on.
+    znedi3_build() {
+        zb=$work/znedi3
+        rm -rf "$zb"
+        mkdir -p "$zb/vsxx" "$zb/graphengine"
+        tar -xzf "$zsrc" -C "$zb" --strip-components=1
+        tar -xzf "$zvsxx" -C "$zb/vsxx" --strip-components=1
+        tar -xzf "$zge" -C "$zb/graphengine" --strip-components=1
+        if [[ $(shasum -a 256 "$zb/nnedi3_weights.bin" | cut -d' ' -f1) != "$NNEDI3_WEIGHTS_SHA256" ]]; then
+            exit 10
+        fi
+        make -C "$zb" ${jobs:+-j"$jobs"} CC=clang CXX=clang++ \
+            CXXFLAGS="-arch arm64 -mmacosx-version-min=13.0" \
+            LDFLAGS="-arch arm64 -mmacosx-version-min=13.0 -Wl,-install_name,@rpath/libznedi3.dylib" \
+            vsznedi3.so >"$work/znedi3-build.log" 2>&1 || exit 11
+        install -m 0644 "$zb/vsznedi3.so" "$out/vapoursynth/libznedi3.dylib"
+        strip -x "$out/vapoursynth/libznedi3.dylib"
+        install -m 0644 "$zb/nnedi3_weights.bin" "$out/vapoursynth/nnedi3_weights.bin"
+        zl=$out/licenses/vapoursynth-znedi3
+        mkdir -p "$zl" "$out/sources/znedi3"
+        cp "$zb/gpl2.txt" "$zl/gpl2.txt"
+        cp "$zb/vsxx/COPYING.LGPLv2.1" "$zl/COPYING.LGPLv2.1"
+        cp "$zb/graphengine/COPYING" "$zl/COPYING.graphengine"
+        cp "$zsrc" "$out/sources/znedi3/znedi3-$ZNEDI3_COMMIT.tar.gz"
+        cp "$zvsxx" "$out/sources/znedi3/vsxx-$ZNEDI3_VSXX_COMMIT.tar.gz"
+        cp "$zge" "$out/sources/znedi3/graphengine-$ZNEDI3_GRAPHENGINE_COMMIT.tar.gz"
+        python3 - "$out" "$ZNEDI3_VER" <<'PYEOF'
+import json, os, sys
+
+out, ver = sys.argv[1:3]
+root = os.path.join(out, "licenses", "vapoursynth-znedi3")
+files = sorted(f"licenses/vapoursynth-znedi3/{f}" for f in os.listdir(root))
+with open(os.path.join(out, "components-znedi3.json"), "w") as fh:
+    json.dump({"components": [{
+        "name": "vapoursynth-znedi3", "version": ver,
+        "license": "GPL-2.0-only AND LGPL-2.1-or-later AND WTFPL",
+        "provides": [], "licence_files": files,
+    }]}, fh, indent=2)
+    fh.write("\n")
+PYEOF
+        cat >"$out/licenses/SOURCES.znedi3.txt" <<ZEOF
+
+  vapoursynth/libznedi3.dylib  znedi3 $ZNEDI3_VER (commit $ZNEDI3_COMMIT)
+  vapoursynth/nnedi3_weights.bin
+                               GPL-2.0-only, by sekrit-twc, a port of
+                               tritical's nnedi3; with vsxx $ZNEDI3_VSXX_COMMIT
+                               (its VapourSynth headers: LGPL-2.1-or-later) and
+                               graphengine $ZNEDI3_GRAPHENGINE_COMMIT (WTFPL).
+                               Built unmodified with its own Makefile for arm64.
+                               The complete source is sources/znedi3 (the three
+                               archives this build used), with the licences in
+                               licenses/vapoursynth-znedi3; upstream is
+                               https://github.com/sekrit-twc/znedi3.
+ZEOF
+    }
+    if zsrc=$(fetch "$ZNEDI3_URL" "$ZNEDI3_SHA256") \
+        && zvsxx=$(fetch "$ZNEDI3_VSXX_URL" "$ZNEDI3_VSXX_SHA256") \
+        && zge=$(fetch "$ZNEDI3_GRAPHENGINE_URL" "$ZNEDI3_GRAPHENGINE_SHA256"); then
+        set +e
+        (set -e; znedi3_build)
+        zrc=$?
+        set -e
+        case $zrc in
+            0) znedi3_note="built: znedi3 $ZNEDI3_VER, GPL-2.0-only" ;;
+            10) znedi3_note="FAILED: nnedi3_weights.bin is not the pinned file" ;;
+            11) znedi3_note="FAILED: make exited non-zero; see $work/znedi3-build.log" ;;
+            *) znedi3_note="FAILED: a step after the download exited $zrc; znedi3 left out" ;;
+        esac
+        if ((zrc != 0)); then
+            rm -f "$out/vapoursynth/libznedi3.dylib" "$out/vapoursynth/nnedi3_weights.bin" \
+                "$out/components-znedi3.json" "$out/licenses/SOURCES.znedi3.txt"
+            rm -rf "$out/licenses/vapoursynth-znedi3" "$out/sources/znedi3"
+        fi
+    else
+        znedi3_note="FAILED: a znedi3 source archive did not download or match its SHA-256"
+    fi
+    [[ $znedi3_note == built:* ]] || echo "warning: znedi3 $znedi3_note" >&2
+fi
+
 # ---------------------------------------------------------------- the check
 # The same check that gates the Windows DLLs, in macOS terms. Run here so a bad
 # dylib never reaches SHA256SUMS, and usable on its own afterwards.
@@ -265,11 +370,12 @@ components = [{
     "provides": [],
     "licence_files": sorted(f"licenses/buttereye-vs-mvgpu/{f}" for f in os.listdir(root)),
 }]
-extra = os.path.join(out, "components-rife.json")  # the spike's step, if it ran
-if os.path.exists(extra):
-    with open(extra) as fh:
-        components += json.load(fh)["components"]
-    os.remove(extra)
+for step in ("rife", "znedi3"):  # the optional steps, if they ran
+    extra = os.path.join(out, f"components-{step}.json")
+    if os.path.exists(extra):
+        with open(extra) as fh:
+            components += json.load(fh)["components"]
+        os.remove(extra)
 with open(os.path.join(out, "components.json"), "w") as fh:
     json.dump({"version": 1, "components": components}, fh, indent=2)
     fh.write("\n")
@@ -296,7 +402,7 @@ cp -R "$repo/mvgpu" "$src/mvgpu"
 find "$src/mvgpu" -name '*.pyc' -delete
 rm -rf "$src/mvgpu/build" "$src/mvgpu"/build-*
 cp "$repo/COPYING" "$src/COPYING"
-cp "$here/build-plugins.sh" "$here/check-dylibs.sh" "$src/"
+cp "$here/build-plugins.sh" "$here/check-dylibs.sh" "$here/pins.sh" "$src/"
 if [[ -x $here/build-rife.sh ]]; then
     cp "$here/build-rife.sh" "$src/"
 fi
@@ -355,11 +461,18 @@ else
 EOF
 fi
 
+# znedi3's paragraph, when its step built it (the same fragment-and-remove as RIFE)
+if [[ -s $out/licenses/SOURCES.znedi3.txt ]]; then
+    cat "$out/licenses/SOURCES.znedi3.txt" >>"$out/licenses/SOURCES.txt"
+    rm -f "$out/licenses/SOURCES.znedi3.txt"
+fi
+
 cat >>"$out/licenses/SOURCES.txt" <<EOF
 
 To rebuild: run packaging/macos/build-plugins.sh (a copy is in sources/) from a
 checkout of that repository on an arm64 Mac with the Homebrew formulae its
-header lists. The build downloads nothing.
+header lists. The build downloads nothing unless BUTTEREYE_ZNEDI3=1 asks for
+znedi3's pinned source (pins.sh), whose archives are in sources/znedi3.
 
 Nothing here is signed or notarised. The only signature on libmvgpu.dylib is the
 ad-hoc one Apple's linker applies (codesign: adhoc, linker-signed, no Team
@@ -397,6 +510,7 @@ ls -l "$out/vapoursynth"
 echo
 echo "built:      libmvgpu.dylib (mvgpu $mvgpu_ver, AGPL-3.0-or-later)"
 echo "RIFE-ncnn:  $rife_note"
+echo "znedi3:     $znedi3_note"
 echo "MVTools:    NOT BUILT - Homebrew's vapoursynth-mvtools bottle"
 echo "            ($brew_prefix/lib/python*/site-packages/vapoursynth/plugins/mvtools.dylib)"
 echo "ffms2:      NOT BUILT - Homebrew's ffms2 bottle (libffms2.dylib, same directory)"

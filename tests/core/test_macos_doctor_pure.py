@@ -57,7 +57,7 @@ import pytest
 from buttereye.core import commands, osapi
 from buttereye.core import paths as bepaths
 from buttereye.core.backends import select
-from buttereye.core.bench import runner
+from buttereye.core.bench import runner, verdict
 from buttereye.core.doctor import brew, checks_mpv, checks_trt, checks_vulkan, gpufault, probe
 from buttereye.core.doctor import checks_pkgs as pk
 from buttereye.core.doctor.proc import CmdResult
@@ -904,7 +904,7 @@ def _fake_mpv(version: str, *, vs_filter: bool) -> Any:
 async def test_an_mpv_app_bundle_is_recognised_and_told_where_to_get_mpv(
     as_macos: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """"Your mpv was built without VapourSynth" does not tell the user of the
+    """ "Your mpv was built without VapourSynth" does not tell the user of the
     mpv.io bundle - the mpv a Mac user most likely already has, 0.40.0 with no
     filter in it - what to do. The answer is ``brew install mpv``, and both the
     version row and the filter row have to give the same one."""
@@ -1290,9 +1290,7 @@ def test_offline_render_asks_every_plugin_directory_a_mac_has(
     (model / "flownet.param").write_bytes(b"")
     # under each name a caller asks for (``_plant``): ``installed_backends`` asks
     # ``osapi.plugin_file`` at call time, the script names ``BACKEND_PLUGIN``'s
-    _plant(
-        autoload, osapi.plugin_file("mvtools.so"), decide.BACKEND_PLUGIN[BackendId.MVTOOLS]
-    )
+    _plant(autoload, osapi.plugin_file("mvtools.so"), decide.BACKEND_PLUGIN[BackendId.MVTOOLS])
     _plant(
         own,
         osapi.plugin_file("librife.so"),
@@ -1301,9 +1299,7 @@ def test_offline_render_asks_every_plugin_directory_a_mac_has(
     )
     paths = dataclasses.replace(_paths(tmp_path), rpm_plugin_dir=own, rpm_data_dir=share)
     cfg = default_config()
-    cfg = dataclasses.replace(
-        cfg, general=dataclasses.replace(cfg.general, trt_experimental=False)
-    )
+    cfg = dataclasses.replace(cfg, general=dataclasses.replace(cfg.general, trt_experimental=False))
     ctx = SimpleNamespace(paths=paths, config=lambda: cfg)
 
     # Not vacuous: the single directory render used to ask has no MVTools in it
@@ -1341,9 +1337,7 @@ def test_offline_render_keeps_its_one_directory_off_macos(
     own = paths.rpm_plugin_dir
     _plant(own, osapi.plugin_file("mvtools.so"), decide.BACKEND_PLUGIN[BackendId.MVTOOLS])
     cfg = default_config()
-    cfg = dataclasses.replace(
-        cfg, general=dataclasses.replace(cfg.general, trt_experimental=False)
-    )
+    cfg = dataclasses.replace(cfg, general=dataclasses.replace(cfg.general, trt_experimental=False))
     ctx = SimpleNamespace(paths=paths, config=lambda: cfg)
     assert bepaths.plugin_dirs(paths) == (own,)
     assert BackendId.MVTOOLS in jobs._installed(ctx)  # type: ignore[arg-type]
@@ -1438,19 +1432,38 @@ def test_a_benchmark_that_recommends_mvgpu_keeps_rife_off_live_playback(
 
     chosen = select.select(report, cfg, (result,))
     assert chosen.backend is BackendId.MVTOOLS, chosen
-    assert chosen.from_benchmark
     assert chosen.model is None
     assert chosen.profile_id == "cpu"
+    mvtools = next(m for m in result.measurements if m.backend is BackendId.MVTOOLS)
+    if not verdict.live_ok(mvtools, verdict.target_of(result.request)):
+        # B5: the 1440p runs held MVTools at 56-60 fps, real time by the bench's
+        # 1.15 bar but not by playback's 1.25 (59.94 for 24 -> 48): no evidence,
+        # so the unbenchmarked answer (MVTools too), never RIFE
+        assert chosen == unmeasured
+        return
+    assert chosen.from_benchmark
     assert chosen.reason.params == {"label": "mvtools"}
-    assert "playback picks it per video" in chosen.reason.key
+    assert "wherever they keep up" in chosen.reason.key  # B28: what Automatic then does
 
 
 def test_a_benchmark_that_recommends_mvtools_is_still_taken_as_it_is(as_macos: None) -> None:
-    """The 1440p shape, which already worked: the recommendation is rankable, so
-    it wins unchanged and with the reason it always had."""
+    """The 1440p shape: the recommendation is rankable, so it wins unchanged and
+    with the reason it always had, once it keeps up by playback's bar (B5). The
+    spike's own 1440p MVTools runs (56-59 fps in mpv) fall just short of that bar
+    (59.94 for 24 -> 48), so the run is no evidence there; scaled to the 1080p
+    figure's margin it is taken."""
     report, cfg = _ready_mac(), default_config()
     run = next(r for r in _spike_runs() if r["recommended"] == "mvtools")
-    chosen = select.select(report, cfg, (_m0s_result(run),))
+    result = _m0s_result(run)
+    assert select.select(report, cfg, (result,)) == select.select(report, cfg, ())
+    fast = dataclasses.replace(
+        result,
+        measurements=tuple(
+            dataclasses.replace(m, mpv_fps=m.mpv_fps * 1.2) if m.backend is BackendId.MVTOOLS else m
+            for m in result.measurements
+        ),
+    )
+    chosen = select.select(report, cfg, (fast,))
     assert chosen.backend is BackendId.MVTOOLS and chosen.from_benchmark
     assert chosen.reason.key.startswith("Fastest real-time configuration")
 

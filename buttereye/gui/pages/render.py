@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
@@ -66,6 +67,7 @@ from buttereye.core.api import (
     CommandHint,
     ConfigChanged,
     ConfigLoad,
+    ErrorCode,
     Event,
     EventsDropped,
     Feature,
@@ -135,6 +137,31 @@ def status_of(job: RenderJobState) -> tuple[BadgeKind, str]:
         return "off", _t("Cancelled — partial files removed.")
     code = job.error.code.code if job.error is not None else ""
     return "blocking", _t("Failed ({code})").format(code=code) if code else _t("Failed")
+
+
+def playback_notice_text(platform: str = sys.platform) -> str:
+    """What a render does while a video plays. The core stops it (SIGSTOP) until
+    the player closes, as the player and the render share the GPU; Windows has no
+    way to stop a process group, so there it only runs at lower CPU priority."""
+    if platform == "win32":
+        return _t(
+            "A video is playing: the render keeps going at lower CPU priority and "
+            "shares the graphics card with it, so either may slow down."
+        )
+    return _t(
+        "A video is playing: the render is paused so it doesn't slow playback down, "
+        "and continues when the player is closed."
+    )
+
+
+def retryable(job: RenderJobState) -> bool:
+    """Only the remux failed: the core kept the converted video, and the same
+    spec added again finishes from it without converting again."""
+    return (
+        job.state is OpState.FAILED
+        and job.error is not None
+        and job.error.code is ErrorCode.REMUX_FAILED
+    )
 
 
 def phase_text(phase: RenderPhase | None) -> str:
@@ -231,9 +258,7 @@ class RenderPage(Page):
         intro.setTextFormat(Qt.TextFormat.PlainText)
         root.addWidget(intro)
 
-        self.playback_notice = QLabel(
-            self.tr("Playback is running: renders use lower priority."), self.panel.content
-        )
+        self.playback_notice = QLabel(playback_notice_text(), self.panel.content)
         self.playback_notice.setWordWrap(True)
         self.playback_notice.setVisible(False)
         root.addWidget(self.playback_notice)
@@ -638,7 +663,12 @@ class RenderPage(Page):
         if job is None:
             return
         if job.state is OpState.FAILED and job.error is not None:
-            self.detail_banner = Banner.from_error(job.error, parent=self.panel.content)
+            actions: tuple[Action, ...] = ()
+            if retryable(job):
+                actions = ((self.tr("&Finish the copy"), self.retry_selected),)
+            self.detail_banner = Banner.from_error(
+                job.error, actions=actions, parent=self.panel.content
+            )
         elif job.state is OpState.CANCELLED:
             self.detail_banner = Banner(
                 "off",
@@ -713,6 +743,29 @@ class RenderPage(Page):
             return
         jid = job.id
         self.ctx.bridge.call(lambda core: core.render_cancel(jid), owner=self, ok=_ignore)
+
+    def retry_selected(self) -> None:
+        """Queue the failed job's spec again (the core finishes from the kept
+        video), then drop the failed row; the core keeps the video for the new job."""
+        job = self.selected_job()
+        if job is None or not retryable(job):
+            return
+        old, spec = job.id, job.spec
+        self.ctx.bridge.call(
+            lambda core: core.render_enqueue(spec),
+            owner=self,
+            ok=lambda jid: self._retried(old, JobId(str(jid))),
+            err=self.show_error,
+        )
+
+    def _retried(self, old: JobId, new: JobId) -> None:
+        self.ctx.bridge.call(
+            lambda core: core.render_forget(old),
+            owner=self,
+            ok=lambda _none: self._forgotten(old),
+            err=self._quiet,
+        )
+        self._on_enqueued(str(new))
 
     def _forgotten(self, jid: JobId) -> None:
         self._jobs.pop(jid, None)

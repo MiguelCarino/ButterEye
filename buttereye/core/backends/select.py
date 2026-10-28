@@ -12,7 +12,8 @@
    RIFE-ncnn, MVTools. Without the opt-in TensorRT is never ranked. mvgpu (the
    optional GPU motion-vector engine) has a status for the Profiles editor but
    is never ranked or offered by Setup: live play picks it per file (§5.3).
-4. A benchmark recommendation (no GPU faults, real time) wins. When it names an
+4. A benchmark recommendation (no GPU faults, keeping up by the live bar,
+   ``bench.verdict.live_ok``) wins. When it names an
    engine that is not ranked (mvgpu always; TensorRT once switched off), the
    same run's best real-time rankable measurement stands in for it, so an
    engine that run measured too slow for live play is not picked over one it
@@ -32,6 +33,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from buttereye.core import osapi
+from buttereye.core.bench import verdict
 from buttereye.core.doctor.text import M
 from buttereye.core.errors import ErrorCode
 from buttereye.core.mpvctl import decide
@@ -355,10 +357,18 @@ def _default_model(report: DoctorReport) -> str | None:
     return models[0] if models else None
 
 
-def _usable(m: BenchMeasurement, ranked: Sequence[BackendId]) -> bool:
-    """A measurement the chooser may act on: an engine it can rank, held real time
-    in mpv, and no GPU fault (None = the fault log was not read, as on a Mac)."""
-    return m.backend in ranked and m.realtime and m.vspipe_fps > 0 and (m.gpu_faults or 0) == 0
+def _usable(m: BenchMeasurement, ranked: Sequence[BackendId], res: BenchResult) -> bool:
+    """A measurement the chooser may act on: an engine it can rank, real time in
+    mpv by the bar live playback uses (``verdict.live_ok``: mpv fps / 1.25, not the
+    benchmark's 1.15, or Setup proposes an engine playback then calls too slow),
+    and no GPU fault (None = the fault log was not read, as on a Mac)."""
+    return (
+        m.backend in ranked
+        and m.realtime
+        and m.vspipe_fps > 0
+        and (m.gpu_faults or 0) == 0
+        and verdict.live_ok(m, verdict.target_of(res.request))
+    )
 
 
 def _from_bench(
@@ -376,7 +386,8 @@ def _from_bench(
     installed was handed live ``rife-ncnn`` on the strength of a run that had just
     measured RIFE at 20.07 fps in mpv at 720p and 8.33 at 1080p, against a
     55.14 fps bar. So the run is asked again, restricted to what can be ranked,
-    with ``recommend``'s own rule: quality order, a repeatable measurement first.
+    with ``recommend``'s own rule: quality order, the first that keeps up
+    (``repeatable`` is shown, never a tie-breaker: B6).
     An engine the run measured below real time is therefore never the answer
     while another rankable engine in the same run held it.
 
@@ -390,12 +401,13 @@ def _from_bench(
         if res.recommended is None or (gpu and res.gpu_uuid and res.gpu_uuid != gpu):
             continue
         rec = next((m for m in res.measurements if m.label == res.recommended), None)
-        if rec is not None and _usable(rec, ranked):
+        if rec is not None and _usable(rec, ranked, res):
             return rec, None
-        usable = [m for m in res.measurements if _usable(m, ranked)]
+        # rows at the run's own size only: the live engines are also measured at
+        # bigger sizes ("mvtools @ 2160p"), which says nothing more for Setup
+        usable = [m for m in res.measurements if " @ " not in m.label and _usable(m, ranked, res)]
         if usable:
-            best = next((m for m in usable if m.repeatable), usable[0])
-            return best, rec
+            return usable[0], rec
     return None
 
 
@@ -403,9 +415,11 @@ def _bench_reason(m: BenchMeasurement, instead_of: BenchMeasurement | None) -> M
     if instead_of is None:
         return M("Fastest real-time configuration in your benchmark ({label}).", {"label": m.label})
     if instead_of.backend is BackendId.MVGPU:
+        # what Automatic then does per video (B28): GPU motion vectors wherever the
+        # benchmark measured them keeping up, this engine where they don't
         return M(
-            "{label} keeps up in real time in your benchmark. Its first choice, GPU "
-            "motion vectors, is never a default: playback picks it per video.",
+            "Videos play with GPU motion vectors, the fastest in your benchmark, "
+            "wherever they keep up; {label}, which keeps up too, is used for the rest.",
             {"label": m.label},
         )
     return M(

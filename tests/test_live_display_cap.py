@@ -172,7 +172,7 @@ def test_records_from_before_the_cap_are_not_trusted(tmp_path: Path) -> None:
     limits: dict[str, dict[str, float]] = {}
     ll.record(path, limits, key, 0.7, now=2000.0)
     again = ll.load(path, now=2000.0 + 60)
-    assert ll.factor(again, key) == pytest.approx(0.7)
+    assert ll.factor(again, key, now=2060.0) == pytest.approx(0.7)
     assert json.loads(path.read_text())[key.text()]["v"] == ll.VERSION
 
 

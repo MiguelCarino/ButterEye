@@ -18,9 +18,18 @@ Rules implemented here (numbers from §3):
 4. Non-``ButterEyeError`` exceptions become ``ButterEyeError(INTERNAL)`` with the
    traceback in ``detail``; the loop's exception handler logs.
 5. One pump coroutine copies the event stream into a locked deque; progress
-   sinks write the latest ``Progress`` per request; a 100 ms GUI timer drains.
-6. A watchdog pings the loop every 2 s; no reply within 5 s emits
-   ``unresponsive(True)``, the next reply ``unresponsive(False)``.
+   sinks write the latest ``Progress`` per request. The first item after a
+   drain posts one ``wake`` to the GUI thread, which drains at once, or after
+   the rest of ``DRAIN_INTERVAL_MS`` when the last drain was more recent: at
+   most ten drains a second while events flow, and none while nothing
+   happens. (A free-running 100 ms timer drained before, which with the
+   watchdog's 500 ms tick woke an idle GUI twelve times a second.)
+6. A watchdog pings the loop every 2 s while the GUI is waiting on the core
+   (any request in flight, the first check after open included); no reply
+   within 5 s emits ``unresponsive(True)``, the next reply
+   ``unresponsive(False)``. With nothing in flight its timer is stopped: a
+   loop that blocks then is found by the next request, which is the first
+   moment anything would wait on it.
 7. Only §2 values cross; in debug mode a QObject in a reply is refused.
 8. ``shutdown`` posts ``close()``, waits in a local ``QEventLoop`` bounded by a
    timer, then stops the loop and joins the thread (1 s). Never ``.result()``.
@@ -218,6 +227,7 @@ class _Inbox(QObject):
     reply = Signal(object, object)  # (request id, _Ok | _Err)
     opened = Signal(object)  # Capabilities
     failed = Signal(object)  # ButterEyeError
+    wake = Signal()  # events or progress are queued (rule 5)
 
     def __init__(self, bridge: CoreBridge) -> None:
         super().__init__()
@@ -225,6 +235,7 @@ class _Inbox(QObject):
         self.reply.connect(self._on_reply)
         self.opened.connect(self._on_opened)
         self.failed.connect(self._on_failed)
+        self.wake.connect(self._on_wake)
 
     @Slot(object, object)
     def _on_reply(self, rid: object, outcome: object) -> None:
@@ -237,6 +248,10 @@ class _Inbox(QObject):
     @Slot(object)
     def _on_failed(self, err: object) -> None:
         self._bridge._on_failed(cast(ButterEyeError, err))
+
+    @Slot()
+    def _on_wake(self) -> None:
+        self._bridge._on_wake()
 
 
 def _alive(obj: QObject) -> bool:
@@ -293,6 +308,7 @@ class CoreBridge(QObject):
         self._lock = threading.Lock()
         self._events: collections.deque[Event] = collections.deque()
         self._progress: dict[int, Progress] = {}
+        self._wake_posted = False  # under _lock: a wake is on its way to the GUI
 
         # loop-thread state
         self._core: ButterEye | None = None
@@ -310,8 +326,10 @@ class CoreBridge(QObject):
         self._ping_sent: float | None = None
         self._last_ping = 0.0
 
+        self._last_drain = 0.0
+        # single shot: the rest of DRAIN_INTERVAL_MS after a recent drain
         self._drain_timer = QTimer(self)
-        self._drain_timer.setInterval(DRAIN_INTERVAL_MS)
+        self._drain_timer.setSingleShot(True)
         self._drain_timer.timeout.connect(self._drain)
         self._watch_timer = QTimer(self)
         self._watch_timer.setInterval(
@@ -350,7 +368,6 @@ class CoreBridge(QObject):
         backlog, self._backlog = self._backlog, []
         for submit in backlog:
             submit()
-        self._drain_timer.start()
 
     def call(
         self,
@@ -478,6 +495,7 @@ class CoreBridge(QObject):
             req.cancelled = True
         else:
             self._pending[req.rid] = req
+            self._arm_watchdog()
         return req
 
     def _submit(self, make: Callable[[], Awaitable[None]]) -> None:
@@ -533,6 +551,7 @@ class CoreBridge(QObject):
             async for ev in stream:
                 with self._lock:
                     self._events.append(ev)
+                self._post_wake()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -545,6 +564,14 @@ class CoreBridge(QObject):
                 raise self._open_error
             raise internal_error(RuntimeError("the core is not open"))
         return self._core
+
+    def _post_wake(self) -> None:
+        """Any thread: one ``wake`` per drain, however much arrives before it."""
+        with self._lock:
+            if self._wake_posted:
+                return
+            self._wake_posted = True
+        self._inbox.wake.emit()
 
     def _post(self, req: _Request, outcome: _Ok | _Err) -> None:
         if req.cancelled:
@@ -585,6 +612,7 @@ class CoreBridge(QObject):
                 def sink(p: Progress) -> None:
                     with self._lock:
                         self._progress[rid] = p
+                    self._post_wake()
 
                 op.add_progress_sink(sink)
             value = await op.result()
@@ -628,12 +656,24 @@ class CoreBridge(QObject):
         except Exception:
             _log.exception("reply handler failed")
 
+    def _on_wake(self) -> None:
+        if self._closed or self._drain_timer.isActive():
+            return
+        wait_ms = DRAIN_INTERVAL_MS - (time.monotonic() - self._last_drain) * 1000
+        if wait_ms > 0:
+            self._drain_timer.start(int(wait_ms) + 1)
+        else:
+            self._drain()
+
     def _drain(self) -> None:
+        self._drain_timer.stop()
+        self._last_drain = time.monotonic()
         with self._lock:
             events = list(self._events)
             self._events.clear()
             progress = self._progress
             self._progress = {}
+            self._wake_posted = False
         for rid, p in progress.items():
             req = self._pending.get(rid)
             if req is None or req.cancelled or req.progress is None or not _alive(req.owner):
@@ -654,7 +694,7 @@ class CoreBridge(QObject):
         self._caps = caps
         self._last_ping = 0.0
         self._watch_timer.start()
-        self._watch()  # first liveness check right away
+        self._watch()  # first liveness check right away (its ping is in flight)
         self.ready.emit(caps)
 
     def _on_failed(self, err: ButterEyeError) -> None:
@@ -667,11 +707,26 @@ class CoreBridge(QObject):
         self._drain()
 
     # ---- watchdog (rule 6) ----
+    def _waiting(self) -> bool:
+        """A request other than the watchdog's own ping is in flight."""
+        return any(r.owner is not self._inbox for r in self._pending.values())
+
+    def _arm_watchdog(self) -> None:
+        if self._opened and not self._closed and not self._watch_timer.isActive():
+            self._watch_timer.start()
+
+    @property
+    def watchdog_active(self) -> bool:
+        return self._watch_timer.isActive()
+
     def _watch(self) -> None:
         if self._closed or not self._opened:
             return
         now = time.monotonic()
         if self._ping_sent is None:
+            if not self._waiting() and self._last_ping:
+                self._watch_timer.stop()  # idle: nothing would notice a stall
+                return
             if now - self._last_ping >= self._ping_interval_s:
                 self._send_ping(now)
         elif now - self._ping_sent > self._ping_timeout_s and not self._unresponsive:

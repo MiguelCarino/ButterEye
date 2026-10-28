@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import dataclasses
+import hashlib
 import json
 import math
 import os
@@ -27,7 +28,7 @@ import pytest
 
 from buttereye.core import osapi
 from buttereye.core.api import ButterEye
-from buttereye.core.bench import faults, measure, runner, store
+from buttereye.core.bench import faults, measure, runner, store, verdict
 from buttereye.core.doctor import gpufault
 from buttereye.core.errors import ButterEyeError, ConfigConflict, ErrorCode, OperationCancelled
 from buttereye.core.events import Event, Notice, Progress
@@ -90,6 +91,16 @@ def test_parse_mpv() -> None:
     r = measure.parse_mpv(_mpv_log(), 192)
     assert r.fps == pytest.approx(191 / 3.82)
     assert r.startup_s == pytest.approx(1.0)
+
+
+def test_parse_mpv_leaves_the_pipeline_fill_out() -> None:
+    """B26: with 8 frames in flight, the 7 behind the first shown one were computed
+    before the clock started; counting them made the rate ~4 % too high at 1080p."""
+    r = measure.parse_mpv(_mpv_log(), 192, prefilled=8)
+    assert r.fps == pytest.approx(184 / 3.82)
+    assert measure.parse_mpv(_mpv_log(), 192, prefilled=0).fps == pytest.approx(191 / 3.82)
+    with pytest.raises(measure.MeasureFailed):
+        measure.parse_mpv(_mpv_log(), 8, prefilled=8)
 
 
 @pytest.mark.parametrize(
@@ -188,13 +199,27 @@ def _m(
 
 
 def test_recommend_rules() -> None:
-    # quality order is the measurement order; faulting configs are never recommended
+    # quality order is the measurement order; faulting configs are never recommended;
+    # repeatable is shown, not a tie-breaker (B6)
     ms = (_m("a", faults_=1), _m("b", rep=False), _m("c"), _m("d", faults_=None))
-    assert runner.recommend(ms) == "c"
+    assert runner.recommend(ms) == "b"
     assert runner.recommend((_m("a", faults_=2), _m("b", rep=False))) == "b"
     assert runner.recommend((_m("a", rt=False),)) is None
     assert runner.recommend((_m("a", faults_=None),)) == "a"  # unknown is not a fault
     assert runner.recommend((_m("x @ 2160p"), _m("x", rt=False)), frozenset({"x"})) is None
+
+
+def test_recommend_uses_the_live_bar_with_a_target() -> None:
+    """B5: 23.976 -> 47.95 needs 55.14 in mpv for the bench's "real time" but 59.94
+    for live playback; 57 fps is real time in the table and not recommended."""
+    target = Fraction(48000, 1001)
+    between = _m("rife", mpv=57.0)
+    assert between.realtime and verdict.realtime(57.0, target)
+    assert not verdict.live_ok(between, target)
+    ms = (between, _m("mvgpu", mpv=61.0, backend=BackendId.MVGPU))
+    assert runner.recommend(ms) == "rife"  # no target: the benchmark's own verdict
+    assert runner.recommend(ms, target=target) == "mvgpu"
+    assert runner.recommend((between,), target=target) is None
 
 
 def test_request_helpers() -> None:
@@ -345,7 +370,7 @@ case "$FAKE_VSPIPE_MODE" in
 esac
 sleep "${FAKE_VSPIPE_SLEEP:-0.05}"
 echo "Script evaluation done in 0.50 seconds" >&2
-echo "Output 192 frames in 2.00 seconds (96.00 fps)" >&2
+echo "${FAKE_VSPIPE_OUTPUT:-Output 192 frames in 2.00 seconds (96.00 fps)}" >&2
 """
 
 FAKE_MPV = """\
@@ -356,10 +381,13 @@ printf '%s\\n' "$@" > "$FAKE_DIR/mpv.argv"
 case "$FAKE_MPV_MODE" in
   fail) echo "[   0.066] Disabling filter vapoursynth.00 because it has failed."; \
         echo "[   0.067] VO: [null] 1920x1080 nv12"; exit 0 ;;
+  failonce) if [ ! -f "$FAKE_DIR/mpv.failed" ]; then touch "$FAKE_DIR/mpv.failed"; exit 1; fi ;;
 esac
+EOF_AT=2.110000
+[ -f "$FAKE_DIR/mpv.eof" ] && EOF_AT=$(cat "$FAKE_DIR/mpv.eof")
 echo "[   0.100000] VO: [null] 1920x1080 yuv420p"
 echo "[   0.200000] [cplayer] first video frame after restart shown"
-echo "[   2.110000] [cplayer] video EOF reached"
+echo "[   $EOF_AT] [cplayer] video EOF reached"
 """
 
 FAKE_NVIDIA_SMI = """\
@@ -437,7 +465,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Env]:
     # prefix at a directory with nothing in it. A no-op on Linux and Windows,
     # where the search path is ``rpm_plugin_dir`` alone.
     monkeypatch.setenv("HOMEBREW_PREFIX", str(tmp_path / "no-homebrew"))
-    for k in ("FAKE_VSPIPE_MODE", "FAKE_MPV_MODE", "FAKE_VSPIPE_SLEEP"):
+    for k in ("FAKE_VSPIPE_MODE", "FAKE_MPV_MODE", "FAKE_VSPIPE_SLEEP", "FAKE_VSPIPE_OUTPUT"):
         monkeypatch.delenv(k, raising=False)
     plugins, models = _plugin_tree(tmp_path / "rpm", ["rife-v4.26_ensembleFalse"])
     paths = dataclasses.replace(
@@ -466,6 +494,9 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Env]:
         return measure.VramSampler(s._bin, interval_s=0.01) if s else None
 
     monkeypatch.setattr(measure.VramSampler, "detect", staticmethod(fast_detect))
+    # the sustained phase and the extra live sizes have tests of their own
+    monkeypatch.setattr(runner, "SUSTAINED_S", 0.0)
+    monkeypatch.setattr(runner, "AUTO_LIVE_SIZES", False)
     yield Env(tmp_path, fake, paths, cfg, scans, fault_count)
 
 
@@ -502,10 +533,11 @@ async def test_bench_end_to_end_with_fake_tools(env: Env, monkeypatch: pytest.Mo
     rife = result.measurements[0]
     assert rife.backend is BackendId.RIFE_NCNN and rife.model == "rife-v4.26_ensembleFalse"
     assert rife.vspipe_fps == pytest.approx(96.0)
-    assert rife.mpv_fps == pytest.approx(100.0)
+    # 192 frames, 8 in flight when the clock starts (concurrent-frames), 1.91 s
+    assert rife.mpv_fps == pytest.approx((192 - 8) / 1.91, abs=0.01)
     assert rife.cov == 0.0 and rife.repeatable
     assert rife.reload_s == pytest.approx(0.5) and rife.startup_s == pytest.approx(0.2)
-    assert rife.realtime  # 100 >= 1.15 * 47.95
+    assert rife.realtime  # 96.3 >= 1.15 * 47.95
     assert rife.gpu_faults == 0
     assert rife.vram_bytes == 512 * 1024 * 1024
     assert result.recommended == "rife-v4.26"
@@ -513,12 +545,16 @@ async def test_bench_end_to_end_with_fake_tools(env: Env, monkeypatch: pytest.Mo
     # warm-up + 3 vspipe runs + 3 mpv runs per candidate, each in its own process group
     assert len(env.pids("vspipe")) == 8 and len(env.pids("mpv")) == 6
     assert len(env.scans) == 2
+    # MVTools, a live engine, is measured first, while the machine is cool (B7);
+    # the results are still reported in quality order
     assert set(env.pids("vspipe")[:4]) | set(env.pids("mpv")[:3]) == env.scans[0]["pids"]
+    assert set(env.pids("vspipe")[4:]) | set(env.pids("mpv")[3:]) == env.scans[1]["pids"]
     # mpv got the RIFE script settings through user-data, gpu_thread=4 (§4.4, M0(f))
     argv = (env.fake / "mpv.argv").read_text().splitlines()
     assert "--frames=192" in argv
     # progress: one phase per pass, monotonic, ends at total
     phases = [p.phase.key for p in progress]
+    assert progress[0].phase.params["config"] == "mvtools"
     assert "{config} — run {n} of {total} — in mpv" in phases
     assert "{config} — warm-up — vspipe" in phases
     dones = [p.done for p in progress if p.done is not None]
@@ -979,3 +1015,411 @@ async def test_repeat_faulter_is_not_recommended_even_when_clean(env: Env) -> No
 
     assert gpufault.read_session_marker(env.paths) is not None
     await core.close(cancel_jobs=True)
+
+
+# =============================================================== review fixes (B5-B10, P4)
+def test_plan_measures_live_engines_first_and_at_bigger_sizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B7: mvgpu and MVTools before RIFE (cool machine), reported in quality order;
+    and the live engines at 1440p and 2160p too, so 4K is decided by a 4K number."""
+    monkeypatch.setattr(runner, "AUTO_LIVE_SIZES", True)
+    rife = runner.Candidate("rife", BackendId.RIFE_NCNN, "m", None, 8)
+    mvgpu = runner.Candidate("mvgpu", BackendId.MVGPU, None, None, 8)
+    mvtools = runner.Candidate("mvtools", BackendId.MVTOOLS, None, None, 4)
+    tasks = runner.plan(REQ, (rife, mvgpu, mvtools))
+    order = [(c.label, size[1]) for _, size, c in tasks]
+    assert order == [
+        ("mvgpu", 1080), ("mvtools", 1080), ("mvgpu", 1440), ("mvtools", 1440),
+        ("mvgpu", 2160), ("mvtools", 2160), ("rife", 1080),
+    ]  # fmt: skip
+    keys = sorted(k for k, _, _ in tasks)
+    assert [k for k, _, _ in sorted(tasks)][0] == (0, 0) and keys[:3] == [(0, 0), (0, 1), (0, 2)]
+    full = runner.plan(dataclasses.replace(REQ, full=True), (rife, mvgpu))
+    assert len(full) == 8 and full[-1][2] is rife  # every size for everything, RIFE last
+    uhd = runner.plan(dataclasses.replace(REQ, width=3840, height=2160), (mvgpu,))
+    assert [size for _, size, _ in uhd] == [(3840, 2160)]  # nothing bigger to measure
+    monkeypatch.setattr(runner, "AUTO_LIVE_SIZES", False)
+    assert len(runner.plan(REQ, (rife, mvgpu, mvtools))) == 3
+
+
+async def test_live_engines_are_measured_at_bigger_sizes(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner, "AUTO_LIVE_SIZES", True)
+    core, _ = await _open(env)
+    result = await core.bench(REQ).result()
+    labels = [m.label for m in result.measurements]
+    assert labels == ["rife-v4.26", "mvtools", "mvtools @ 1440p", "mvtools @ 2160p"]
+    assert result.recommended == "rife-v4.26"  # only labels at the requested size
+    await core.close(cancel_jobs=True)
+
+
+def test_repeatable_is_the_verdict_repeating() -> None:
+    """B6: judged on the in-mpv runs against the bar, not on a 5 % spread."""
+    target = Fraction(48000, 1001)  # bar 55.14
+    assert verdict.holds_the_bar([90.0, 99.0, 95.0], target)  # spread ~5 %, far above
+    assert verdict.holds_the_bar([20.0, 21.0, 22.0], target)  # reliably too slow
+    assert not verdict.holds_the_bar([54.0, 56.0, 57.0], target)  # straddles the bar
+    assert not verdict.holds_the_bar([], target)
+
+
+async def test_hopeless_candidate_gets_one_short_pass(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P4: a warm-up under half the real-time bar (19.2 < 27.6) is measured once,
+    at 96 frames, in vspipe and in mpv: the verdict is the same, minutes sooner."""
+    monkeypatch.setenv("FAKE_VSPIPE_OUTPUT", "Output 192 frames in 10.00 seconds (19.20 fps)")
+    core, _ = await _open(env)
+    op = core.bench(REQ)
+    progress: list[Progress] = []
+    op.add_progress_sink(progress.append)
+    result = await op.result()
+    assert len(env.pids("vspipe")) == 4 and len(env.pids("mpv")) == 2  # 2 candidates
+    assert "--frames=96" in (env.fake / "mpv.argv").read_text().splitlines()
+    for m in result.measurements:
+        assert not m.realtime and m.repeatable  # one run, reliably below the bar
+        assert 40 < m.mpv_fps < 51  # (96 - concurrent frames) / 1.91 s
+    assert result.recommended is None
+    dones = [p.done for p in progress if p.done is not None]
+    assert dones == sorted(dones) and progress[-1].done == progress[-1].total
+    await core.close(cancel_jobs=True)
+
+
+async def test_a_failed_mpv_pass_is_tried_once_more(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B10: one failed pass no longer stores the vspipe speed (which Automatic then
+    ignores for good); the pass runs again."""
+    monkeypatch.setenv("FAKE_MPV_MODE", "failonce")
+    core, events = await _open(env)
+    result = await core.bench(REQ).result()
+    assert len(env.pids("mpv")) == 7  # 6 passes + the retry
+    assert all(m.realtime and verdict.measured_in_mpv(m) for m in result.measurements)
+    await asyncio.sleep(0)
+    assert not [e for e in events if isinstance(e, Notice)]
+    await core.close(cancel_jobs=True)
+
+
+async def test_sustained_phase_keeps_the_lower_rate(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B7: the best live-ok configuration is held; when it falls below the live bar
+    the next one is held too, and each keeps min(burst, sustained)."""
+    monkeypatch.setattr(runner, "SUSTAINED_S", 8.0)
+    monkeypatch.setattr(osapi, "thermal_state", lambda: 1)
+    real = runner._sustain
+    calls: list[str] = []
+
+    async def sustain(*a: Any, **kw: Any) -> Any:
+        out = a[1]
+        calls.append(out.m.label)
+        slow = env.fake / "mpv.eof"
+        if len(calls) == 1:  # RIFE heats up: 184 frames in 3.228 s = 57 fps
+            slow.write_text("3.428000")
+        try:
+            return await real(*a, **kw)
+        finally:
+            slow.unlink(missing_ok=True)
+
+    monkeypatch.setattr(runner, "_sustain", sustain)
+    core, _ = await _open(env)
+    op = core.bench(REQ)
+    progress: list[Progress] = []
+    op.add_progress_sink(progress.append)
+    result = await op.result()
+    assert calls == ["rife-v4.26", "mvtools"]
+    rife, mvtools = result.measurements
+    assert rife.mpv_fps == pytest.approx(57.0, abs=0.05)
+    assert rife.realtime and not verdict.live_ok(rife, runner.target_fps(REQ))
+    assert result.recommended == "mvtools"
+    (entry,) = store.read_entries(env.paths.bench_file)
+    assert entry.meta.sustained["rife-v4.26"] == pytest.approx(57.0, abs=0.05)
+    assert entry.meta.sustained["mvtools"] == pytest.approx(mvtools.mpv_fps, abs=0.05)
+    assert entry.meta.thermal_start == entry.meta.thermal_max == 1
+    assert "{config} — keeping it up for {s} s — in mpv" in [p.phase.key for p in progress]
+    dones = [p.done for p in progress if p.done is not None]
+    assert dones == sorted(dones) and progress[-1].done == progress[-1].total
+    await core.close(cancel_jobs=True)
+
+
+async def test_contended_run_is_kept_but_not_used(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B8: a video played during the run: the result is returned and stored
+    (marked), and history() leaves it out, so playback never caps by it."""
+    calls: list[int] = []
+
+    async def busy(ctx: Any) -> bool:
+        calls.append(1)
+        return len(calls) == 2  # something started playing mid-run
+
+    monkeypatch.setattr(runner, "others_running", busy)
+    core, events = await _open(env)
+    result = await core.bench(REQ).result()
+    assert result.recommended == "rife-v4.26"
+    (entry,) = store.read_entries(env.paths.bench_file)
+    assert entry.meta.contended
+    assert await core.bench_history() == ()
+    await asyncio.sleep(0)
+    assert any("played or converted" in e.message.key for e in events if isinstance(e, Notice))
+    await core.close(cancel_jobs=True)
+
+
+async def test_a_video_played_and_closed_mid_run_is_contention(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B8: a player that opens and closes between two looks (inside the
+    sustained phase) is never seen by ``others_running``; the run is still
+    marked, so the heat-soaked, shared number is never used as clean."""
+
+    async def idle(ctx: Any) -> bool:
+        return False
+
+    looks: list[int] = []
+
+    async def seen(ctx: Any) -> frozenset[object]:
+        looks.append(1)
+        return frozenset({"s1"}) if len(looks) == 1 else frozenset({"s1", "s2"})
+
+    monkeypatch.setattr(runner, "others_running", idle)
+    monkeypatch.setattr(runner, "sessions_seen", seen)
+    core, _events = await _open(env)
+    await core.bench(REQ).result()
+    (entry,) = store.read_entries(env.paths.bench_file)
+    assert entry.meta.contended and len(looks) == 2
+    assert await core.bench_history() == ()
+    await core.close(cancel_jobs=True)
+
+
+async def test_sessions_seen_lists_live_and_ended_players(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live = pytypes.SimpleNamespace(sid="a", ended=False)
+    gone = pytypes.SimpleNamespace(sid="b", ended=True)
+
+    async def sessions(ctx: Any) -> tuple[Any, ...]:
+        return (live,)
+
+    async def recent_sessions(ctx: Any) -> tuple[Any, ...]:
+        return (gone,)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "buttereye.core.mpvctl.session",
+        pytypes.SimpleNamespace(sessions=sessions, recent_sessions=recent_sessions),
+    )
+    assert await runner.sessions_seen(None) == {"a", "b"}  # type: ignore[arg-type]
+    monkeypatch.delitem(sys.modules, "buttereye.core.mpvctl.session")
+    assert await runner.sessions_seen(None) == frozenset()  # type: ignore[arg-type]
+
+
+async def test_others_running_asks_loaded_providers_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    live = pytypes.SimpleNamespace(ended=False)
+    done = pytypes.SimpleNamespace(state=OpState.SUCCEEDED)
+    running = pytypes.SimpleNamespace(state=OpState.RUNNING)
+
+    async def sessions(ctx: Any) -> tuple[Any, ...]:
+        return answer["sessions"]
+
+    async def jobs(ctx: Any) -> tuple[Any, ...]:
+        return answer["jobs"]
+
+    answer: dict[str, tuple[Any, ...]] = {"sessions": (), "jobs": (done,)}
+    monkeypatch.setitem(
+        sys.modules, "buttereye.core.mpvctl.session", pytypes.SimpleNamespace(sessions=sessions)
+    )
+    monkeypatch.setitem(
+        sys.modules, "buttereye.core.render.jobs", pytypes.SimpleNamespace(jobs=jobs)
+    )
+    assert not await runner.others_running(None)  # type: ignore[arg-type]
+    answer["jobs"] = (running,)
+    assert await runner.others_running(None)  # type: ignore[arg-type]
+    answer["jobs"], answer["sessions"] = (), (live,)
+    assert await runner.others_running(None)  # type: ignore[arg-type]
+    monkeypatch.delitem(sys.modules, "buttereye.core.mpvctl.session")
+    monkeypatch.delitem(sys.modules, "buttereye.core.render.jobs")
+    assert not await runner.others_running(None)  # type: ignore[arg-type]
+
+
+async def test_a_render_paused_for_the_benchmark_is_not_contention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B8/B11: a RUNNING render stops itself within 0.5 s of the lock; ``busy``
+    says whether it still runs, and the benchmark waits for that first."""
+    running = pytypes.SimpleNamespace(state=OpState.RUNNING)
+    looks: list[int] = []
+
+    async def jobs(ctx: Any) -> tuple[Any, ...]:
+        return (running,)  # still RUNNING while stopped
+
+    async def busy(ctx: Any) -> bool:
+        looks.append(1)
+        return len(looks) < 3  # stops itself on the third look
+
+    monkeypatch.setitem(
+        sys.modules, "buttereye.core.render.jobs", pytypes.SimpleNamespace(jobs=jobs, busy=busy)
+    )
+    monkeypatch.setattr(runner, "_SETTLE_POLL_S", 0.0)
+    await runner.settle_renders(None)  # type: ignore[arg-type]
+    assert len(looks) == 3
+    assert not await runner.others_running(None)  # type: ignore[arg-type]
+    looks.clear()
+    assert await runner.others_running(None)  # type: ignore[arg-type]
+    # a render that never stops: the wait gives up after its timeout
+    looks.clear()
+    await runner.settle_renders(None, timeout_s=0.0)  # type: ignore[arg-type]
+    assert len(looks) == 1
+
+
+def _entry(meta: store.Meta, *ms: BenchMeasurement) -> store.Entry:
+    return store.Entry(_result(measurements=ms) if ms else _result(), meta)
+
+
+def test_current_result_judges_versions_and_contention() -> None:
+    """B9: a result describes the software that measured it. Another app, script,
+    mpv, vspipe or Vulkan driver: not used; another plugin: that engine's rows go."""
+    now = {"app": "0.0.6", "bench": "3", "mpv": "m1", "vspipe": "v1", "vulkan": None}
+    now |= {runner.plugin_key(b): f"{b.value}-1" for b in (BackendId.RIFE_NCNN, BackendId.MVTOOLS)}
+    ok = store.Meta(versions=dict(now))
+    e = _entry(ok)
+    assert runner.current_result(e, now) == e.result
+    assert runner.current_result(_entry(store.Meta()), now) is None  # schema 1: unknown
+    assert runner.current_result(_entry(dataclasses.replace(ok, contended=True)), now) is None
+    for k in runner.RESULT_KEYS:
+        assert runner.current_result(e, now | {k: "other"}) is None, k
+    newer_mvtools = now | {runner.plugin_key(BackendId.MVTOOLS): "mvtools-2"}
+    got = runner.current_result(e, newer_mvtools)
+    assert got is not None and got.measurements
+    assert all(m.backend is not BackendId.MVTOOLS for m in got.measurements)
+    only_mvtools = _entry(ok, _m("mvtools", backend=BackendId.MVTOOLS))
+    assert runner.current_result(only_mvtools, newer_mvtools) is None
+
+
+def test_fingerprint_follows_the_file(tmp_path: Path) -> None:
+    f = tmp_path / "mpv"
+    assert runner.fingerprint(f) is None and runner.fingerprint(None) is None
+    f.write_bytes(b"one")
+    a = runner.fingerprint(f)
+    f.write_bytes(b"three")
+    assert a is not None and runner.fingerprint(f) not in (None, a)
+
+
+def test_the_same_bytes_copied_again_keep_their_fingerprint(tmp_path: Path) -> None:
+    """A rebuild or a fresh copy from the disk image changes every mtime and no
+    byte: the benchmark must still count (it was thrown away, measured on an M2)."""
+    f = tmp_path / "mpv"
+    f.write_bytes(b"same build")
+    before = runner.fingerprint(f)
+    os.utime(f, ns=(1_800_000_000_000_000_000, 1_800_000_000_000_000_000))
+    assert before is not None and runner.fingerprint(f) == before
+    f.write_bytes(b"other build")  # same size
+    assert runner.fingerprint(f) not in (None, before)
+
+
+def test_a_moved_bundle_keeps_its_fingerprints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A translocated ButterEye.app (and an AppImage) runs from a new folder on
+    every launch: the same files must give the same versions."""
+
+    def bundle(root: Path) -> dict[str, str | None]:
+        contents = root / "ButterEye.app" / "Contents"
+        (contents / "Resources" / "lib").mkdir(parents=True)
+        (contents / "MacOS").mkdir()
+        mpv = contents / "MacOS" / "mpv"
+        mpv.write_bytes(b"mpv")
+        lib = contents / "Resources" / "lib" / "libMoltenVK.dylib"
+        lib.write_bytes(b"mvk")
+        icd = contents / "Resources" / "MoltenVK_icd.json"
+        icd.write_text(json.dumps({"ICD": {"library_path": "lib/libMoltenVK.dylib"}}))
+        for f in (mpv, lib, icd):
+            os.utime(f, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+        monkeypatch.setattr(osapi, "MACOS_APP", contents / "Resources")
+        monkeypatch.setattr(osapi, "LINUX_APP", None)
+        return {
+            "mpv": runner.fingerprint(mpv),
+            "vulkan": runner._vulkan_fingerprint({"VK_DRIVER_FILES": str(icd)}),
+        }
+
+    first = bundle(tmp_path / "AppTranslocation" / "1111" / "d")
+    second = bundle(tmp_path / "AppTranslocation" / "2222" / "d")
+    assert first == second and first["mpv"] is not None and first["vulkan"] is not None
+    assert first["mpv"].startswith("<bundle>/MacOS/mpv:")
+    # an AppImage at a new mount point
+    monkeypatch.setattr(osapi, "MACOS_APP", None)
+    seen = []
+    for mount in ("a", "b"):
+        root = tmp_path / f".mount_{mount}"
+        (root / "usr" / "bin").mkdir(parents=True)
+        exe = root / "usr" / "bin" / "vspipe"
+        exe.write_bytes(b"vspipe")
+        os.utime(exe, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+        monkeypatch.setattr(osapi, "LINUX_APP", root)
+        seen.append(runner.fingerprint(exe))
+    digest = hashlib.sha256(b"vspipe").hexdigest()[:16]
+    assert seen[0] == seen[1] == f"<bundle>/usr/bin/vspipe:6:{digest}"
+    # outside the bundle the path still counts (a Homebrew version directory)
+    other = tmp_path / "Cellar" / "mpv"
+    other.parent.mkdir()
+    other.write_bytes(b"mpv")
+    digest = hashlib.sha256(b"mpv").hexdigest()[:16]
+    assert runner.fingerprint(other) == f"{os.path.realpath(other)}:3:{digest}"
+
+
+def test_vulkan_fingerprint_names_the_moltenvk_library(tmp_path: Path) -> None:
+    lib = tmp_path / "lib" / "libMoltenVK.dylib"
+    lib.parent.mkdir()
+    lib.write_bytes(b"mvk")
+    icd = tmp_path / "MoltenVK_icd.json"
+    icd.write_text(json.dumps({"ICD": {"library_path": "lib/libMoltenVK.dylib"}}))
+    fp = runner._vulkan_fingerprint({"VK_DRIVER_FILES": str(icd)})
+    assert fp is not None and str(lib.resolve()) in fp
+    assert runner._vulkan_fingerprint({}) is None
+
+
+async def test_history_leaves_out_results_from_other_software(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner, "VERSIONS_TTL_S", 0.0)
+    core, _ = await _open(env)
+    result = await core.bench(REQ).result()
+    assert await core.bench_history() == (result,)
+    _exe(env.fake / "bin" / "mpv", FAKE_MPV + "\n# a newer mpv\n")
+    assert await core.bench_history() == ()  # re-measured by the next background run
+    assert store.read(env.paths.bench_file) == (result,)  # still on file
+    await core.close(cancel_jobs=True)
+
+
+def test_store_reads_schema_1_and_writes_schema_2(tmp_path: Path) -> None:
+    """Existing bench.json files stay readable: results kept, nothing recorded
+    about them (``Meta()``), rewritten as schema 2 at the next write."""
+    path = tmp_path / "bench.json"
+    r = _result()
+    store.write_atomic(path, [r])
+    doc = json.loads(path.read_text())
+    doc["schema"] = 1
+    for x in doc["results"]:
+        del x["meta"]
+    path.write_text(json.dumps(doc))
+    (entry,) = store.read_entries(path)
+    assert entry == store.Entry(r, store.Meta())
+    meta = store.Meta(
+        versions={"app": "0.0.6", "mpv": None},
+        on_battery=True,
+        low_power=False,
+        thermal_start=0,
+        thermal_max=2,
+        contended=False,
+        sustained={"mvgpu": 61.5},
+    )
+    store.append(path, _result(gpu_uuid="new"), meta=meta)
+    doc = json.loads(path.read_text())
+    assert doc["schema"] == 2 == store.SCHEMA
+    old, new = store.read_entries(path)
+    assert old == store.Entry(r, store.Meta())
+    assert new.meta == meta
+    # meta is advisory: wrong types read as unknown, not as a corrupt file
+    doc["results"][1]["meta"] = {"on_battery": "yes", "thermal_max": True, "sustained": [1]}
+    path.write_text(json.dumps(doc))
+    assert store.read_entries(path)[1].meta == store.Meta()

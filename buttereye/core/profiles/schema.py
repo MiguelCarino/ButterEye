@@ -12,24 +12,36 @@ Schema v1 layout (keys are the ``types.py`` field names)::
     rules = []                      # only when there are no rules (absent = shipped rules)
 
     [general]                       # backend_override, gpu, language, trt_experimental,
-                                    # upscaling, deband, full_size
+                                    # upscaling, deband, deband_strength, deband_grain,
+                                    # full_size, osd_*, keep_logs, lut, compare,
+                                    # even_pacing, cadence_first
+    [general.picture]               # brightness, contrast, saturation, gamma, hue
     [render]                        # container = "mkv", audio = "copy"
     [render.encoder_by_vendor]      # vendor = "encoder"
     [[profiles]]                    # id, name, backend, model, scale, target,
                                     # sc_threshold, buffered_frames, concurrent_frames, hdr,
-                                    # content
+                                    # content, aa
     [[rules]]                       # profile = "<id>", match = { fps_max = 30, ... }
 
 - ``target`` is ``"display"``, ``"display-max"``, ``"2x"`` or ``"fps:<n>/<d>"`` (``"fps:60"`` and
   ``"fps:59.94"`` are read too). Rule fps bounds are an integer, a decimal, or a
-  ``"<n>/<d>"`` string (24000/1001 stays exact).
+  ``"<n>/<d>"`` string (24000/1001 stays exact). A decimal within 1.5e-3 of an
+  NTSC rate n·1000/1001 is read as that rate (``fps_max = 23.976`` is 24000/1001,
+  not 2997/125, which is below it and matched no NTSC film); ``"<n>/<d>"`` is
+  never moved. Saved, it is written as the fraction.
+- A rule's ``thermal_min``/``thermal_max`` is a ``types.THERMAL_STATES`` name
+  (``"fair"``) or its number; it is written as the name.
 - Built-in profiles always exist. A ``[[profiles]]`` entry whose ``id`` is a
   built-in id overrides that built-in in place; on save a built-in is written only
   when it differs from the shipped one (or carries unknown keys), so "Reset to
   default" removes the entry and shipped updates keep reaching the user.
 - ``None`` values are omitted (TOML has no null), as are ``trt_experimental = false``
-  ``upscaling = "standard"``, ``deband = false``, ``full_size = false`` and a
-  profile's ``content = "auto"`` (older configs have no ``content`` key).
+  ``upscaling = "standard"``, ``deband = false``, ``full_size = false``,
+  ``deband_strength = "light"``, ``compare = "off"``, ``even_pacing = false``,
+  ``cadence_first = false``, every ``[general.picture]``
+  value of 0 (and the table, when all are 0), and a profile's ``content = "auto"``
+  and ``aa = false`` (older configs have none of these keys, and stay
+  byte-identical).
   Exception: a built-in override whose optional engine field is ``None`` while
   the shipped value is not writes an explicit "automatic" marker, because an
   absent key on a built-in means "the shipped value": ``model = ""``,
@@ -38,7 +50,7 @@ Schema v1 layout (keys are the ``types.py`` field names)::
   value otherwise).
 - Unknown keys are reported (``BE-2005``, warning) and kept verbatim in
   ``Config.unknown`` under a flat path: ``key`` (top level), ``general.key``,
-  ``render.key``, ``profiles[<id>].key``, ``rules[<i>].key``,
+  ``general.picture.key``, ``render.key``, ``profiles[<id>].key``, ``rules[<i>].key``,
   ``rules[<i>].match.key``. Path segments that are not bare TOML keys are JSON
   quoted. Profile unknowns follow the profile id; rule unknowns follow the rule
   position (a reordered rule list keeps them at the old position; past the end
@@ -66,8 +78,13 @@ from typing import Literal
 
 from buttereye.core.errors import ErrorCode
 from buttereye.core.profiles import defaults
+from buttereye.core.profiles.luts import valid_lut_name
 from buttereye.core.types import (
+    DEBAND_GRAIN_RANGE,
     OSD_ITEMS,
+    PICTURE_KEYS,
+    PICTURE_RANGE,
+    THERMAL_STATES,
     BackendId,
     Config,
     ConfigIssue,
@@ -75,6 +92,7 @@ from buttereye.core.types import (
     GeneralSettings,
     HdrClass,
     Msg,
+    PictureAdjust,
     Profile,
     RenderDefaults,
     Rule,
@@ -97,6 +115,8 @@ RENDER_KEYS = tuple(f.name for f in fields(RenderDefaults))
 PROFILE_KEYS = tuple(f.name for f in fields(Profile) if f.name != "builtin")
 RULE_KEYS = ("profile", "match")
 MATCH_KEYS = tuple(f.name for f in fields(RuleMatch))
+#: the upscaling choices, in the order the GUI offers them
+UPSCALING_CHOICES: tuple[str, ...] = ("standard", "sharper", "ravu")
 
 Section = tuple[str | int, ...]  # locator address: (), ("general",), ("profiles", 2), ...
 
@@ -136,6 +156,48 @@ def parse_fraction(value: object) -> Fraction | None:
         except ValueError, ZeroDivisionError:
             return None
         return frac
+    return None
+
+
+#: how far a decimal rate may be from n·1000/1001 and still mean it: 23.976,
+#: 29.97 and 59.94 are 2.4e-5, 3.0e-5 and 6.0e-5 away, and the next rate a person
+#: would write on purpose (23.97, 29.96) is 6e-3 or more away
+NTSC_SNAP = 1.5e-3
+
+
+def snap_ntsc(value: Fraction) -> Fraction:
+    """``value``, or the NTSC rate n·1000/1001 it is within ``NTSC_SNAP`` of.
+
+    Whole rates are left alone (24 is not near 24000/1001: 0.024 away), and so is
+    a value that already is the exact fraction.
+    """
+    n = round(value * Fraction(1001, 1000))
+    if n <= 0:
+        return value
+    ntsc = Fraction(n * 1000, 1001)
+    if ntsc.denominator == 1 or value == ntsc:
+        return value
+    return ntsc if abs(value - ntsc) <= Fraction(NTSC_SNAP) else value
+
+
+def parse_rule_fps(value: object) -> Fraction | None:
+    """A rule fps bound: ``parse_fraction``, then a float or decimal string near an
+    NTSC rate becomes that rate (``snap_ntsc``). An int and an ``"n/d"`` string
+    stay exactly what was written."""
+    frac = parse_fraction(value)
+    if frac is None:
+        return None
+    if isinstance(value, float) or (isinstance(value, str) and _FRACTION.fullmatch(value) is None):
+        return snap_ntsc(frac)
+    return frac
+
+
+def parse_thermal(value: object) -> int | None:
+    """A ``THERMAL_STATES`` name or its number (0-3)."""
+    if isinstance(value, str) and value.strip() in THERMAL_STATES:
+        return THERMAL_STATES.index(value.strip())
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < len(THERMAL_STATES):
+        return value
     return None
 
 
@@ -180,12 +242,14 @@ def unknown_path(section: Section, key: str, profile_id: str | None = None) -> s
     if head == "rules":
         tail = ".match" if len(section) > 2 else ""
         return f"rules[{section[1]}]{tail}.{seg}"
+    if section == ("general", "picture"):
+        return f"general.picture.{seg}"
     return f"{head}.{seg}"
 
 
 _UNKNOWN_PATH = re.compile(
     r"""(?:
-        (?P<table>general|render)\.
+        (?P<table>general\.picture|general|render)\.
       | profiles\[(?P<pid>[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*")\]\.
       | rules\[(?P<rule>\d+)\](?P<match>\.match)?\.
     )?
@@ -196,7 +260,7 @@ _UNKNOWN_PATH = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class UnknownPath:
-    where: Literal["root", "general", "render", "profile", "rule", "match"]
+    where: Literal["root", "general", "picture", "render", "profile", "rule", "match"]
     key: str
     profile_id: str | None = None
     rule_index: int | None = None
@@ -209,8 +273,11 @@ def split_unknown_path(path: str) -> UnknownPath:
         return UnknownPath("root", path)
     try:
         key = _unquote(m.group("key"))
-        if m.group("table"):
-            return UnknownPath("general" if m.group("table") == "general" else "render", key)
+        table = m.group("table")
+        if table == "general.picture":
+            return UnknownPath("picture", key)
+        if table:
+            return UnknownPath("general" if table == "general" else "render", key)
         if m.group("pid") is not None:
             return UnknownPath("profile", key, profile_id=_unquote(m.group("pid")))
         if m.group("rule") is not None:
@@ -729,7 +796,7 @@ class _Reader:
                 sec,
                 "general.upscaling",
                 _upscaling,
-                '"standard" or "sharper"',
+                '"standard", "sharper" or "ravu"',
                 "standard",
             ),
             deband=self.get(t, "deband", sec, "general.deband", _bool, "true or false", False),
@@ -757,7 +824,52 @@ class _Reader:
             keep_logs=self.get(
                 t, "keep_logs", sec, "general.keep_logs", _bool, "true or false", True
             ),
+            picture=self.picture(
+                self.table(t.get("picture"), (*sec, "picture"), "general.picture")
+            ),
+            lut=self.get(
+                t, "lut", sec, "general.lut", _lut_name, "the name of an imported .cube file", None
+            ),
+            deband_strength=self.get(
+                t,
+                "deband_strength",
+                sec,
+                "general.deband_strength",
+                _deband_strength,
+                '"light" or "strong"',
+                "light",
+            ),
+            deband_grain=self.get(
+                t,
+                "deband_grain",
+                sec,
+                "general.deband_grain",
+                _deband_grain,
+                "a whole number from {} to {}".format(*DEBAND_GRAIN_RANGE),
+                None,
+            ),
+            compare=self.get(
+                t, "compare", sec, "general.compare", _compare, '"off" or "split"', "off"
+            ),
+            even_pacing=self.get(
+                t, "even_pacing", sec, "general.even_pacing", _bool, "true or false", False
+            ),
+            cadence_first=self.get(
+                t, "cadence_first", sec, "general.cadence_first", _bool, "true or false", False
+            ),
         )
+
+    def picture(self, t: Mapping[str, object] | None) -> PictureAdjust:
+        if t is None:
+            return PictureAdjust()
+        sec: Section = ("general", "picture")
+        self.keep_unknown(sec, t, PICTURE_KEYS)
+        expected = "a whole number from {} to {}".format(*PICTURE_RANGE)
+        values = {
+            key: self.get(t, key, sec, f"general.picture.{key}", _picture_value, expected, 0)
+            for key in PICTURE_KEYS
+        }
+        return PictureAdjust(**values)
 
     def render(self, t: Mapping[str, object] | None) -> RenderDefaults:
         if t is None:
@@ -862,6 +974,7 @@ class _Reader:
                 hdr=g("hdr", _hdr_mode, '"skip" or "passthrough"', base.hdr),
                 builtin=True,
                 content=g("content", _content, _CONTENT_CHOICES, base.content),
+                aa=g("aa", _bool, "true or false", base.aa),
             )
         return Profile(
             id=pid,
@@ -876,6 +989,7 @@ class _Reader:
             hdr=g("hdr", _hdr_mode, '"skip" or "passthrough"', "skip"),
             builtin=False,
             content=g("content", _content, _CONTENT_CHOICES, ContentKind.AUTO),
+            aa=g("aa", _bool, "true or false", False),
         )
 
     def rules(self, raw: object) -> tuple[Rule, ...]:
@@ -916,14 +1030,17 @@ class _Reader:
             return self.get(t, key, sec, f"{p}.{key}", conv, expected, None)
 
         return RuleMatch(
-            fps_min=g("fps_min", parse_fraction, _FPS_EXPECTED),
-            fps_max=g("fps_max", parse_fraction, _FPS_EXPECTED),
+            fps_min=g("fps_min", parse_rule_fps, _FPS_EXPECTED),
+            fps_max=g("fps_max", parse_rule_fps, _FPS_EXPECTED),
             width_max=g("width_max", _int, "a whole number"),
             height_max=g("height_max", _int, "a whole number"),
             hdr_class=g("hdr_class", _hdr_class, _HDR_CHOICES),
             display_hz_min=g("display_hz_min", _float, "a number"),
             interlaced=g("interlaced", _bool, "true or false"),
             path_glob=g("path_glob", _str, "text"),
+            on_battery=g("on_battery", _bool, "true or false"),
+            thermal_min=g("thermal_min", parse_thermal, _THERMAL_CHOICES),
+            thermal_max=g("thermal_max", parse_thermal, _THERMAL_CHOICES),
         )
 
 
@@ -933,6 +1050,7 @@ _TARGET_CHOICES = '"display", "display-max", "2x" or "fps:<n>/<d>"'
 _HDR_CHOICES = ", ".join(f'"{h.value}"' for h in HdrClass)
 _CONTENT_CHOICES = '"auto", "live" or "animation"'
 _FPS_EXPECTED = 'a frame rate such as 30, 59.94 or "24000/1001"'
+_THERMAL_CHOICES = ", ".join(f'"{name}"' for name in THERMAL_STATES)
 
 
 def _describe(value: object) -> str:
@@ -969,16 +1087,54 @@ def _str(v: object) -> str | None:
     return v if isinstance(v, str) else None
 
 
+def _lut_name(v: object) -> str | None:
+    # a path or any other non-name is a read issue that falls back to no LUT, as
+    # for the other picture keys; left in the Config, rules.validate would refuse
+    # every later save over a field the GUI has no control for
+    return v if isinstance(v, str) and valid_lut_name(v) else None
+
+
 def _bool(v: object) -> bool | None:
     return v if isinstance(v, bool) else None
 
 
-def _upscaling(v: object) -> Literal["standard", "sharper"] | None:
+def _upscaling(v: object) -> Literal["standard", "sharper", "ravu"] | None:
     if v == "standard":
         return "standard"
     if v == "sharper":
         return "sharper"
+    if v == "ravu":
+        return "ravu"
     return None
+
+
+def _deband_strength(v: object) -> Literal["light", "strong"] | None:
+    if v == "light":
+        return "light"
+    if v == "strong":
+        return "strong"
+    return None
+
+
+def _compare(v: object) -> Literal["off", "split"] | None:
+    if v == "off":
+        return "off"
+    if v == "split":
+        return "split"
+    return None
+
+
+def _in_range(v: object, bounds: tuple[int, int]) -> int | None:
+    n = _int(v)
+    return n if n is not None and bounds[0] <= n <= bounds[1] else None
+
+
+def _picture_value(v: object) -> int | None:
+    return _in_range(v, PICTURE_RANGE)
+
+
+def _deband_grain(v: object) -> int | None:
+    return _in_range(v, DEBAND_GRAIN_RANGE)
 
 
 def _osd_seconds(v: object) -> float | None:
@@ -1076,6 +1232,8 @@ def _profile_doc(p: Profile) -> dict[str, object]:
     # or the shipped value on a built-in), so older configs stay byte-identical.
     if p.content != (shipped.content if shipped else ContentKind.AUTO):
         d["content"] = str(p.content)
+    if p.aa != (shipped.aa if shipped else False):
+        d["aa"] = p.aa
     return d
 
 
@@ -1097,7 +1255,19 @@ def _match_doc(m: RuleMatch) -> Inline:
         d["interlaced"] = m.interlaced
     if m.path_glob is not None:
         d["path_glob"] = m.path_glob
+    if m.on_battery is not None:
+        d["on_battery"] = m.on_battery
+    if m.thermal_min is not None:
+        d["thermal_min"] = _thermal_value(m.thermal_min)
+    if m.thermal_max is not None:
+        d["thermal_max"] = _thermal_value(m.thermal_max)
     return d
+
+
+def _thermal_value(level: int) -> str | int:
+    """The state's name; a number outside the table is written as it is, so that
+    ``validate`` can report it rather than the writer failing."""
+    return THERMAL_STATES[level] if 0 <= level < len(THERMAL_STATES) else level
 
 
 def _fraction_value(f: Fraction) -> int | str:
@@ -1108,6 +1278,7 @@ def to_document(cfg: Config) -> dict[str, object]:
     """``Config`` -> plain document for ``dumps`` (unknown keys merged back in)."""
     root_unknown: dict[str, object] = {}
     general_unknown: dict[str, object] = {}
+    picture_unknown: dict[str, object] = {}
     render_unknown: dict[str, object] = {}
     profile_unknown: dict[str, dict[str, object]] = {}
     rule_unknown: dict[int, dict[str, object]] = {}
@@ -1118,6 +1289,8 @@ def to_document(cfg: Config) -> dict[str, object]:
             root_unknown[u.key] = value
         elif u.where == "general":
             general_unknown[u.key] = value
+        elif u.where == "picture":
+            picture_unknown[u.key] = value
         elif u.where == "render":
             render_unknown[u.key] = value
         elif u.where == "profile" and u.profile_id is not None:
@@ -1151,6 +1324,22 @@ def to_document(cfg: Config) -> dict[str, object]:
         general["osd_items"] = list(g.osd_items)
     if not g.keep_logs:
         general["keep_logs"] = False
+    if g.lut is not None:
+        general["lut"] = g.lut
+    if g.deband_strength != "light":
+        general["deband_strength"] = g.deband_strength
+    if g.deband_grain is not None:
+        general["deband_grain"] = g.deband_grain
+    if g.compare != "off":
+        general["compare"] = g.compare
+    if g.even_pacing:
+        general["even_pacing"] = True
+    if g.cadence_first:
+        general["cadence_first"] = True
+    picture = {k: getattr(g.picture, k) for k in PICTURE_KEYS if getattr(g.picture, k) != 0}
+    _merge(picture, picture_unknown)
+    if picture:
+        general["picture"] = picture
     _merge(general, general_unknown)
     if general:
         doc["general"] = general

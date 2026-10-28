@@ -917,6 +917,11 @@
     </message>
     <message>
         <location filename="buttereye/gui/widgets/bench_plot.py"/>
+        <source>Real time {fps} fps</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/bench_plot.py"/>
         <source>Target {fps} fps</source>
         <translation type="unfinished"></translation>
     </message>
@@ -933,6 +938,11 @@
     <message>
         <location filename="buttereye/gui/widgets/bench_plot.py"/>
         <source>real time</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/bench_plot.py"/>
+        <source>target {fps} fps</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -1036,6 +1046,11 @@
     <name>ConvertDialog</name>
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>&amp;10-bit colour</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
         <source>&amp;Format</source>
         <translation type="unfinished"></translation>
     </message>
@@ -1136,6 +1151,11 @@
     </message>
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>Each size shows the engine that makes it in time and how long it takes; smaller sizes convert faster, and the times are estimates.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
         <source>Failed</source>
         <translation type="unfinished"></translation>
     </message>
@@ -1146,7 +1166,22 @@
     </message>
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>Finish saving {name}</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>Finish the copy</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
         <source>Finishing</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>GPU motion vectors</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -1166,6 +1201,11 @@
     </message>
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>HEVC (Mac media engine)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
         <source>HEVC (NVIDIA GPU)</source>
         <translation type="unfinished"></translation>
     </message>
@@ -1176,12 +1216,37 @@
     </message>
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>Less banding in skies and dark gradients, at about the same speed and size. Videos that are 10-bit already always stay 10-bit.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>MVTools (CPU)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
         <source>Matroska video (*.mkv)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
         <source>Original ({w} × {h})</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>ProRes 422 HQ (Mac media engine, very large files)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>RIFE</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>RIFE · TensorRT</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -1241,7 +1306,7 @@
     </message>
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
-        <source>Smaller sizes convert faster; the times are estimates.</source>
+        <source>The converted video was kept; this copies the sound and subtitles again.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2223,6 +2288,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>Anti-aliases each frame with znedi3 before smoothing, so the engine follows clean edges instead of stair-steps. It runs on the CPU and costs a lot; use it with a GPU engine, for low-resolution or aliased video. It needs the znedi3 plugin; without it the video is smoothed as it is.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
         <source>At 4K, RIFE (Vulkan) works at a smaller size when the speed test says it can't keep up.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2323,12 +2393,22 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>Double can step unevenly: 2× a 24 fps film is 48 fps, which a 60 Hz display shows as a slight regular judder. Details → Settings → Even motion can blend the uneven steps, or let Match my display smooth at a smaller size so every frame is paced evenly.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
         <source>Duplicate</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
         <source>Duplicated as {name}.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>Edges</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2653,6 +2733,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/profiles.py"/>
+        <source>Smooth jagged edges first</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/profiles.py"/>
         <source>Smoothest motion; the GPU works up to twice as hard on fast displays.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2887,6 +2972,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/dialogs/render_job.py"/>
+        <source>&amp;10-bit colour</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/render_job.py"/>
         <source>&amp;Add to queue</source>
         <translation type="unfinished"></translation>
     </message>
@@ -3037,6 +3127,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/dialogs/render_job.py"/>
+        <source>Less banding in skies and dark gradients, at about the same speed and size. 10-bit and HDR videos always stay 10-bit.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/render_job.py"/>
         <source>Matroska (.mkv) only.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -3165,6 +3260,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/render.py"/>
+        <source>&amp;Finish the copy</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/render.py"/>
         <source>&amp;Keep it</source>
         <translation type="unfinished"></translation>
     </message>
@@ -3196,6 +3296,16 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <message>
         <location filename="buttereye/gui/pages/render.py"/>
         <source>A render from a previous session left partial files.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/render.py"/>
+        <source>A video is playing: the render is paused so it doesn't slow playback down, and continues when the player is closed.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/render.py"/>
+        <source>A video is playing: the render keeps going at lower CPU priority and shares the graphics card with it, so either may slow down.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -3341,11 +3451,6 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <message>
         <location filename="buttereye/gui/pages/render.py"/>
         <source>Phase</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/pages/render.py"/>
-        <source>Playback is running: renders use lower priority.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4121,6 +4226,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/sessions.py"/>
+        <source>Pacing</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/sessions.py"/>
         <source>Play</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4454,6 +4564,16 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/settings_panel.py"/>
+        <source>3D LUT (*{suffix})</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>A .cube file; ButterEye keeps its own copy.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
         <source>A small line at the top left of mpv when smoothing starts or changes.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4464,7 +4584,52 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Always use my choice</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Automatic</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Battery and heat</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Battery profile on battery or when the Mac runs hot</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Blend frames the display can't show evenly</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Brightness</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
         <source>CPU or GPU, and the method</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Colour LUT</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Compare: original on the left half</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Contrast</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4474,7 +4639,37 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Even motion</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
         <source>Frame rates (24 → 60 fps)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Gamma</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Grain</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Hue</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Import a colour LUT</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Import…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4484,7 +4679,47 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Less banding</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Light</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
         <source>Logs</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Match my display smooths at a smaller size when that keeps every frame evenly paced, instead of doubling at the full size.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Match my display: even motion before size</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>No LUT</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Noise added over debanded areas to hide what is left.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>None</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Not imported: {why}</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4499,7 +4734,62 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Picture</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Power</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Reset colours</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Saturation</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Sharp edges, lighter (RAVU)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Sharper (FSRCNNX)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
         <source>Show &amp;for</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Shows the video unsmoothed on the left and smoothed on the right. Alt+C in mpv switches it for the video playing.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Smooths the steps in skies and dark gradients. Strong also smooths fine detail a little.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Standard (mpv's own)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Strong</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>The Battery profile smooths with GPU motion vectors at 2×, which uses far less power than RIFE. It applies to videos opened after the change.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4509,7 +4799,42 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Upscaler</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Use no colour LUT</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Use the Battery profile on battery</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Used when the video is smaller than the window. FSRCNNX is the sharpest and costs the most GPU time; RAVU keeps edges crisp for much less.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
         <source>What happened with each video and copy, for Copy log and More logs. Off: no log buttons, and each mpv log is deleted when the video closes.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>When the smoothed rate doesn't divide into the display's, mpv blends the two frames around each in-between refresh, so the slight regular judder goes. Blending softens motion a little.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>{lo} to {hi}; 0 leaves the video as it is.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>{name}, slider</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4522,7 +4847,7 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <name>SetupWizard</name>
     <message>
         <location filename="buttereye/gui/dialogs/setup_wizard.py"/>
-        <source>&amp;Measure my GPU now (about a minute)</source>
+        <source>&amp;Measure my GPU now (a few minutes)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5128,7 +5453,7 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>FSRCNNX shader; costs a little GPU time when the video is upscaled.</source>
+        <source>FSRCNNX shader; it runs on every smoothed frame, so ButterEye leaves it off unless the video is enlarged at least 1.8×, and on battery or when hot.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5243,12 +5568,12 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>Measuring your GPU (about a minute)…</source>
+        <source>Measuring your GPU (a few minutes)…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>Measuring your computer (about a minute)…</source>
+        <source>Measuring your computer (a few minutes)…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5378,6 +5703,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>RAVU shader: crisp edges for much less GPU time than Sharper, while the video is enlarged.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>RIFE {model} on the GPU with TensorRT</source>
         <translation type="unfinished"></translation>
     </message>
@@ -5448,12 +5778,22 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Sharp edges (RAVU)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Sharp edges, less banding</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Sharper</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>Sharper adds crisper edges when the video is smaller than the window; less banding smooths steps in gradients.</source>
+        <source>Sharper and Sharp edges add crisper edges when the video is smaller than the window; less banding smooths steps in gradients.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

@@ -163,7 +163,10 @@ def test_invalid_config_is_not_saved(paths: Paths) -> None:
     with pytest.raises(ConfigError) as exc:
         config.save(paths, bad, expected_revision="")
     assert exc.value.code is ErrorCode.CONFIG_VALUE
-    assert exc.value.detail is not None and "profiles[4].scale" in exc.value.detail
+    assert (
+        exc.value.detail is not None
+        and f"profiles[{len(defaults.builtin_profiles())}].scale" in exc.value.detail
+    )
     assert not paths.config_file.exists()
 
 

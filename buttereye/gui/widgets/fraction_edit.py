@@ -2,9 +2,11 @@
 # Copyright (C) 2026 The ButterEye contributors
 """Exact frame-rate entry: ``24000/1001``, ``60`` or ``23.976`` (§4.4, rule tester).
 
-Rates are ``Fraction`` end to end (§0 graft). A decimal is taken literally
-(``23.976`` = 2997/125); type ``24000/1001`` for NTSC film. ``value()`` is
-``None`` while the text is empty or incomplete.
+Rates are ``Fraction`` end to end (§0 graft). A decimal within 1.5e-3 of an
+NTSC rate is that rate (``23.976`` = 24000/1001, ``api.snap_ntsc``), as
+``config.toml`` reads a rule's fps bound; any other decimal is taken literally
+(``23.97`` = 2397/100), and ``n/d`` is never moved. ``value()`` is ``None``
+while the text is empty or incomplete.
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ from fractions import Fraction
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QValidator
 from PySide6.QtWidgets import QLineEdit, QWidget
+
+from buttereye.core.api import snap_ntsc
 
 _FULL = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(?:/\s*(\d+))?\s*$")
 _PARTIAL = re.compile(r"^\s*(\d+(?:\.\d*)?)?\s*(?:/\s*\d*)?\s*$")
@@ -36,6 +40,8 @@ def parse_rate(text: str) -> Fraction | None:
         if den == 0:
             return None
         num = num / den
+    elif "." in m.group(1):
+        num = snap_ntsc(num)
     if num <= 0 or num > MAX_RATE:
         return None
     return num

@@ -62,27 +62,81 @@ OBSERVABLE: frozenset[str] = frozenset(
         "video-frame-info",
     }
 )
-#: Properties ButterEye may read once.
-READABLE: frozenset[str] = OBSERVABLE | frozenset(
+#: Properties ButterEye may set, each with the only values it may set them to
+#: (``check_command``). The first four are the attach settings of §4.3, restored on
+#: detach; the rest are picture settings ButterEye applies after smoothing and puts
+#: back the same way.
+#:
+#: Integer ranges are mpv's own (``mpv --list-options``, 0.41): the colour controls
+#: take -100..100, ``deband-iterations`` 0..16, ``deband-threshold`` and
+#: ``deband-grain`` 0..4096, ``deband-range`` 1..64. mpv stores most of them as
+#: floats, but ButterEye only ever sends whole numbers, so a float is refused as
+#: firmly as a bool (``True`` is an ``int`` to Python and 1 to mpv).
+INT_RANGES: Mapping[str, tuple[int, int]] = {
+    "brightness": (-100, 100),
+    "contrast": (-100, 100),
+    "saturation": (-100, 100),
+    "gamma": (-100, 100),
+    "hue": (-100, 100),
+    "deband-iterations": (0, 16),
+    "deband-threshold": (0, 4096),
+    "deband-range": (1, 64),
+    "deband-grain": (0, 4096),
+}
+#: ``tscale`` values: mpv's temporal filters for its own ``interpolation`` (0.41's
+#: ``--tscale`` choices, less the ones that are only there for completeness)
+TSCALE_CHOICES: frozenset[str] = frozenset(
     {
-        "pid",
-        "mpv-version",
-        "media-title",
-        "filename",
-        "hwdec-current",
-        "hwdec",
-        "hr-seek",
-        "hr-seek-framedrop",
-        "interpolation",
-        "video-sync",
-        "watch-later-options",
-        "glsl-shaders",
-        "deband",
+        "oversample",
+        "linear",
+        "catmull_rom",
+        "mitchell",
+        "hermite",
+        "bicubic",
+        "gaussian",
+        "sphinx",
+        "spline16",
+        "spline36",
+        "box",
+        "triangle",
+        "robidoux",
+        "robidouxsharp",
     }
 )
-#: Properties ButterEye may set (the attach settings of §4.3; restored on detach).
-WRITABLE: frozenset[str] = frozenset(
-    {"hwdec", "hr-seek-framedrop", "interpolation", "deband"}  # deband: §15.2
+#: the attach settings, which take what they took before: a string or a bool
+_PLAIN_WRITABLE: frozenset[str] = frozenset(
+    {"hwdec", "hr-seek-framedrop", "interpolation", "deband"}
+)
+WRITABLE: frozenset[str] = (
+    _PLAIN_WRITABLE | frozenset(INT_RANGES) | frozenset({"tscale", "lut", "glsl-shaders"})
+)
+
+#: Properties ButterEye may read once: everything it may set (so that it can put
+#: the old value back), and what it reads to explain a session.
+READABLE: frozenset[str] = (
+    OBSERVABLE
+    | WRITABLE
+    | frozenset(
+        {
+            "pid",
+            "mpv-version",
+            "media-title",
+            "filename",
+            "hwdec-current",
+            "hwdec",
+            "hr-seek",
+            "hr-seek-framedrop",
+            "interpolation",
+            "video-sync",
+            "watch-later-options",
+            "scale",  # the user's upscaler: ewa_* is costly at every smoothed frame
+            "estimated-display-fps",
+            "lut-type",
+            # window size and black bars: how much the picture is enlarged, for
+            # the upscaling shaders' 1.8x bar (shaders.video_scale)
+            "osd-dimensions",
+        }
+    )
 )
 LOG_LEVELS: frozenset[str] = frozenset({"no", "fatal", "error", "warn", "info"})
 
@@ -114,6 +168,40 @@ def _strs(args: Sequence[object]) -> bool:
     return all(isinstance(a, str) for a in args)
 
 
+def _lut_path(value: str) -> bool:
+    from buttereye.core.profiles.luts import is_lut_path
+
+    return is_lut_path(value)
+
+
+def writable_value(name: str, value: object) -> bool:
+    """May ``set_property name value`` be sent? Names outside ``WRITABLE`` never.
+
+    - the attach settings (``hwdec``, ``hr-seek-framedrop``, ``interpolation``,
+      ``deband``): a string or a bool, as before;
+    - ``INT_RANGES`` names: an ``int`` inside the range, never a bool or a float;
+    - ``tscale``: one of ``TSCALE_CHOICES``;
+    - ``lut``: ``""`` or an imported LUT in ButterEye's own folder
+      (``profiles.luts.is_lut_path``);
+    - ``glsl-shaders``: a list of bundled shaders only (``shaders.ALLOWED``),
+      ``[]`` included. ``change-list`` is still the way to add or remove one
+      without touching the user's own; this is for putting a list back.
+    """
+    if name in _PLAIN_WRITABLE:
+        return isinstance(value, (str, bool))
+    bounds = INT_RANGES.get(name)
+    if bounds is not None:
+        return type(value) is int and bounds[0] <= value <= bounds[1]
+    if name == "tscale":
+        return isinstance(value, str) and value in TSCALE_CHOICES
+    if name == "lut":
+        return isinstance(value, str) and _lut_path(value)
+    if name == "glsl-shaders":
+        allowed = _shader_paths()
+        return isinstance(value, list) and all(isinstance(v, str) and v in allowed for v in value)
+    return False
+
+
 def check_command(args: Sequence[object]) -> None:
     """Raise ``CommandRefused`` unless ``args`` is an allowed mpv command."""
     if not args or not isinstance(args[0], str):
@@ -129,7 +217,7 @@ def check_command(args: Sequence[object]) -> None:
         if len(rest) == 1 and rest[0] in READABLE:
             return
     elif name == "set_property":
-        if len(rest) == 2 and rest[0] in WRITABLE and isinstance(rest[1], (str, bool)):
+        if len(rest) == 2 and isinstance(rest[0], str) and writable_value(rest[0], rest[1]):
             return
     elif name == "change-list":
         # only ButterEye's bundled shaders, by exact path (shaders.ALLOWED)
@@ -371,6 +459,11 @@ class MpvIpc:
             self._pending.pop(rid, None)
             self._mark_closed()
             raise IpcClosed(str(exc)) from exc
+        except BaseException:
+            # cancelled while sending: nobody will await the future, and a close
+            # failing it later printed "Future exception was never retrieved"
+            self._pending.pop(rid, None)
+            raise
         try:
             reply = await asyncio.wait_for(fut, timeout_s)
         finally:
@@ -439,7 +532,9 @@ __all__ = [
     "VF_ADD_PREFIX",
     "HELPER_NAME",
     "OBSERVABLE",
+    "INT_RANGES",
     "READABLE",
+    "TSCALE_CHOICES",
     "WRITABLE",
     "CommandRefused",
     "MpvError",
@@ -447,6 +542,7 @@ __all__ = [
     "SocketRefused",
     "MpvIpc",
     "check_command",
+    "writable_value",
     "check_socket_path",
     "quote",
     "valid_vf_add",

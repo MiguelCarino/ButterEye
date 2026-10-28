@@ -18,6 +18,7 @@ from buttereye.core.types import (
     Config,
     GeneralSettings,
     HdrClass,
+    PictureAdjust,
     Profile,
     RenderDefaults,
     Rule,
@@ -65,11 +66,16 @@ def test_defaults_are_valid() -> None:
     assert api.validate_config(defaults.default_config()) == ()
 
 
-def test_builtins_are_the_four_shipped_profiles() -> None:
+def test_builtins_are_the_five_shipped_profiles() -> None:
     ps = defaults.builtin_profiles()
-    assert [p.id for p in ps] == ["quality", "balanced", "fast", "cpu"]
+    assert [p.id for p in ps] == ["quality", "balanced", "fast", "cpu", "battery"]
     assert all(p.builtin for p in ps)
     assert ps[3].backend is BackendId.MVTOOLS and ps[3].model is None
+    # the lightest GPU engine at 2x, and no shipped rule sends anything to it
+    assert ps[4].backend is BackendId.MVGPU and ps[4].model is None
+    assert ps[4].target == Target(TargetKind.X2)
+    assert defaults.BATTERY_PROFILE_ID not in {r.profile for r in defaults.default_rules()}
+    assert defaults.BATTERY_RULE.match.on_battery is True
     assert defaults.default_config().profiles == ps
 
 
@@ -146,6 +152,7 @@ def test_fps_target_needs_fraction() -> None:
         ({"buffered_frames": True}, "buffered_frames"),
         ({"hdr": "on"}, "hdr"),
         ({"content": "cartoon"}, "content"),
+        ({"aa": 1}, "aa"),
         ({"backend": "warp"}, "backend"),
     ],
 )
@@ -182,6 +189,11 @@ def test_rules_reference_existing_profiles() -> None:
         (RuleMatch(path_glob=" "), "path_glob"),
         (RuleMatch(hdr_class="hdr11"), "hdr_class"),  # type: ignore[arg-type]
         (RuleMatch(interlaced=1), "interlaced"),  # type: ignore[arg-type]
+        (RuleMatch(on_battery=1), "on_battery"),  # type: ignore[arg-type]
+        (RuleMatch(thermal_min=4), "thermal_min"),
+        (RuleMatch(thermal_max=-1), "thermal_max"),
+        (RuleMatch(thermal_max=True), "thermal_max"),
+        (RuleMatch(thermal_min=3, thermal_max=1), "thermal_min"),
     ],
 )
 def test_match_fields(match: RuleMatch, field: str) -> None:
@@ -199,6 +211,9 @@ def test_valid_match_with_every_key() -> None:
         display_hz_min=119.88,
         interlaced=False,
         path_glob="~/Videos/**",
+        on_battery=True,
+        thermal_min=0,
+        thermal_max=3,
     )
     assert fields(dataclasses.replace(defaults.default_config(), rules=(Rule(m, "fast"),))) == []
 
@@ -216,6 +231,42 @@ def test_general_fields() -> None:
     assert fields(cfg) == ["general.backend_override", "general.gpu", "general.language"]
     ok = GeneralSettings(language="pt-BR", gpu="0")
     assert fields(dataclasses.replace(defaults.default_config(), general=ok)) == []
+
+
+@pytest.mark.parametrize(
+    ("changes", "field"),
+    [
+        ({"upscaling": "nnedi3"}, "general.upscaling"),
+        ({"picture": PictureAdjust(brightness=101)}, "general.picture.brightness"),
+        ({"picture": PictureAdjust(hue=-101)}, "general.picture.hue"),
+        ({"picture": PictureAdjust(gamma=True)}, "general.picture.gamma"),
+        ({"picture": PictureAdjust(saturation=2.0)}, "general.picture.saturation"),  # type: ignore[arg-type]
+        ({"lut": "../film.cube"}, "general.lut"),
+        ({"lut": "/Users/me/film.cube"}, "general.lut"),
+        ({"lut": "film.png"}, "general.lut"),
+        ({"lut": ".hidden.cube"}, "general.lut"),
+        ({"deband_strength": "max"}, "general.deband_strength"),
+        ({"deband_grain": 101}, "general.deband_grain"),
+        ({"deband_grain": -1}, "general.deband_grain"),
+        ({"compare": "side"}, "general.compare"),
+    ],
+)
+def test_picture_settings(changes: dict[str, object], field: str) -> None:
+    general = dataclasses.replace(GeneralSettings(), **changes)  # type: ignore[arg-type]
+    assert fields(dataclasses.replace(defaults.default_config(), general=general)) == [field]
+
+
+def test_valid_picture_settings() -> None:
+    general = GeneralSettings(
+        upscaling="ravu",
+        deband=True,
+        picture=PictureAdjust(-100, 100, 0, -1, 1),
+        lut="Film Look (v2).CUBE",
+        deband_strength="strong",
+        deband_grain=100,
+        compare="split",
+    )
+    assert fields(dataclasses.replace(defaults.default_config(), general=general)) == []
 
 
 def test_render_fields() -> None:

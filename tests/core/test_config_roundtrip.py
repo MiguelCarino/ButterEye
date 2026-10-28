@@ -26,6 +26,7 @@ from buttereye.core.types import (
     GeneralSettings,
     HdrClass,
     Paths,
+    PictureAdjust,
     Profile,
     RenderDefaults,
     Rule,
@@ -84,6 +85,7 @@ def _rich_config() -> Config:
             concurrent_frames=None,
         ),
         _custom("auto-one", backend="auto", model=None, target=Target(TargetKind.DISPLAY)),
+        _custom("smooth-edges", aa=True),
     )
     rules = (
         Rule(
@@ -100,6 +102,7 @@ def _rich_config() -> Config:
             "anime",
         ),
         Rule(RuleMatch(interlaced=True), "cpu"),
+        Rule(RuleMatch(on_battery=True, thermal_min=1, thermal_max=2), "battery"),
         Rule(RuleMatch(), "balanced"),
     )
     unknown = MappingProxyType(
@@ -113,6 +116,7 @@ def _rich_config() -> Config:
             "clock": time(7, 30, 15, 250000),
             '"odd key"': "quoted",
             "general.future_c": "x",
+            "general.picture.future_pic": 3,
             "render.future_r": 2.5,
             "profiles[anime].future_p": MappingProxyType({"k": "v"}),
             "profiles[fast].note": "kept with the override",
@@ -127,6 +131,15 @@ def _rich_config() -> Config:
             gpu="5a0b2c3d-0000-1111-2222-333344445555",
             language="pt-BR",
             trt_experimental=True,
+            upscaling="ravu",
+            deband=True,
+            picture=PictureAdjust(brightness=-5, contrast=10, saturation=100, gamma=-100, hue=1),
+            lut="Film Look (v2).cube",
+            deband_strength="strong",
+            deband_grain=0,
+            compare="split",
+            even_pacing=True,
+            cadence_first=True,
         ),
         profiles=profiles,
         rules=rules,
@@ -191,7 +204,20 @@ def test_writer_output_is_toml_that_tomllib_reads(paths: Paths) -> None:
     assert doc["future_aot"] == [{"x": 1}, {"x": 2}]
     assert doc["odd key"] == "quoted"
     names = [p["id"] for p in doc["profiles"]]
-    assert names == ["fast", "anime", "trt-4k", "auto-one"]  # only the changed built-in
+    assert names == ["fast", "anime", "trt-4k", "auto-one", "smooth-edges"]  # changed built-in
+    assert doc["general"]["picture"] == {
+        "brightness": -5,
+        "contrast": 10,
+        "saturation": 100,
+        "gamma": -100,
+        "hue": 1,
+        "future_pic": 3,
+    }
+    assert doc["rules"][2]["match"] == {
+        "on_battery": True,
+        "thermal_min": "fair",
+        "thermal_max": "serious",
+    }
 
 
 @pytest.mark.parametrize(
@@ -240,6 +266,9 @@ def test_unwritable_unknown_value_is_refused(paths: Paths) -> None:
     assert exc.value.code is ErrorCode.CONFIG_VALUE
     assert not paths.config_file.exists()
 
+
+#: Config.profiles index of the first custom profile: the built-ins come first
+CUSTOM = len(defaults.builtin_profiles())
 
 HAND_WRITTEN = """\
 # my settings
@@ -295,7 +324,8 @@ def test_hand_written_unknown_keys_kept_and_located(paths: Paths) -> None:
     assert by_field["rules[1].match.shimmer"].line == 25
     assert by_field["extra"].line == 27
     cfg = load.config
-    assert cfg.rules[0].match.fps_max == Fraction("23.976")  # decimal kept exact
+    # a decimal NTSC rate reads as the exact rate it stands for (B16)
+    assert cfg.rules[0].match.fps_max == Fraction(24000, 1001)
     mine = next(p for p in cfg.profiles if p.id == "mine")
     assert mine.target == Target(TargetKind.FPS, Fraction(60)) and mine.backend is BackendId.MVTOOLS
     assert cfg.unknown["extra"] == MappingProxyType({"a": (1, 2)})
@@ -326,7 +356,13 @@ def test_builtin_override_and_reset(paths: Paths) -> None:
     load = config.load(paths)
     assert load.config.profiles[0].builtin is True
     assert load.config.profiles[0].name == "My quality"
-    assert [p.id for p in load.config.profiles] == ["quality", "balanced", "fast", "cpu"]
+    assert [p.id for p in load.config.profiles] == [
+        "quality",
+        "balanced",
+        "fast",
+        "cpu",
+        "battery",
+    ]
     # "Reset to default" = the shipped profile again -> entry disappears
     reset = dataclasses.replace(load.config, profiles=defaults.builtin_profiles())
     config.save(paths, reset, expected_revision=rev)
@@ -434,6 +470,24 @@ def test_v0_save_writes_bak_first(paths: Paths) -> None:
     assert bak.stat().st_mtime_ns == bak_mtime and bak.read_bytes() == V0_FIXTURE.encode()
 
 
+def test_hand_edited_file_is_backed_up_once_on_save(paths: Paths) -> None:
+    """The writer keeps no comments or layout: a file edited by hand goes to
+    ``.bak`` before ButterEye rewrites it; one it wrote itself does not."""
+    hand = "# my notes\nschema_version = 1\n\n[general]\nfull_size = true  # always\n"
+    rev = _write(paths, hand)
+    cfg = config.load(paths).config
+    new_rev = config.save(
+        paths, dataclasses.replace(cfg, general=dataclasses.replace(cfg.general, deband=True)),
+        expected_revision=rev,
+    )  # fmt: skip
+    bak = config.backup_path(paths)
+    assert bak.read_bytes() == hand.encode()
+    bak.unlink()
+    cfg = config.load(paths).config
+    config.save(paths, dataclasses.replace(cfg, rules=()), expected_revision=new_rev)
+    assert not bak.exists()
+
+
 def test_v0_auto_backend_means_no_override(paths: Paths) -> None:
     _write(paths, V0_AUTO_FIXTURE)
     load = config.load(paths)
@@ -537,10 +591,10 @@ def test_wrong_types_report_field_and_position(paths: Paths) -> None:
     expected_value = {
         ("general.trt_experimental", 3),
         ("general.backend_override", 4),
-        ("profiles[4].sc_threshold", 7),
-        ("profiles[4].target", 8),
-        ("profiles[4].buffered_frames", 9),
-        ("profiles[4].hdr", 10),
+        (f"profiles[{CUSTOM}].sc_threshold", 7),
+        (f"profiles[{CUSTOM}].target", 8),
+        (f"profiles[{CUSTOM}].buffered_frames", 9),
+        (f"profiles[{CUSTOM}].hdr", 10),
         ("profiles#2", 11),
         ("rules[0].profile", 14),
         ("rules[0].match.fps_max", 15),
@@ -581,7 +635,7 @@ def test_bad_content_is_reported_and_falls_back(paths: Paths) -> None:
     _write(paths, 'schema_version = 1\n[[profiles]]\nid = "x"\ncontent = "cartoon"\n')
     load = config.load(paths)
     (issue,) = load.issues
-    assert issue.code is ErrorCode.CONFIG_VALUE and issue.field == "profiles[4].content"
+    assert issue.code is ErrorCode.CONFIG_VALUE and issue.field == f"profiles[{CUSTOM}].content"
     assert issue.line == 4
     x = next(p for p in load.config.profiles if p.id == "x")
     assert x.content is ContentKind.AUTO
@@ -593,7 +647,7 @@ def test_semantic_issues_get_file_positions(paths: Paths) -> None:
     )
     load = config.load(paths)
     (issue,) = load.issues
-    assert issue.code is ErrorCode.CONFIG_VALUE and issue.field == "profiles[4].scale"
+    assert issue.code is ErrorCode.CONFIG_VALUE and issue.field == f"profiles[{CUSTOM}].scale"
     assert (issue.line, issue.column) == (5, 1)
 
 
@@ -732,3 +786,150 @@ def test_save_keeps_dropping_unknowns_of_deleted_rules(paths: Paths) -> None:
     )
     config.save(paths, cfg, expected_revision="")  # the guard does not misfire
     assert config.load(paths).config.unknown == {}
+
+
+# ---------------------------------------------------------------- picture, LUT, deband, compare, aa
+
+#: what this ButterEye wrote before any of the settings below existed: loading and
+#: saving it again must give back exactly these bytes
+OLDER_FILE = """\
+# ButterEye settings, profiles and rules.
+# Written by ButterEye; comments in this file are not kept when it saves.
+
+schema_version = 1
+rules = []
+
+[general]
+upscaling = "sharper"
+deband = true
+
+[render]
+container = "mkv"
+audio = "copy"
+
+[[profiles]]
+id = "mine"
+name = "Mine"
+backend = "mvgpu"
+target = "2x"
+sc_threshold = 0.12
+hdr = "skip"
+"""
+
+
+def test_older_file_saves_byte_identical(paths: Paths) -> None:
+    rev = _write(paths, OLDER_FILE)
+    load = config.load(paths)
+    assert load.issues == ()
+    g = load.config.general
+    assert g.picture == PictureAdjust() and g.picture.neutral
+    assert (g.lut, g.deband_strength, g.deband_grain, g.compare) == (None, "light", None, "off")
+    assert next(p for p in load.config.profiles if p.id == "mine").aa is False
+    assert config.save(paths, load.config, expected_revision=rev) == rev
+    assert paths.config_file.read_text() == OLDER_FILE
+
+
+def test_picture_table_reads_writes_and_drops_zeroes(paths: Paths) -> None:
+    _write(
+        paths,
+        "schema_version = 1\n[general.picture]\nbrightness = 4\nhue = 0\ngamma = -100\n",
+    )
+    load = config.load(paths)
+    assert load.issues == ()
+    assert load.config.general.picture == PictureAdjust(brightness=4, gamma=-100)
+    config.save(paths, load.config, expected_revision=load.revision)
+    doc = tomllib.loads(paths.config_file.read_text())
+    assert doc["general"]["picture"] == {"brightness": 4, "gamma": -100}  # 0 is not written
+    # all back to 0: the table goes too
+    neutral = dataclasses.replace(
+        load.config, general=dataclasses.replace(load.config.general, picture=PictureAdjust())
+    )
+    assert "picture" not in schema.dumps_config(neutral)
+
+
+@pytest.mark.parametrize(
+    ("line", "field"),
+    [
+        ("brightness = 101", "general.picture.brightness"),
+        ("contrast = -101", "general.picture.contrast"),
+        ("saturation = 1.5", "general.picture.saturation"),
+        ("gamma = true", "general.picture.gamma"),
+        ('hue = "10"', "general.picture.hue"),
+    ],
+)
+def test_bad_picture_value_is_reported_at_its_line(paths: Paths, line: str, field: str) -> None:
+    _write(paths, f"schema_version = 1\n[general.picture]\n{line}\n")
+    load = config.load(paths)
+    assert [(i.code, i.field, i.line) for i in load.issues] == [(ErrorCode.CONFIG_VALUE, field, 3)]
+    assert load.config.general.picture == PictureAdjust()
+
+
+def test_unknown_picture_key_is_kept_under_its_table(paths: Paths) -> None:
+    _write(paths, "schema_version = 1\n[general.picture]\nsharpness = 2\ncontrast = 3\n")
+    load = config.load(paths)
+    assert [(i.code, i.field, i.line) for i in load.issues] == [
+        (ErrorCode.CONFIG_UNKNOWN_KEY, "general.picture.sharpness", 3)
+    ]
+    assert load.config.unknown == {"general.picture.sharpness": 2}
+    config.save(paths, load.config, expected_revision=load.revision)
+    doc = tomllib.loads(paths.config_file.read_text())
+    assert doc["general"]["picture"] == {"contrast": 3, "sharpness": 2}
+    assert schema.split_unknown_path("general.picture.sharpness") == schema.UnknownPath(
+        "picture", "sharpness"
+    )
+
+
+@pytest.mark.parametrize(
+    ("line", "field", "value"),
+    [
+        ('upscaling = "ravu"', None, ("upscaling", "ravu")),
+        ('upscaling = "nnedi3"', "general.upscaling", ("upscaling", "standard")),
+        ('deband_strength = "strong"', None, ("deband_strength", "strong")),
+        ('deband_strength = "max"', "general.deband_strength", ("deband_strength", "light")),
+        ("deband_grain = 100", None, ("deband_grain", 100)),
+        ("deband_grain = 101", "general.deband_grain", ("deband_grain", None)),
+        ("deband_grain = 2.5", "general.deband_grain", ("deband_grain", None)),
+        ('compare = "split"', None, ("compare", "split")),
+        ('compare = "side"', "general.compare", ("compare", "off")),
+        ('lut = "film.cube"', None, ("lut", "film.cube")),
+        ("lut = 3", "general.lut", ("lut", None)),
+        ('lut = "/Users/me/film.cube"', "general.lut", ("lut", None)),
+        ('lut = "film.png"', "general.lut", ("lut", None)),
+        ("even_pacing = true", None, ("even_pacing", True)),
+        ('even_pacing = "yes"', "general.even_pacing", ("even_pacing", False)),
+        ("cadence_first = true", None, ("cadence_first", True)),
+        ("cadence_first = 1", "general.cadence_first", ("cadence_first", False)),
+    ],
+)
+def test_new_general_keys(
+    paths: Paths, line: str, field: str | None, value: tuple[str, object]
+) -> None:
+    _write(paths, f"schema_version = 1\n[general]\n{line}\n")
+    load = config.load(paths)
+    assert [i.field for i in load.issues] == ([field] if field else [])
+    assert getattr(load.config.general, value[0]) == value[1]
+
+
+def test_a_lut_path_does_not_block_saving(paths: Paths) -> None:
+    _write(paths, 'schema_version = 1\n[general]\nlut = "/Users/me/film.cube"\n')
+    load = config.load(paths)
+    assert [(i.code, i.field) for i in load.issues] == [(ErrorCode.CONFIG_VALUE, "general.lut")]
+    flipped = dataclasses.replace(
+        load.config, general=dataclasses.replace(load.config.general, deband=True)
+    )
+    config.save(paths, flipped, expected_revision=load.revision)
+    doc = tomllib.loads(paths.config_file.read_text())
+    assert doc["general"]["deband"] is True and "lut" not in doc["general"]
+
+
+def test_aa_reads_writes_and_overrides_a_builtin(paths: Paths) -> None:
+    _write(paths, 'schema_version = 1\n[[profiles]]\nid = "fast"\naa = true\n')
+    load = config.load(paths)
+    assert load.issues == ()
+    fast = next(p for p in load.config.profiles if p.id == "fast")
+    assert fast.aa is True and fast.builtin
+    config.save(paths, load.config, expected_revision=load.revision)
+    assert tomllib.loads(paths.config_file.read_text())["profiles"][0]["aa"] is True
+    # back to the shipped value: the override disappears
+    reset = dataclasses.replace(load.config, profiles=defaults.builtin_profiles())
+    assert "profiles" not in tomllib.loads(schema.dumps_config(reset))

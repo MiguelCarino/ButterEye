@@ -110,6 +110,9 @@ def test_licences_list_the_bundled_shader() -> None:
     row = rows["FSRCNNX x2 8-0-4-1 shader"]
     assert row.spdx == "LGPL-3.0-or-later" and row.conveyed and row.detected
     assert {p.name for p in row.text_files} == {"LGPL-3.0.txt", "GPL-3.0.txt"}
+    ravu = rows["RAVU-lite-AR r3 shader"]
+    assert ravu.spdx == "LGPL-3.0-or-later" and ravu.conveyed and ravu.detected
+    assert {p.name for p in ravu.text_files} == {"LGPL-3.0.txt", "GPL-3.0.txt"}
 
 
 # ---------------------------------------------------------------------------

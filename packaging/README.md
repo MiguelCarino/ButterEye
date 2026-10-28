@@ -330,8 +330,8 @@ BUTTEREYE_TEST_APP=~/.cache/buttereye/macos-app/stage/ButterEye.app \
 ```
 
 On an Apple Silicon Mac with the Xcode command-line tools and, as build inputs,
-Homebrew's `mpv ffmpeg ffms2 vapoursynth-mvtools molten-vk vulkan-loader vulkan-tools`
-(plus what `build-plugins.sh` needs). Downloads are pinned in `macos/pins.sh`;
+Homebrew's `mpv ffmpeg ffms2 vapoursynth-mvtools molten-vk vulkan-loader vulkan-tools
+mkvtoolnix` (plus what `build-plugins.sh` needs). Downloads are pinned in `macos/pins.sh`;
 `macos/appstage.py` does the copying, relocation (`install_name_tool`), checking and
 licence work, `macos/launcher.c` is the app's main executable, and
 `macos/appstage-icon.py` draws the icon with the bundled Qt. Output in
@@ -341,6 +341,68 @@ licence work, `macos/launcher.c` is the app's main executable, and
 network for `brew fetch --build-from-source`) and `SHA256SUMS`; `--no-sources` skips
 the tar for a quick local build, never for a release. Ad-hoc signed only: the README's
 macOS section has the one Terminal command a user runs after downloading it.
+
+What the app carries beyond mpv and FFmpeg, and why:
+
+- **`bin/mkvmerge`** (mkvtoolnix, GPL-2.0-or-later), so offline render remuxes
+  with mkvmerge and not ffmpeg (ffmpeg's remux fails on MP4 `mov_text`
+  subtitles and writes no container HDR10 metadata). The bottle links Homebrew's
+  QtCore and through it ICU: 25 files, 61 MiB, 32 MiB of it `libicudata`
+  (measured on mkvtoolnix 103.0; relocated, it ran with nothing loaded from
+  `/opt/homebrew`).
+- **Document types** in `Info.plist`: Viewer, `LSHandlerRank` Alternate, for
+  `public.movie` plus imported Matroska and WebM types, so Finder's Open With and
+  a drop on the Dock icon reach `gui/app.py`'s `FileOpenRouter`.
+- **`strip -x`** on every Mach-O before the ad-hoc signature. Measured on parts:
+  PySide6 + shiboken6 348 → 329 MiB, mkvmerge and its libraries 60.6 → 56.4 MiB.
+- **znedi3** (Profile `aa`) only when `BUTTEREYE_ZNEDI3=1 build-plugins.sh` built
+  it: the one plugin step that downloads (three archives pinned in
+  `macos/pins.sh`, the weights' git blob checked against GitHub). Its arm64
+  build has not been run on the dev Mac yet; without it the app has no znedi3,
+  and `aa` has nothing to run.
+
+### Trimming the bundle (ideas, not done)
+
+These need Homebrew's formulae rebuilt from source with other options, which
+`build-app.sh` deliberately does not do (it carries the bottles as published, so
+`brew fetch --build-from-source` is their Corresponding Source). Each saving is
+unmeasured until someone rebuilds and compares `du -sm ButterEye.app`:
+
+- libplacebo: `-Dshaderc=disabled -Dglslang=enabled`, dropping
+  `libshaderc_shared` next to the glslang/SPIRV-Tools the app already carries.
+- FFmpeg: without libvmaf, libvpx, mp3lame and ffplay; nothing ButterEye runs
+  uses them. OpenSSL only if no network protocol is wanted in mpv.
+- mpv: `-Djavascript=disabled` (it links both LuaJIT and MuJS; ButterEye's
+  script is Lua).
+- mkvmerge: QtCore and ICU are about 40 MiB of its 61. Current mkvtoolnix
+  builds every tool against QtCore, so this is not an option to switch off;
+  a Homebrew ICU without the full data set is the more likely route.
+
+### MoltenVK settings, A/B (review P12)
+
+The app sets no `MVK_CONFIG_*` variable, and passes any it is started with to
+mpv and vspipe unchanged (`osapi.point_at_app` leaves them alone;
+`tests/core/test_mvk_passthrough.py` holds that). To try one, with the
+benchmark, on a Mac at rest on mains power:
+
+```sh
+B=/Applications/ButterEye.app/Contents/MacOS/buttereye
+pmset -g therm                                   # no thermal warning before a run
+$B bench --full --json >a1.json                  # A: defaults
+MVK_CONFIG_USE_MTLHEAP=1 $B bench --full --json >b1.json   # B: one variable
+$B bench --full --json >a2.json                  # A again, then B again
+MVK_CONFIG_USE_MTLHEAP=1 $B bench --full --json >b2.json
+```
+
+Compare each engine's `vspipe_fps` and in-mpv fps: B wins only if both B runs
+beat both A runs, since a fanless Air slows as it warms (the order A B A B
+spreads that over both). Try `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS` and
+`MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS` the same way, one at a time.
+`MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS` is already 0 in MoltenVK 1.4. Each run
+replaces the stored speed test, so finish with a plain `$B bench --full`. A
+setting that wins is exported in `point_at_app`, with the numbers beside it; a
+Finder-started app gets one for a trial with `launchctl setenv NAME VALUE` and a
+relaunch (`launchctl unsetenv NAME` to stop).
 
 ## macOS: the Homebrew tap (docs/PLATFORMS.md, the macOS phase table, phase 4)
 

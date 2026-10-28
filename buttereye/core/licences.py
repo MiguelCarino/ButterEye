@@ -290,6 +290,16 @@ _COMMON: tuple[Component, ...] = (
         bundled_version="1.1 (bundled; Upscaling: Sharper)",
     ),
     Component(
+        "RAVU-lite-AR r3 shader",
+        None,
+        "LGPL-3.0-or-later",
+        REL_LOADED,
+        True,
+        bundled_files=(_SHADERS / "LGPL-3.0.txt", _SHADERS / "GPL-3.0.txt"),
+        # bjin/mpv-prescalers, unmodified (data/shaders/README.md has the SHA-256)
+        bundled_version="b3f0a59d68f33b7162051ea5970a5169558f0ea2 (bundled; Upscaling: RAVU)",
+    ),
+    Component(
         "PySide6 / Qt",
         "python3-pyside6",
         "LGPL-3.0-only OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
@@ -516,6 +526,7 @@ def _macos_rows() -> tuple[Component, ...]:
         # conveyed=False on this arm, and on a Mac Homebrew's ffms2 keg reports
         # GPL-2.0-or-later (it links Homebrew's GPL FFmpeg) through spdx_from_rpm.
         r["FSRCNNX x2 8-0-4-1 shader"],
+        r["RAVU-lite-AR r3 shader"],
         r["PySide6 / Qt"],
         r["mpv"],
         r["VapourSynth"],
@@ -571,6 +582,7 @@ def _macos_app_rows() -> tuple[Component, ...]:
         r["RIFE ncnn models"],
         r["mvgpu"],
         r["FSRCNNX x2 8-0-4-1 shader"],
+        r["RAVU-lite-AR r3 shader"],
         replace(r["PySide6 / Qt"], conveyed=True),
         w["Shiboken6"],
         w["Python"],

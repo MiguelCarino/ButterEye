@@ -231,9 +231,7 @@ async def cmd_doctor(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
 
 
 async def cmd_setup(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
-    if osapi.MACOS_APP is not None and await asyncio.to_thread(
-        osapi.release_app, osapi.MACOS_APP
-    ):
+    if osapi.MACOS_APP is not None and await asyncio.to_thread(osapi.release_app, osapi.MACOS_APP):
         out.line("Cleared the download mark from ButterEye.app.")
     report = await core.doctor(trt=True if ns.trt_experimental else None).result()
     if report.blocking:
@@ -261,7 +259,7 @@ async def cmd_setup(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
 
 async def cmd_play(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
     await need(core, Feature.LIVE)
-    file = Path(ns.file)
+    file = Path(ns.file).expanduser().absolute()  # mpv runs elsewhere
     events = core.subscribe()
     sid = await core.play(file, profile_id=ns.profile).result()
     out.line(f"Playing {file.name} in mpv (session {sid}). Ctrl+C leaves mpv playing.")
@@ -297,7 +295,9 @@ async def cmd_play(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
 
 async def cmd_render(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
     await need(core, Feature.RENDER)
-    src = Path(ns.source)
+    # absolute: vspipe and ffmpeg do not run in this directory, and a relative
+    # source failed every render with "Can't open" (BE-4005)
+    src = Path(ns.source).expanduser().absolute()
     load = await core.load_config()
     ids = [p.id for p in load.config.profiles]
     profile_id = ns.profile or ("simple" if "simple" in ids else (ids[0] if ids else "simple"))
@@ -312,7 +312,11 @@ async def cmd_render(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
     if not probe.encoders:
         raise ButterEyeError(ErrorCode.ENCODER_FAILED, Msg("No usable video encoder was found."))
     encoder = ns.encoder or probe.encoders[0]
-    output = Path(ns.output) if ns.output else src.with_name(f"{src.stem}.smooth.mkv")
+    output = (
+        Path(ns.output).expanduser().absolute()
+        if ns.output
+        else src.with_name(f"{src.stem}.smooth.mkv")
+    )
     spec = RenderJobSpec(
         source=src,
         output=output,
@@ -372,9 +376,25 @@ async def cmd_bench(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
         out.document("bench", {"applied": ns.apply, "revision": rev}, ok=True)
         return EXIT_OK
     req = BenchRequest(ns.width, ns.height, ns.fps, full=bool(ns.full))
+    events = core.subscribe()
+
+    async def notices() -> None:
+        # "could not be measured in mpv" and the like: without them a failed
+        # in-mpv pass looked like an engine that is merely not real time
+        async for ev in events:
+            if isinstance(ev, Notice) and ev.sid is None:
+                out.line(render(ev.message))
+
+    shown = asyncio.create_task(notices())
     op = core.bench(req)
     op.add_progress_sink(lambda p: out.progress(render(p.phase)))
-    result = await op.result()
+    try:
+        result = await op.result()
+        await asyncio.sleep(0)  # let notices emitted with the result through
+    finally:
+        shown.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await shown
     out.line(f"{'configuration':32s} {'vspipe':>8s} {'in mpv':>8s}  real time  faults")
     for m in result.measurements:
         rt = "yes" if m.realtime else "no"
@@ -391,7 +411,7 @@ async def cmd_profiles(core: ButterEye, ns: argparse.Namespace, out: Out) -> int
     if ns.action == "explain":
         facts = SourceFacts(ns.fps, ns.width, ns.height, HdrClass.SDR, ns.display_hz or 0.0,
                             False, str(ns.path or ""), False)  # fmt: skip
-        trace = rules.explain(cfg, facts)
+        trace = rules.explain(cfg, facts, osapi.power_snapshot())
         for step in trace.steps:
             mark = "matches" if step.matched else "doesn't match"
             out.line(f"rule {step.index + 1} {mark}: {render(step.why)}")

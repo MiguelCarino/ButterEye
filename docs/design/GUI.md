@@ -421,6 +421,7 @@ class Profile:
     hdr: Literal["skip", "passthrough"] = "skip"
     builtin: bool = False
     content: ContentKind = ContentKind.AUTO
+    aa: bool = False  # znedi3 anti-aliasing before smoothing
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,6 +434,9 @@ class RuleMatch:
     display_hz_min: float | None = None
     interlaced: bool | None = None
     path_glob: str | None = None
+    on_battery: bool | None = None  # PowerSnapshot; unknown = mains power
+    thermal_min: int | None = None  # THERMAL_STATES index; unknown = nominal
+    thermal_max: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,12 +451,19 @@ class GeneralSettings:
     gpu: str | None = None  # Vulkan device UUID
     language: str | None = None
     trt_experimental: bool | None = None  # §5.2: None = use TensorRT when set up
-    upscaling: Literal["standard", "sharper"] = "standard"  # SCOPE §15.2
+    upscaling: Literal["standard", "sharper", "ravu"] = "standard"  # SCOPE §15.2
     deband: bool = False  # SCOPE §15.2
     full_size: bool = False  # never smaller to keep up (GUI.md §12)
     osd_seconds: float = 1.0  # mpv OSD: seconds, 0 = off, -1 = always (§12.1.5)
     osd_items: tuple[str, ...] = ("rates", "engine")
     keep_logs: bool = True  # per-file logs to copy; off = opted out
+    picture: PictureAdjust = PictureAdjust()  # [general.picture], mpv colour controls
+    lut: str | None = None  # a file name in ButterEye's luts folder, never a path
+    deband_strength: Literal["light", "strong"] = "light"  # DEBAND_PRESETS key
+    deband_grain: int | None = None  # mpv deband-grain; None = mpv's own
+    compare: Literal["off", "split"] = "off"  # A/B view (Alt+c)
+    even_pacing: bool = False  # mpv blending for a target the display paces unevenly
+    cadence_first: bool = False  # "Match your display": even pacing before size
 
 
 @dataclass(frozen=True, slots=True)
@@ -784,6 +795,8 @@ class RenderSize:
     width: int
     height: int
     est_fps: float | None  # estimated output frames per second; None = no benchmark
+    engine: BackendId | None = None  # the engine est_fps is for
+    options: tuple[tuple[BackendId, float | None], ...] = ()  # every engine's estimate
 
 
 @dataclass(frozen=True, slots=True)
@@ -815,6 +828,8 @@ class RenderJobSpec:
     overwrite: bool = False
     target: Target | None = None  # None = the profile's; DISPLAY renders as 2x (§7.8)
     size: tuple[int, int] | None = None  # None = the source size (§7.8)
+    engine: BackendId | None = None  # None = the core picks by time
+    ten_bit: bool = False  # 10-bit output for an 8-bit source
 
 
 @dataclass(frozen=True, slots=True)
@@ -1229,7 +1244,11 @@ class ButterEye:
 def render(msg: Msg) -> str: ...                                   # core gettext, current language
 def set_language(tag: str | None) -> None: ...                     # called once at start, before any render()
 def validate_config(cfg: Config) -> tuple[ConfigIssue, ...]: ...
-def explain_rules(cfg: Config, facts: SourceFacts) -> RuleTrace: ...
+def explain_rules(cfg: Config, facts: SourceFacts, power: PowerSnapshot | None = None) -> RuleTrace: ...  # power: osapi.power_snapshot()
+def gui_dirs(env: Mapping[str, str]) -> GuiDirs: ...               # the GUI's own settings/log files, before the core opens
+def import_lut(paths: Paths, source: Path) -> str: ...             # blocking; LutError (ValueError) / OSError
+def pacing_notice(snap: SessionSnapshot) -> Msg | None: ...       # smoothing at a rate the display paces unevenly
+def snap_ntsc(value: Fraction) -> Fraction: ...                    # 23.976 -> 24000/1001, as config.toml reads rule bounds
 def builtin_profiles() -> tuple[Profile, ...]: ...
 def legal_notices() -> LegalNotices: ...
 def command_hint(command_id: str, **params: str) -> CommandHint: ...
@@ -1388,7 +1407,7 @@ Rules:
 | 4 Packages | Only if `missing_packages`. `CopyField` per `dnf_lines`; text "Run these in a terminal, then press Check again. ButterEye never runs dnf." [Check again]. | `doctor()`, `setup_plan()` |
 | 5 Downloads | Only if `downloads` non-empty (TRT opt-in). Table Name / Size / Licence / Source URL / SHA-256, one checkbox per row, none pre-checked (§5.4). If MODEL_DOWNLOADS unavailable: "No downloadable models are listed in this release." and Next continues without TRT models. | `setup_plan()` |
 | 6 Apply | `OpRow` per phase: downloads (bytes), smoke test (10 s vspipe + in-mpv probe), writing settings. Cancel → `Ticket.cancel()`; text "Cancelled. Nothing was saved." Failure → finding view; [Back] [Retry]. | `setup_apply()` |
-| 7 Finish | Result line ("Test run passed: 74 fps" or the finding). Unchecked offers: "Measure my GPU now (about a minute)" → Benchmark page; "Make my normal mpv use ButterEye's settings" → `include_line` dialog (§4.3). [Finish]. | `include_line()` |
+| 7 Finish | Result line ("Test run passed: 74 fps" or the finding). Unchecked offers: "Measure my GPU now (a few minutes)" → Benchmark page; "Make my normal mpv use ButterEye's settings" → `include_line` dialog (§4.3). [Finish]. | `include_line()` |
 
 Accessible names: "Check result: Vulkan loader, OK", "Copy dnf command", "Engine choice". Keys: Alt+N / Alt+B / Esc (Qt), Ctrl+C on a focused `CopyField`.
 
@@ -1841,6 +1860,8 @@ async def apply(ctx: ProviderContext, result: BenchResult, label: str, *, expect
 
 Rules: `bench` runs every vspipe/mpv measurement through `op.spawn` (or `ops.process_group`), registers generated test clips with `op.add_partial`, reports one phase per configuration/pass (`Msg("{config} — run {n} of {total} — in mpv", …)`), appends the result to `ctx.paths.bench_file` atomically (0600 temp + rename) and returns it. `history` reads `bench_file` (missing file → `()`); it is also used by `ButterEye.select_backend` when present. `apply` builds the new `Config` from `ctx.config()` and saves it with `ctx.save_config(new, expected_revision=…)` (never writes `config.toml` itself); an unknown `label` → `ButterEyeError(BENCH_FAILED)`. A configuration with `gpu_faults` > 0 is never `recommended` (§4.6).
 
+What a run measures (B5-B10, macOS review): the engines live playback chooses between (`verdict.LIVE_BACKENDS`: mvgpu, MVTools) first, while the machine is still cool, and at every bigger size up to 2160p too (`"mvtools @ 2160p"` rows), then the rest at the request's sizes. The best live configuration is then held for a sustained phase (`SUSTAINED_S`, 150 s of back-to-back in-mpv passes) so a fanless machine's throttled rate is what is stored. Live caps use `mpv_fps / verdict.LIVE_HEADROOM` (1.25); the results table's "real time" is `verdict.REALTIME_HEADROOM` (1.15); `backends.select` takes a recommendation only when it keeps up by the live bar. `bench.json` is schema 2 (schema 1 still reads): each result carries a `store.Meta` (the versions of app, script, mpv, vspipe, Vulkan driver and each plugin; battery, Low Power Mode and thermal state at the start and the highest seen; whether it was contended; the sustained rates). A run during which a video played or a conversion ran (a conversion stopped for the benchmark does not count) is stored but marked contended and never used, nor is one measured with other versions (`runner.current_result`); those are measured again in the background, and so is a result older than `verdict.STALE_AFTER` (60 days), which stays in use until the new one is in.
+
 ### 11.6 Reserved signatures (no owner yet; absent → the feature is unavailable)
 
 ```python
@@ -2020,7 +2041,7 @@ The three choices are one non-built-in profile, id `simple`, name "ButterEye": `
 
 1. `load_config()`. If no config exists and setup is available: status "Getting ready…", `doctor()`; blocking findings → problem line, stop. Otherwise `setup_plan(report, trt_experimental=False)` and `setup_apply(plan, SetupChoices(backend, False, frozenset(), run_smoke_test=True))` with the proposed backend (else the first available of RIFE-ncnn, MVTools). A failed smoke test → a warning problem line, not a stop. Then reload and adopt. `add_include_to_mpv_conf` is never called; `mpv.conf` is never written.
 2. Config exists: adopt, then `doctor()` in the background ("Checking your system…") for the problem line and the GPU choices.
-3. When `bench_history()` is empty (and nothing blocks): `bench(BenchRequest(1920, 1080, 24000/1001))` in the background, status "Measuring your GPU (about a minute)… N%" ("your computer" when RIFE can't run). `apply_bench` is never called. Playing works meanwhile (the core uses MVTools until it has RIFE data).
+3. When `bench_history()` is empty (and nothing blocks): `bench(BenchRequest(1920, 1080, 24000/1001))` in the background, status "Measuring your GPU (a few minutes)… N%" ("your computer" when RIFE can't run). `apply_bench` is never called. Playing works meanwhile (the core uses MVTools until it has RIFE data).
 4. Status line: glyph + word, "Ready." when nothing runs. Errors from background work go to the log and, in one plain sentence, to the status or problem line.
 
 ### 12.4 Rows and wording

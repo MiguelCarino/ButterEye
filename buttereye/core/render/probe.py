@@ -26,14 +26,23 @@ OFFLINE_FACTOR = 0.8
 KNOWN_ENCODERS: tuple[str, ...] = (
     "hevc_nvenc",
     "av1_nvenc",
+    "hevc_videotoolbox",
     "libx265",
     "libsvtav1",
     "libx264",
+    "prores_videotoolbox",
 )
 NVIDIA_ENCODERS = frozenset({"hevc_nvenc", "av1_nvenc"})
-TEN_BIT_ENCODERS = frozenset({"hevc_nvenc", "av1_nvenc", "libx265", "libsvtav1"})
+#: Apple's media engine, through ffmpeg's VideoToolbox wrappers (macOS only).
+#: Listed by ``ffmpeg -encoders`` is not enough: ``jobs`` test-encodes a few
+#: frames with each before offering it
+VIDEOTOOLBOX_ENCODERS = frozenset({"hevc_videotoolbox", "prores_videotoolbox"})
+TEN_BIT_ENCODERS = frozenset(
+    {"hevc_nvenc", "av1_nvenc", "hevc_videotoolbox", "libx265", "libsvtav1"}
+)
 #: The only encoders that take HDR10 mastering data on the command line (§7.4);
-#: NVENC/VAAPI read it from frame side data, which the y4m pipe doesn't carry.
+#: NVENC/VAAPI/VideoToolbox read it from frame side data, which the y4m pipe
+#: doesn't carry.
 HDR10_ENCODERS: tuple[str, ...] = ("libx265", "libsvtav1")
 #: Dolby Vision base-layer compatibility ids that are an HDR10 stream (§7.4)
 DV_HDR10_BASE = frozenset({1, 6})
@@ -45,7 +54,17 @@ _BPP: Mapping[str, float] = {
     "libx265": 0.05,
     "libsvtav1": 0.04,
     "libx264": 0.09,
+    # constant quality 60 runs larger than x265 at CRF 20 (not calibrated yet)
+    "hevc_videotoolbox": 0.08,
+    # ProRes 422 HQ: about 176 Mbit/s at 1080p30, so a doubled film needs a lot
+    "prores_videotoolbox": 2.9,
 }
+
+#: ``r_frame_rate`` and ``avg_frame_rate`` this close (relative) are one constant
+#: rate: an MP4 edit list or a trimmed last frame moves the average by up to a
+#: few tenths of a percent (23.976 read as 23.945, a 47.89 fps copy), which is
+#: not a variable rate
+VFR_TOLERANCE = 0.002
 
 _STREAM_KINDS: Mapping[str, Literal["video", "audio", "subtitle", "attachment", "data"]] = {
     "video": "video",
@@ -111,6 +130,25 @@ def _rate(text: object) -> Fraction | None:
     if n <= 0 or d <= 0:
         return None
     return Fraction(n, d)
+
+
+def is_vfr(r: Fraction | None, avg: Fraction | None) -> bool:
+    """Variable frame rate: the nominal and the average rate differ by more than
+    ``VFR_TOLERANCE`` of the average (both must be known). Otherwise the copy
+    uses the nominal rate, which an edit list doesn't skew."""
+    if r is None or avg is None:
+        return False
+    return abs(r - avg) > avg * Fraction(VFR_TOLERANCE)
+
+
+def _ntsc_pair(r: Fraction | None, avg: Fraction | None) -> bool:
+    """24 against 23.976 (and the like): the two rates are 1000/1001 apart, and
+    which one is meant can't be told from the edit list's skew. The average is
+    frames over duration, what the audio lines up with, so it is kept."""
+    if r is None or avg is None or r == avg:
+        return False
+    ratio = max(r, avg) / min(r, avg)
+    return abs(ratio - Fraction(1001, 1000)) < Fraction(1, 10**5)
 
 
 def _float(v: object, default: float = 0.0) -> float:
@@ -219,7 +257,8 @@ def source_info(
         return None
     r = _rate(video.get("r_frame_rate"))
     avg = _rate(video.get("avg_frame_rate"))
-    fps = avg or r
+    vfr = is_vfr(r, avg)
+    fps = (avg or r) if vfr or _ntsc_pair(r, avg) else (r or avg)
     if fps is None:
         return None
     fmt = data.get("format") or {}
@@ -249,7 +288,7 @@ def source_info(
         width=int(video.get("width") or 0),
         height=int(video.get("height") or 0),
         fps=fps.limit_denominator(1001) if fps.denominator > 1001 else fps,
-        vfr=r is not None and avg is not None and r != avg,
+        vfr=vfr,
         duration_s=duration,
         codec=str(video.get("codec_name") or ""),
         bits=_bits(video),
@@ -380,9 +419,14 @@ def parse_decoders(text: str) -> frozenset[str]:
     return frozenset(names)
 
 
-def usable_encoders(listed: Sequence[str], *, nvidia: bool, hdr10: bool = False) -> tuple[str, ...]:
+def usable_encoders(
+    listed: Sequence[str], *, nvidia: bool, hdr10: bool = False, apple: bool = False
+) -> tuple[str, ...]:
     """The encoders this ffmpeg has that ButterEye drives, default first (§7.5:
-    NVENC on NVIDIA, else SVT-AV1 in software; for HDR10 only x265, then SVT-AV1)."""
+    NVENC on NVIDIA, else SVT-AV1 in software; for HDR10 only x265, then SVT-AV1).
+    ``apple``: a Mac, where HEVC on the media engine comes first (it leaves the
+    CPU to the smoothing and heats a fanless machine far less than x265) and
+    ProRes last (its files are about 30 times larger)."""
     if hdr10:
         return tuple(e for e in HDR10_ENCODERS if e in listed)
     have = [e for e in KNOWN_ENCODERS if e in listed]
@@ -391,6 +435,11 @@ def usable_encoders(listed: Sequence[str], *, nvidia: bool, hdr10: bool = False)
         if "libsvtav1" in have:
             have.remove("libsvtav1")
             have.insert(0, "libsvtav1")
+    if not apple:
+        have = [e for e in have if e not in VIDEOTOOLBOX_ENCODERS]
+    elif "hevc_videotoolbox" in have:
+        have.remove("hevc_videotoolbox")
+        have.insert(0, "hevc_videotoolbox")
     return tuple(have)
 
 
@@ -444,11 +493,19 @@ def estimate_bytes(
     return int(2 * video + source_bytes)
 
 
-#: Automatic offline order: time is the cost offline, so the fastest GPU engine
-#: first (TensorRT only when opted in and set up, §5.2), then RIFE-ncnn, then MVTools.
-#: mvgpu is left out: offline there is no real-time limit, so RIFE's picture wins;
-#: a profile pinned to mvgpu still renders with it (``engine_for``)
-OFFLINE_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVTOOLS)
+#: Automatic offline order, best picture first: TensorRT (only when opted in and
+#: set up, §5.2), RIFE-ncnn, GPU motion vectors, MVTools. ``plan_size`` takes the
+#: first one that finishes in time, so a slow GPU gets mvgpu at the source size
+#: instead of RIFE at a smaller one (the file would stay small: nothing scales
+#: it back up)
+OFFLINE_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVGPU, BackendId.MVTOOLS)
+#: 2D animation on Automatic: RIFE-ncnn, then MVTools, then mvgpu, as live play
+#: ranks it; never TensorRT, which has no hold fill
+ANIMATION_RANKING = (BackendId.RIFE_NCNN, BackendId.MVTOOLS, BackendId.MVGPU)
+#: An engine is taken for its picture while its copy takes at most this many
+#: times the video's length; otherwise the fastest one. The convert window uses
+#: the same number (``DEFAULT_SIZE_FACTOR``) to choose the size it starts on
+OFFLINE_TIME_FACTOR = 2.0
 
 
 def engine_for(
@@ -457,12 +514,80 @@ def engine_for(
     """§7.8: the profile's engine when installed; Automatic, or a pinned engine that
     isn't installed, takes the first installed of ``OFFLINE_RANKING`` (never a
     TensorRT the profile didn't ask for when it pinned another engine)."""
+    order = offline_order(backend, installed)
+    return order[0] if order else None
+
+
+def offline_order(
+    backend: BackendId | Literal["auto"],
+    installed: frozenset[BackendId],
+    *,
+    animation: bool = False,
+) -> tuple[BackendId, ...]:
+    """The engines a copy may use, best picture first: the profile's alone when
+    it is pinned and installed; otherwise the installed ones of the ranking
+    (without a TensorRT the profile didn't ask for)."""
     if backend != "auto" and backend in installed:
-        return backend
-    for b in OFFLINE_RANKING:
-        if b in installed and (backend == "auto" or b is not BackendId.RIFE_TRT):
-            return b
-    return None
+        return (backend,)
+    ranking = ANIMATION_RANKING if animation and backend == "auto" else OFFLINE_RANKING
+    return tuple(
+        b for b in ranking if b in installed and (backend == "auto" or b is not BackendId.RIFE_TRT)
+    )
+
+
+def pick_offline(
+    options: Sequence[tuple[BackendId, float | None]],
+    work: Fraction | float,
+    *,
+    factor: float = OFFLINE_TIME_FACTOR,
+) -> tuple[BackendId, float | None] | None:
+    """One size's engine: ``options`` are (engine, estimated 2× fps) best picture
+    first, ``work`` the copy's ``decide.load_rate``. The first engine that
+    converts within ``factor`` times the video's length (fps ≥ work / factor) or
+    has no estimate; else, every engine measured too slow, the fastest.
+
+    An engine without an estimate is not known to miss, so it keeps its place:
+    a RIFE model the speed test never ran must not lose to a measured mvgpu (as
+    it would if only measured engines counted), and with nothing measured at all
+    the first is taken, as before benchmarks existed."""
+    if not options:
+        return None
+    need = float(work) / factor
+    for b, fps in options:
+        if not fps or fps >= need:
+            return b, (fps or None)
+    return max(options, key=lambda o: o[1] or 0.0)
+
+
+# A size with the engine its estimate is for (P1): ``engine`` was chosen by
+# ``pick_offline`` for the profile's own target, ``options`` hold every
+# candidate's estimate at this size (best picture first) so a window that offers
+# another target can choose again with the same rule. Both are RenderSize fields.
+EngineSize = RenderSize
+
+
+def plan_sizes(
+    width: int,
+    height: int,
+    rates: Mapping[BackendId, Mapping[tuple[int, int], float | None]],
+    order: Sequence[BackendId],
+    work: Fraction | float,
+    *,
+    factor: float = OFFLINE_TIME_FACTOR,
+) -> tuple[EngineSize, ...]:
+    """``render_sizes`` across engines: each size with every engine of ``order``
+    estimated (``rates``: benchmark rates per engine and size, in-mpv 2× units)
+    and the one ``pick_offline`` takes for ``work`` (the copy's load rate)."""
+    out: list[EngineSize] = []
+    for w, h in ((width, height), *decide.smaller_sizes(width, height)):
+        options = tuple(
+            (b, offline_fps((rates.get(b) or {}).get((w, h)), (w, h), (width, height)))
+            for b in order
+        )
+        chosen = pick_offline(options, work, factor=factor)
+        engine, fps = chosen if chosen is not None else (None, None)
+        out.append(EngineSize(w, h, fps, engine, options))
+    return tuple(out)
 
 
 __all__ = [
@@ -489,4 +614,9 @@ __all__ = [
     "render_sizes",
     "estimate_bytes",
     "engine_for",
+    "offline_order",
+    "pick_offline",
+    "plan_sizes",
+    "EngineSize",
+    "is_vfr",
 ]

@@ -473,14 +473,22 @@ _LICENCE = re.compile(r"(?i)^(licen[cs]e|copying|copyright|notice|unlicense|(a|l
 def _brew_licence(prefix: Path, formula: str, version: str) -> str:
     """The formula's own SPDX expression from the keg's ``sbom.spdx.json``: the
     ``licenseConcluded`` of ``SPDXRef-Archive-<formula>-src``, which is what the
-    doctor reads too (buttereye/core/doctor/brew.py, ``BrewKeg.licence``)."""
+    doctor reads too (buttereye/core/doctor/brew.py, ``BrewKeg.licence``).
+
+    SPDX IDs cannot hold "@", and Homebrew writes it as ".40" (measured:
+    openssl@4's entry is ``SPDXRef-Archive-openssl.40.4-src``), so a versioned
+    formula is matched by that spelling or by the entry's ``name``, as the
+    doctor does."""
     sbom = prefix / "Cellar" / formula / version / "sbom.spdx.json"
     try:
         data = json.loads(sbom.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ""
+    want = {f"SPDXRef-Archive-{formula}-src", f"SPDXRef-Archive-{formula.replace('@', '.40.')}-src"}
     for pkg in data.get("packages", []):
-        if pkg.get("SPDXID") == f"SPDXRef-Archive-{formula}-src":
+        if pkg.get("SPDXID") in want or (
+            pkg.get("name") == formula and str(pkg.get("SPDXID", "")).startswith("SPDXRef-Archive-")
+        ):
             lic = str(pkg.get("licenseConcluded") or "")
             return "" if lic in ("NOASSERTION", "NONE") else lic
     return ""
@@ -620,8 +628,10 @@ scripts that built each one:
                               (build-app.sh, which made this app, and the
                               plugin build scripts) and mvgpu/
   plugins/                    ButterEye's builds of mvgpu and RIFE-ncnn-Vulkan
-                              (Resources/vapoursynth/libmvgpu.dylib, librife.dylib):
-                              the exact sources, patches and build scripts
+                              (Resources/vapoursynth/libmvgpu.dylib, librife.dylib)
+                              and, when the app carries it, znedi3
+                              (libznedi3.dylib): the exact sources, patches and
+                              build scripts
   homebrew/<formula>/         every Homebrew bottle the app carries: the
                               formula's recipe exactly as the bottle was built
                               from it (<formula>.rb), and for each one under a
@@ -636,23 +646,26 @@ scripts that built each one:
 
 What the app carries and where each part came from
 ---------------------------------------------------
-  Resources/bin/mpv, ffmpeg, ffprobe, vulkaninfo, and Resources/lib/*.dylib
+  Resources/bin/mpv, ffmpeg, ffprobe, vulkaninfo, mkvmerge, and Resources/lib/*
       Homebrew's bottles for macOS {macos_bottles} (arm64), versions as listed
       in buttereye-install.json:
 {brew_list}
-      Each binary is the bottle's, with two changes made by
+      Each binary is the bottle's, with three changes made by
       packaging/macos/build-app.sh and nothing else: its load commands were
       rewritten with install_name_tool so that it finds its libraries inside
-      the app (@rpath, @loader_path) instead of under /opt/homebrew, and it was
-      signed again, ad hoc, because that rewrite invalidates the signature.
+      the app (@rpath, @loader_path) instead of under /opt/homebrew, its local
+      symbols were removed with strip -x, and it was signed again, ad hoc,
+      because both invalidate the signature.
       To use a modified version of any of these libraries, build it from the
       source in homebrew/<formula>/ with the recipe beside it, run
       install_name_tool -id @rpath/<name> on your build, and put it in place of
       Resources/lib/<name> (then codesign -s - --force it, and the app).
   Resources/vapoursynth/mvtools.dylib, libffms2.dylib
       Homebrew's vapoursynth-mvtools and ffms2 bottles, changed the same way
-  Resources/vapoursynth/libmvgpu.dylib, librife.dylib
-      built for this app by packaging/macos/build-plugins.sh (plugins/)
+  Resources/vapoursynth/libmvgpu.dylib, librife.dylib, libznedi3.dylib
+      built for this app by packaging/macos/build-plugins.sh (plugins/);
+      libznedi3.dylib and its nnedi3_weights.bin only in a build that asked
+      for them (GPL-2.0-only: plugins/znedi3/)
   Resources/share/rife-ncnn-models/
       RIFE model weights (MIT; data, not a program): provenance in
       licenses/buttereye-rife-ncnn-models/

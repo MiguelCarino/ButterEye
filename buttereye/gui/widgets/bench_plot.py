@@ -3,12 +3,15 @@
 """Benchmark bars drawn with QPainter (no QtCharts, F17; §4.6).
 
 Two horizontal bars per measurement: in-mpv fps solid, vspipe fps hatched, each
-with its number written beside the bar. An optional dashed target line is
-labelled. All colours come from ``palette()``; the two series also differ by
-fill pattern, so the plot reads in greyscale. Text is drawn in WindowText on
-the Window background (never on a bar), which keeps label contrast at the
-palette's text contrast. The plot takes no focus: the results table next to it
-is the accessible source of truth; the plot's accessible description sums it up.
+with its number written beside the bar. The dashed line is the bar that decides
+"real time" (``REALTIME_HEADROOM`` x target, labelled above the plot); the target
+rate itself is a fainter dotted line, named in the legend. Without a real-time
+bar the target is the dashed, labelled line. All colours come from
+``palette()``; the two series also differ by fill pattern, so the plot reads in
+greyscale. Text is drawn in WindowText on the Window background (never on a
+bar), which keeps label contrast at the palette's text contrast. The plot takes
+no focus: the results table next to it is the accessible source of truth; the
+plot's accessible description sums it up.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ class BenchPlot(QWidget):
         super().__init__(parent)
         self._rows: tuple[BenchMeasurement, ...] = ()
         self._target: float | None = None
+        self._bar: float | None = None
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.setAutoFillBackground(True)
@@ -45,9 +49,16 @@ class BenchPlot(QWidget):
         self._update_description()
 
     # ------------------------------------------------------------------ API
-    def set_data(self, rows: Sequence[BenchMeasurement], target_fps: float | None) -> None:
+    def set_data(
+        self,
+        rows: Sequence[BenchMeasurement],
+        target_fps: float | None,
+        realtime_fps: float | None = None,
+    ) -> None:
+        """``realtime_fps``: the in-mpv rate a row needs to count as real time."""
         self._rows = tuple(rows)
         self._target = target_fps if target_fps and target_fps > 0 else None
+        self._bar = realtime_fps if realtime_fps and realtime_fps > 0 else None
         self._update_description()
         self.updateGeometry()
         self.update()
@@ -57,6 +68,9 @@ class BenchPlot(QWidget):
 
     def target_fps(self) -> float | None:
         return self._target
+
+    def realtime_fps(self) -> float | None:
+        return self._bar
 
     def best(self) -> BenchMeasurement | None:
         """Highest in-mpv fps among configurations without GPU faults (§4.6)."""
@@ -121,7 +135,7 @@ class BenchPlot(QWidget):
         legend_h = line * 1.5
         plot_left = rect.left() + label_w + pad
         values = [v for r in self._rows for v in (r.mpv_fps, r.vspipe_fps)]
-        vmax = max([*values, self._target or 0.0, 1.0])
+        vmax = max([*values, self._target or 0.0, self._bar or 0.0, 1.0])
         num_w = fm.horizontalAdvance(_fps(vmax) + " 0") + pad
         plot_w = max(1.0, rect.right() - plot_left - num_w)
 
@@ -155,14 +169,26 @@ class BenchPlot(QWidget):
                 )
             y += bar_h * 2 + line
 
-        if self._target is not None:
+        faint = fg.toRgb()  # a copy of the palette colour, made fainter
+        faint.setAlphaF(0.45)
+        if self._bar is not None and self._target is not None:
+            pen = QPen(faint, max(1, line // 10))
+            pen.setStyle(Qt.PenStyle.DotLine)
+            p.setPen(pen)
             tx = x_of(self._target)
+            p.drawLine(QPointF(tx, rect.top() + line), QPointF(tx, y - line / 2))
+        dashed = self._bar if self._bar is not None else self._target
+        if dashed is not None:
+            tx = x_of(dashed)
             pen = QPen(fg, max(1, line // 10))
             pen.setStyle(Qt.PenStyle.DashLine)
             p.setPen(pen)
             p.drawLine(QPointF(tx, rect.top() + line), QPointF(tx, y - line / 2))
             p.setPen(fg)
-            tlabel = self.tr("Target {fps} fps").format(fps=_rate(self._target))
+            if self._bar is not None:
+                tlabel = self.tr("Real time {fps} fps").format(fps=_rate(self._bar))
+            else:
+                tlabel = self.tr("Target {fps} fps").format(fps=_rate(dashed))
             tw = fm.horizontalAdvance(tlabel)
             lx = min(max(rect.left(), tx - tw / 2), rect.right() - tw)
             p.drawText(
@@ -192,6 +218,20 @@ class BenchPlot(QWidget):
                 name,
             )
             x += w + line
+        if self._bar is not None and self._target is not None:
+            pen = QPen(faint, max(1, line // 10))
+            pen.setStyle(Qt.PenStyle.DotLine)
+            p.setPen(pen)
+            p.drawLine(QPointF(x, ly + sw / 2), QPointF(x + sw, ly + sw / 2))
+            p.setPen(fg)
+            x += sw + pad / 2
+            name = self.tr("target {fps} fps").format(fps=_rate(self._target))
+            w = fm.horizontalAdvance(name)
+            p.drawText(
+                QRectF(x, ly, w + 1, sw),
+                int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                name,
+            )
         p.end()
 
     # ---------------------------------------------------------- accessibility

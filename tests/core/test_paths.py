@@ -150,12 +150,66 @@ def test_resolve_from_environment(xdg_env: object) -> None:
     assert str(p.runtime_dir).startswith(os.environ["XDG_RUNTIME_DIR"])
 
 
-def test_xdg_dotdot_values_ignored_and_values_normalised(
-    tmp_path: Path, xdg_layout: None
-) -> None:
+def test_xdg_dotdot_values_ignored_and_values_normalised(tmp_path: Path, xdg_layout: None) -> None:
     env = _env(tmp_path)
     env["XDG_CACHE_HOME"] = str(tmp_path / "home/.cache/../../../usr/share")
     env["XDG_DATA_HOME"] = str(tmp_path) + "//data/./x/"
     p = resolve(env)
     assert p.cache_dir == tmp_path / "home/.cache/buttereye"  # ignored -> default
     assert p.data_dir == tmp_path / "data/x/buttereye"
+
+
+# ---------------------------------------------------------------- the GUI's own files (B13)
+def test_gui_files_stay_in_the_xdg_state_folder_off_macos(tmp_path: Path) -> None:
+    from buttereye.core.paths import gui_dirs
+
+    d = gui_dirs(_env(tmp_path), macos=False)
+    assert d.settings_file == tmp_path / "state" / "buttereye" / "gui.ini"
+    assert d.log_file == tmp_path / "state" / "buttereye" / "logs" / "gui.log"
+    assert d.legacy_settings_file is None and d.legacy_log_file is None
+    # the log is Paths.logs_dir's, so Storage's logs row counts it
+    assert d.log_file.parent == tmp_path / "state" / "buttereye" / "logs"
+
+
+def test_gui_files_live_in_library_on_macos_and_name_where_0_0_5_put_them(
+    tmp_path: Path,
+) -> None:
+    from buttereye.core.paths import gui_dirs
+
+    env = _env(tmp_path)
+    d = gui_dirs(env, macos=True)
+    lib = tmp_path / "home" / "Library"
+    assert d.log_file == lib / "Logs" / "ButterEye" / "gui.log"
+    # beside config.toml, the folder Storage reports as "Settings"
+    assert d.settings_file == lib / "Application Support" / "ButterEye" / "config" / "gui.ini"
+    assert d.legacy_settings_file == tmp_path / "state" / "buttereye" / "gui.ini"
+    assert d.legacy_log_file == tmp_path / "state" / "buttereye" / "logs" / "gui.log"
+    # an exported XDG variable does not move them out of ~/Library
+    other = gui_dirs({**env, "XDG_STATE_HOME": str(tmp_path / "elsewhere")}, macos=True)
+    assert other.log_file == d.log_file and other.settings_file == d.settings_file
+
+
+def test_gui_files_are_pure(tmp_path: Path) -> None:
+    """No folder is created or checked: the GUI asks before the core is open."""
+    from buttereye.core.paths import gui_dirs
+
+    env = _env(tmp_path, XDG_RUNTIME_DIR="relative/not-checked")
+    gui_dirs(env, macos=True)
+    gui_dirs(env, macos=False)
+    assert not (tmp_path / "home").exists() and not (tmp_path / "state").exists()
+
+
+@pytest.mark.skipif(not osapi.IS_MACOS, reason="the macOS answer is the platform default")
+def test_on_this_mac_the_gui_logs_with_the_core(tmp_path: Path) -> None:
+    from buttereye.core.paths import gui_dirs
+    from buttereye.core.storage import locations
+    from buttereye.core.types import StorageKind
+
+    env = _env(tmp_path)
+    paths = resolve(env)
+    assert gui_dirs(env).log_file.parent == paths.logs_dir
+    assert gui_dirs(env).settings_file.parent == paths.config_file.parent
+    # so the Storage page counts both, in its Logs and Settings rows
+    rows = {loc.kind: loc.path for loc in locations(paths)}
+    assert gui_dirs(env).log_file.parent == rows[StorageKind.LOGS]
+    assert gui_dirs(env).settings_file.parent == rows[StorageKind.CONFIG]

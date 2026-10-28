@@ -521,9 +521,13 @@ def test_doctor_reports_the_plugin(tmp_path: Path) -> None:
 def test_render_keeps_rife_and_allows_a_pinned_mvgpu() -> None:
     every = frozenset(BackendId) - {BackendId.RIFE_TRT}
     assert rprobe.engine_for("auto", every) is BackendId.RIFE_NCNN
-    assert rprobe.engine_for("auto", frozenset({BackendId.MVGPU, BackendId.MVTOOLS})) is (
-        BackendId.MVTOOLS
-    )
+    # P1: Automatic offline ranks mvgpu above MVTools (a GPU engine at the source
+    # size beats a CPU one); plan_sizes then takes the first that finishes in time
+    mv = frozenset({BackendId.MVGPU, BackendId.MVTOOLS})
+    assert rprobe.engine_for("auto", mv) is BackendId.MVGPU
+    assert rprobe.offline_order("auto", mv) == (BackendId.MVGPU, BackendId.MVTOOLS)
+    # 2D animation keeps live play's order: MVTools before mvgpu
+    assert rprobe.offline_order("auto", mv, animation=True)[0] is BackendId.MVTOOLS
     assert rprobe.engine_for(BackendId.MVGPU, every) is BackendId.MVGPU
     assert rprobe.engine_for(BackendId.MVGPU, every - {BackendId.MVGPU}) is BackendId.RIFE_NCNN
     assert jobs.vspipe_requests(BackendId.MVGPU) == 8

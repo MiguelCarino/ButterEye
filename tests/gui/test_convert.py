@@ -11,6 +11,7 @@ from typing import Any
 from PySide6.QtWidgets import QWidget
 
 from buttereye.core.api import (
+    BackendId,
     ButterEyeError,
     ErrorCode,
     JobId,
@@ -79,6 +80,77 @@ def test_size_labels_and_the_default_size() -> None:
     assert cd.default_size_index(unknown, 600, rate) == 0
     no_est = cd.size_label(unknown[1], original=False, duration_s=600, rate=rate)
     assert no_est == "720p (1280 × 720)"
+
+
+def _engine_size(w: int, h: int, **fps: float | None) -> RenderSize:
+    """A size as the core sends it (``render.probe.EngineSize``), every engine's
+    estimate best picture first; the GUI sees only RenderSize plus attributes."""
+    from buttereye.core.render.probe import EngineSize
+
+    names = {"rife": BackendId.RIFE_NCNN, "mvgpu": BackendId.MVGPU, "mvtools": BackendId.MVTOOLS}
+    options = tuple((names[k], v) for k, v in fps.items())
+    measured = [o for o in options if o[1]]
+    engine, est = measured[0] if measured else (options[0][0], None)
+    return EngineSize(w, h, est, engine, options)
+
+
+def test_each_size_names_its_engine_and_switches_before_shrinking() -> None:
+    # the M2 Air (B1): RIFE 6.7 fps at 1080p, mvgpu 57.4
+    rate, film = Fraction(48000, 1001), 2 * 3600
+    sizes = (
+        _engine_size(1920, 1080, rife=6.7, mvgpu=57.4, mvtools=60.8),
+        _engine_size(1280, 720, rife=30.0, mvgpu=121.0, mvtools=130.0),
+    )
+    chosen = [cd.for_target(s, rate, Fraction(24000, 1001)) for s in sizes]
+    assert [cd.size_engine(s) for s in chosen] == [BackendId.MVGPU, BackendId.RIFE_NCNN]
+    assert cd.default_size_index(chosen, film, rate) == 0  # 1080p, not RIFE at 720p
+    label = cd.size_label(chosen[0], original=True, duration_s=film, rate=rate)
+    assert label == "Original (1920 × 1080) — GPU motion vectors, about 1 h 40 min"
+    # 60 fps is about twice the work: 720p RIFE no longer fits, mvgpu does
+    sixty = cd.for_target(sizes[1], Fraction(60), Fraction(24000, 1001))
+    assert cd.size_engine(sixty) is BackendId.MVGPU
+    # nothing measured: the core's own choice, no time
+    bare = _engine_size(1920, 1080, rife=None, mvgpu=None)
+    assert cd.for_target(bare, rate) is bare
+    assert cd.size_label(bare, original=True, duration_s=film, rate=rate) == (
+        "Original (1920 × 1080) — RIFE"
+    )
+    # the profile's RIFE model was never measured: it is not passed over for mvgpu
+    unknown = _engine_size(1920, 1080, rife=None, mvgpu=57.4)
+    kept = cd.for_target(unknown, rate, Fraction(24000, 1001))
+    assert cd.size_engine(kept) is BackendId.RIFE_NCNN and kept.est_fps is None
+    plain = RenderSize(1920, 1080, 40.0)  # an older core: no engine, no options
+    assert cd.for_target(plain, rate) is plain and cd.size_engine(plain) is None
+
+
+def test_spec_extras_follow_what_the_spec_carries() -> None:
+    import dataclasses
+
+    known = {f.name for f in dataclasses.fields(RenderJobSpec)}
+    got = cd.spec_extras(engine=BackendId.MVGPU, ten_bit=True, nonsense=1)
+    assert set(got) == {"engine", "ten_bit"} & known
+
+
+def test_videotoolbox_names() -> None:
+    assert cd.encoder_name("hevc_videotoolbox") == "HEVC (Mac media engine)"
+    assert cd.encoder_name("prores_videotoolbox").startswith("ProRes 422 HQ")
+    assert cd.engine_name(BackendId.MVGPU) == "GPU motion vectors"
+
+
+def test_a_failed_remux_row_offers_to_finish(qtbot: Any) -> None:
+    err = ButterEyeError(ErrorCode.REMUX_FAILED, Msg("Copying failed."))
+    failed = _job(OpState.FAILED, error=err)
+    row = cd.JobRow(failed)
+    qtbot.addWidget(row)
+    assert cd.retryable(failed) and not row.retry_button.isVisibleTo(row)  # nobody to ask
+    asked: list[RenderJobState] = []
+    row.set_retry(asked.append)
+    assert row.retry_button.isVisibleTo(row)
+    row.retry_button.click()
+    assert asked == [failed]
+    enc = _job(OpState.FAILED, error=ButterEyeError(ErrorCode.ENCODER_FAILED, Msg("x")))
+    row.update_job(enc)
+    assert not row.retry_button.isVisibleTo(row) and not cd.retryable(enc)
 
 
 def test_default_output_never_overwrites(tmp_path: Path) -> None:

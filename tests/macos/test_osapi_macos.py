@@ -519,3 +519,74 @@ def test_a_planted_vstrt_is_not_found_on_macos(tmp_path: Path) -> None:
         (built / name).write_bytes(b"\xcf\xfa\xed\xfe")  # Mach-O magic, so it looks real
     assert sorted(p.name for p in built.iterdir()) == ["libvstrt.dylib", "libvstrt.so"]
     assert trt._vstrt_dirs(paths) == []
+
+
+# ---------------------------------------------------------------- power and heat
+def test_power_answers_come_from_the_real_api() -> None:
+    """What this Mac says right now: the types and ranges, not the values (a CI
+    runner has no battery; a laptop may be on either)."""
+    thermal = d.thermal_state()
+    assert thermal in (0, 1, 2, 3)
+    assert isinstance(d.low_power_mode(), bool)
+    assert d.providing_power_source() in ("AC Power", "Battery Power", "UPS Power")
+    assert isinstance(d.on_battery(), bool)
+    snap = osapi.power_snapshot()
+    assert snap.thermal in (0, 1, 2, 3) and isinstance(snap.on_battery, bool)
+
+
+@pytest.mark.parametrize(
+    ("source", "battery"),
+    [("AC Power", False), ("Battery Power", True), ("UPS Power", True), ("Off Line", False)],
+)
+def test_power_source_names(source: str, battery: bool) -> None:
+    assert d.on_battery(source) is battery
+
+
+def test_power_answers_none_when_the_runtime_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(d, "_objc_cache", [None])
+    monkeypatch.setattr(d, "_ps_cache", [None])
+    assert d.thermal_state() is None
+    assert d.low_power_mode() is None
+    assert d.providing_power_source() is None and d.on_battery() is None
+    assert d.begin_activity("x") is None
+    d.end_activity(1)  # nothing to end, and no raise
+
+
+def test_out_of_range_thermal_state_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    rt = d._objc()
+    assert rt is not None
+    real = rt.send
+    monkeypatch.setattr(
+        rt, "send", lambda restype, *a: 7 if a[1] == "thermalState" else real(restype, *a)
+    )
+    assert d.thermal_state() is None
+
+
+def test_activity_holds_an_assertion_until_ended() -> None:
+    """``pmset -g assertions`` lists what holds the machine awake, with its reason."""
+    reason = f"ButterEye test {os.getpid()}"
+
+    def listed() -> bool:
+        out = subprocess.run(
+            ["/usr/bin/pmset", "-g", "assertions"], capture_output=True, text=True, check=True
+        )
+        return reason in out.stdout
+
+    with osapi.activity(reason) as token:
+        assert isinstance(token, int)
+        assert listed()
+    assert not listed()
+
+
+def test_caffeinate_ends_with_the_pid_it_watches() -> None:
+    sleeper = subprocess.Popen(["/bin/sleep", "30"])
+    try:
+        awake = osapi.keep_awake(sleeper.pid)
+        assert awake is not None
+        assert awake.args == ["/usr/bin/caffeinate", "-i", "-w", str(sleeper.pid)]
+        time.sleep(0.2)
+        assert awake.poll() is None
+    finally:
+        sleeper.kill()
+        sleeper.wait()
+    assert awake.wait(timeout=5) == 0

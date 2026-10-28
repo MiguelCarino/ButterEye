@@ -295,6 +295,7 @@ def test_linux_rows_unchanged() -> None:
         "vsmlrt.py",
         "onnxconverter-common",
         "FSRCNNX x2 8-0-4-1 shader",
+        "RAVU-lite-AR r3 shader",
         "PySide6 / Qt",
         "mpv",
         "VapourSynth",
@@ -329,7 +330,13 @@ _MACOS = licences.components(windows=False, macos=True)
 
 #: What the tap's own formulae build, and nothing else (SOURCES.md, "What the tap
 #: conveys, and where its source is", plus the shader inside ButterEye itself).
-_TAP_CONVEYS = {"RIFE-ncnn-Vulkan", "RIFE ncnn models", "mvgpu", "FSRCNNX x2 8-0-4-1 shader"}
+_TAP_CONVEYS = {
+    "RIFE-ncnn-Vulkan",
+    "RIFE ncnn models",
+    "mvgpu",
+    "FSRCNNX x2 8-0-4-1 shader",
+    "RAVU-lite-AR r3 shader",
+}
 
 
 def test_macos_conveys_only_what_the_tap_builds() -> None:
@@ -376,6 +383,7 @@ def test_macos_table_shares_the_fedora_rows_it_does_not_change() -> None:
     mac = {c.name: c for c in _MACOS}
     for name in (
         "FSRCNNX x2 8-0-4-1 shader",
+        "RAVU-lite-AR r3 shader",
         "PySide6 / Qt",
         "mpv",
         "VapourSynth",

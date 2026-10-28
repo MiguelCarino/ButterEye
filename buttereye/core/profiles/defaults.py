@@ -2,12 +2,19 @@
 # Copyright (C) 2026 The ButterEye contributors
 """Shipped profiles and the default config (SCOPE §4.9, §5.3, §5.5).
 
-The built-in profiles are ``quality``, ``balanced``, ``fast`` and ``cpu``. The
+The built-in profiles are ``quality``, ``balanced``, ``fast``, ``cpu`` and
+``battery``. The
 RIFE model names are the directory names of the curated
 ``buttereye-rife-ncnn-models`` package (``/usr/share/buttereye/rife-ncnn-models``).
 Buffer sizes are left ``None`` so the generated script uses the §4.4 defaults.
 Nothing here claims a measured speed: real-time capability comes from the
 benchmark (F14) only.
+
+``battery`` is for a laptop away from the wall or running hot: GPU motion
+vectors at 2×, the lightest GPU engine. No shipped rule picks it, because the
+default rules apply to every platform and a new rule must not change what an
+existing install plays; ``BATTERY_RULE`` is the rule to offer (put first, it
+wins whenever the Mac is on battery).
 """
 
 from __future__ import annotations
@@ -84,7 +91,22 @@ _BUILTINS: tuple[Profile, ...] = (
         concurrent_frames=None,
         builtin=True,
     ),
+    Profile(
+        id="battery",
+        name="Battery",
+        backend=BackendId.MVGPU,
+        model=None,
+        scale=None,
+        target=Target(TargetKind.X2),
+        sc_threshold=DEFAULT_SC_THRESHOLD,
+        buffered_frames=None,
+        concurrent_frames=None,
+        builtin=True,
+    ),
 )
+
+#: id of the shipped low-power profile
+BATTERY_PROFILE_ID = "battery"
 
 BUILTIN_IDS: frozenset[str] = frozenset(p.id for p in _BUILTINS)
 
@@ -96,9 +118,12 @@ _DEFAULT_RULES: tuple[Rule, ...] = (
     Rule(RuleMatch(fps_min=Fraction(48)), "fast"),
 )
 
+#: the rule that sends a Mac on battery to ``battery`` (not shipped; see above)
+BATTERY_RULE = Rule(RuleMatch(on_battery=True), BATTERY_PROFILE_ID)
+
 
 def builtin_profiles() -> tuple[Profile, ...]:
-    """The four shipped profiles, ``builtin=True``. Pure."""
+    """The five shipped profiles, ``builtin=True``. Pure."""
     return _BUILTINS
 
 

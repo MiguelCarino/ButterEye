@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from buttereye.core import capabilities
+from buttereye.core import capabilities, osapi
 from buttereye.core.capabilities import ProviderRef
 from buttereye.core.errors import ErrorCode
 from buttereye.core.mpvctl.ipc import LABEL
@@ -270,7 +270,15 @@ def device_lost_lines(log_file: Path, *, max_bytes: int = 256 * 1024) -> tuple[s
 # ---------------------------------------------------------------------------
 
 GPUFAULT_MODULE = "buttereye.core.doctor.gpufault"
-JOURNAL_SETTLE_S = 0.3  # journald needs a moment to store the kernel lines of a late fault
+#: journald needs a moment to store the kernel lines of a late fault. Linux
+#: only: macOS and Windows have no journal to read (the doctor's scanner says
+#: "not read" at once), and the wait was 0.3 s at every mvgpu or RIFE session end
+JOURNAL_SETTLE_S = 0.3
+
+
+def journal_settles() -> bool:
+    """Whether a fault scan waits ``JOURNAL_SETTLE_S`` first (Linux only)."""
+    return not (osapi.IS_MACOS or osapi.IS_WINDOWS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,7 +304,8 @@ async def gpu_fault_scan(
     scan = capabilities.resolve(ProviderRef(GPUFAULT_MODULE, "scan_xid"))
     if scan is None:
         return None
-    await asyncio.sleep(JOURNAL_SETTLE_S)
+    if journal_settles():
+        await asyncio.sleep(JOURNAL_SETTLE_S)
     try:
         result = scan(since_monotonic=since_monotonic, since_wall=since_wall)
         if inspect.isawaitable(result):
@@ -355,4 +364,6 @@ __all__ = [
     "FaultScan",
     "DEVICE_LOST_MARKERS",
     "GPUFAULT_MODULE",
+    "JOURNAL_SETTLE_S",
+    "journal_settles",
 ]

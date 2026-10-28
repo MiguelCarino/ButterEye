@@ -19,9 +19,11 @@ import logging
 import os
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
+from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
-from typing import Any, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from buttereye import __version__ as _VERSION
 from buttereye.core import capabilities as _caps
@@ -58,6 +60,7 @@ from buttereye.core.ops import OpContext, Operation
 from buttereye.core.types import *  # noqa: F403
 from buttereye.core.types import (
     BackendStatus,
+    BenchMeasurement,
     BenchRequest,
     BenchResult,
     CandidateId,
@@ -72,6 +75,7 @@ from buttereye.core.types import (
     DoctorReport,
     DownloadItem,
     Feature,
+    FilterState,
     HardwareInfo,
     InstanceCandidate,
     JobId,
@@ -82,6 +86,7 @@ from buttereye.core.types import (
     OpKind,
     Paths,
     PluginStatus,
+    PowerSnapshot,
     Profile,
     RenderJobSpec,
     RenderJobState,
@@ -98,6 +103,9 @@ from buttereye.core.types import (
     StaleJob,
     StorageEntry,
 )
+
+if TYPE_CHECKING:
+    from buttereye.core.paths import GuiDirs
 
 _log = logging.getLogger(__name__)
 
@@ -829,13 +837,77 @@ def validate_config(cfg: Config) -> tuple[ConfigIssue, ...]:
     return tuple(_provider(Feature.CONFIG, RULES_VALIDATE)(cfg))
 
 
-def explain_rules(cfg: Config, facts: SourceFacts) -> RuleTrace:
-    """Pure. First-match trace (§4.9)."""
-    return cast(RuleTrace, _provider(Feature.CONFIG, RULES_EXPLAIN)(cfg, facts))
+def explain_rules(cfg: Config, facts: SourceFacts, power: PowerSnapshot | None = None) -> RuleTrace:
+    """Pure. First-match trace (§4.9). ``power`` is ``osapi.power_snapshot()``
+    for the battery and heat conditions; None reads as mains power, nominal."""
+    return cast(RuleTrace, _provider(Feature.CONFIG, RULES_EXPLAIN)(cfg, facts, power))
+
+
+# The benchmark's verdicts for the GUI (pure, ``bench.verdict``): imported when
+# called, so importing the facade still loads no subsystem.
+def realtime_bar(target: float) -> float:
+    """The in-mpv rate the benchmark calls real time at ``target`` fps (B25)."""
+    from buttereye.core.bench import verdict
+
+    return verdict.REALTIME_HEADROOM * float(target)
+
+
+def real_measurement(m: BenchMeasurement) -> bool:
+    """Measured inside mpv, above 0 fps, no GPU fault: what live caps may use."""
+    from buttereye.core.bench import verdict
+
+    return verdict.real_measurement(m)
+
+
+def bench_stale(result: BenchResult, now: datetime) -> bool:
+    """Old enough to be measured again in the background (still used meanwhile)."""
+    from buttereye.core.bench import verdict
+
+    return verdict.stale(result, now)
+
+
+def snap_ntsc(value: Fraction) -> Fraction:
+    """Pure. A decimal rate within 1.5e-3 of an NTSC rate n·1000/1001 as that
+    rate (23.976 is 24000/1001), as ``config.toml`` reads a rule's fps bound."""
+    from buttereye.core.profiles import schema
+
+    return schema.snap_ntsc(value)
+
+
+def pacing_notice(snap: SessionSnapshot) -> Msg | None:
+    """Pure. While smoothing runs at a rate the display can't show for the same
+    number of refreshes every frame (2x of 23.976 on 60 Hz holds frames 1-1-1-2,
+    ``mpvctl.decide.uneven_pacing``), the sentence that says so; else None."""
+    from buttereye.core.mpvctl import decide
+
+    target, hz = snap.target_fps, snap.display_fps
+    if snap.ended or snap.filter is not FilterState.ACTIVE or target is None or not hz:
+        return None
+    if not decide.uneven_pacing(target, hz):
+        return None
+    return decide.uneven_pacing_notice(target, hz)
+
+
+def gui_dirs(env: Mapping[str, str]) -> GuiDirs:
+    """Pure. The GUI's own settings and log files (``paths.gui_dirs``), from
+    ``env`` alone, before the core is open: ``~/Library`` on macOS."""
+    from buttereye.core import paths
+
+    return paths.gui_dirs(env)
+
+
+def import_lut(paths: Paths, source: Path) -> str:
+    """Blocking (call it off the GUI thread). Copy a ``.cube`` file into
+    ButterEye's luts folder and return the name to store in
+    ``GeneralSettings.lut``. Raises ``ValueError`` (a ``LutError``, with a
+    sentence for the user) or ``OSError``."""
+    from buttereye.core.profiles import luts
+
+    return luts.import_lut(paths, source)
 
 
 def builtin_profiles() -> tuple[Profile, ...]:
-    """Pure. The four shipped profiles."""
+    """Pure. The shipped profiles."""
     return tuple(_provider(Feature.CONFIG, DEF_BUILTINS)())
 
 
@@ -851,6 +923,10 @@ __all__ = [
     "set_language",
     "validate_config",
     "explain_rules",
+    "gui_dirs",
+    "import_lut",
+    "pacing_notice",
+    "snap_ntsc",
     "builtin_profiles",
     "legal_notices",
     "command_hint",
@@ -859,6 +935,9 @@ __all__ = [
     "CLI_MISSING_NOTE",
     "unavailable_text",
     "osapi",
+    "realtime_bar",
+    "real_measurement",
+    "bench_stale",
 ]
 __all__ += _types_mod.__all__
 __all__ += _errors_mod.__all__

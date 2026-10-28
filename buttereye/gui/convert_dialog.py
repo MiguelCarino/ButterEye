@@ -3,13 +3,15 @@
 """Save a smooth copy: the dialog and the progress rows (docs/design/GUI.md §12.7,
 SCOPE §7.8).
 
-One small dialog per video: size (with an estimated time for each), target,
-format and where to save. Rows under "Saving copies" follow ``JobChanged``.
-No error codes in the window; they stay in the log and Details.
+One small dialog per video: size (with the engine and an estimated time for
+each), target, format, 10-bit and where to save. Rows under "Saving copies"
+follow ``JobChanged``. No error codes in the window; they stay in the log and
+Details.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import re
 from collections.abc import Callable, Sequence
@@ -19,6 +21,7 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -36,7 +39,9 @@ from PySide6.QtWidgets import (
 )
 
 from buttereye.core.api import (
+    BackendId,
     ButterEyeError,
+    ErrorCode,
     JobId,
     OpState,
     RenderJobSpec,
@@ -55,6 +60,9 @@ SIMPLE_ID = "simple"
 COPY_SUFFIX = ".smooth.mkv"
 #: The original size is the default while its estimate is at most this many times
 #: the video's length; otherwise the largest size that is (else the smallest).
+#: Each size's engine is chosen with the same number (the core's
+#: ``render.probe.OFFLINE_TIME_FACTOR``): the best picture that fits, else the
+#: fastest, so a slow GPU gets another engine before a smaller size.
 DEFAULT_SIZE_FACTOR = 2.0
 
 _CODE_SUFFIX = re.compile(r"\s*\(BE-\d+\)\s*$")
@@ -74,17 +82,33 @@ def _t(text: str) -> str:
 
 #: Software encoders: heavy on the CPU at the doubled frame rate.
 CPU_ENCODERS = frozenset({"libx265", "libsvtav1", "libx264"})
+#: Encoders that can write 10 bits (the core's ``render.probe.TEN_BIT_ENCODERS``)
+TEN_BIT_ENCODERS = frozenset(
+    {"hevc_nvenc", "av1_nvenc", "hevc_videotoolbox", "libx265", "libsvtav1"}
+)
 
 
 def encoder_name(encoder: str) -> str:
     names = {
         "hevc_nvenc": _t("HEVC (NVIDIA GPU)"),
         "av1_nvenc": _t("AV1 (NVIDIA GPU)"),
+        "hevc_videotoolbox": _t("HEVC (Mac media engine)"),
+        "prores_videotoolbox": _t("ProRes 422 HQ (Mac media engine, very large files)"),
         "libx265": _t("HEVC (CPU, x265)"),
         "libsvtav1": _t("AV1 (CPU, SVT-AV1)"),
         "libx264": _t("H.264 (CPU, x264)"),
     }
     return names.get(encoder, encoder)
+
+
+def engine_name(engine: BackendId) -> str:
+    names = {
+        BackendId.RIFE_NCNN: _t("RIFE"),
+        BackendId.RIFE_TRT: _t("RIFE · TensorRT"),
+        BackendId.MVGPU: _t("GPU motion vectors"),
+        BackendId.MVTOOLS: _t("MVTools (CPU)"),
+    }
+    return names.get(engine, engine.value)
 
 
 def fmt_duration(seconds: float) -> str:
@@ -124,6 +148,38 @@ def load_rate(src: Fraction, target: Fraction) -> Fraction:
     return 2 * t * (1 - Fraction(1, (t / s).numerator))
 
 
+def _work(rate: Fraction, src_fps: Fraction | None) -> Fraction:
+    work = load_rate(src_fps, rate) if src_fps is not None and src_fps > 0 else rate
+    return work or rate
+
+
+def for_target(
+    size: RenderSize, rate: Fraction | None, src_fps: Fraction | None = None
+) -> RenderSize:
+    """``size`` with the engine for this target: the core chose one for the
+    profile's own (2×); a size that lists every engine's estimate (``options``)
+    is chosen again here with the core's rule (``render.probe.pick_offline``):
+    the first engine, best picture first, that converts within
+    ``DEFAULT_SIZE_FACTOR`` times the video's length or has no estimate (it is
+    not known to miss), else the fastest. A size without options (an older
+    core), or with nothing measured, stays as it is."""
+    options = tuple(size.options)
+    if rate is None or not any(fps for _b, fps in options):
+        return size
+    need = float(_work(rate, src_fps)) / DEFAULT_SIZE_FACTOR
+    engine, fps = next(
+        ((b, f or None) for b, f in options if not f or f >= need),
+        max(options, key=lambda o: o[1] or 0.0),
+    )
+    return dataclasses.replace(size, est_fps=fps, engine=engine)
+
+
+def size_engine(size: RenderSize) -> BackendId | None:
+    """The engine a size's estimate is for, when the core said."""
+    engine = getattr(size, "engine", None)
+    return engine if isinstance(engine, BackendId) else None
+
+
 def estimate_s(
     size: RenderSize,
     duration_s: float,
@@ -134,8 +190,7 @@ def estimate_s(
     multiplier is costed by the frames it interpolates (``load_rate``)."""
     if not size.est_fps or rate is None or duration_s <= 0:
         return None
-    work = load_rate(src_fps, rate) if src_fps is not None and src_fps > 0 else rate
-    return duration_s * float(work or rate) / size.est_fps
+    return duration_s * float(_work(rate, src_fps)) / size.est_fps
 
 
 def size_label(
@@ -146,13 +201,19 @@ def size_label(
     rate: Fraction | None,
     src_fps: Fraction | None = None,
 ) -> str:
+    """ "Original (1920 × 1080) — GPU motion vectors, about 1 h": the size, the
+    engine that makes it and how long that takes, each when known."""
     if original:
         text = _t("Original ({w} × {h})").format(w=size.width, h=size.height)
     else:
         text = _t("{h}p ({w} × {hh})").format(h=size.height, w=size.width, hh=size.height)
+    engine = size_engine(size)
     est = estimate_s(size, duration_s, rate, src_fps)
+    parts = [engine_name(engine)] if engine is not None else []
     if est is not None:
-        text += " — " + fmt_duration(est)
+        parts.append(fmt_duration(est))
+    if parts:
+        text += " — " + ", ".join(parts)
     return text
 
 
@@ -182,6 +243,14 @@ def default_output(src: Path) -> Path:
         out = src.with_name(f"{src.stem}.smooth ({n}).mkv")
         n += 1
     return out
+
+
+def spec_extras(**fields: object) -> dict[str, object]:
+    """The ``RenderJobSpec`` fields this core knows of ``fields``: the engine and
+    10-bit choices go to a core whose spec carries them, and are left out
+    (the core then chooses the same engine itself, 10-bit stays off) before."""
+    known = {f.name for f in dataclasses.fields(RenderJobSpec)}
+    return {k: v for k, v in fields.items() if k in known}
 
 
 def note_text(finding_id: str, text: str) -> str:
@@ -300,6 +369,7 @@ class ConvertDialog(QDialog):
         self.bridge = bridge
         self.source = Path(source)
         self.probe: RenderProbe | None = None
+        self._sizes: tuple[RenderSize, ...] = ()  # the probe's, for the chosen target
         self.output = default_output(self.source)
         self.overwrite = False
         self._save_chooser = save_chooser or _default_save_chooser
@@ -329,7 +399,10 @@ class ConvertDialog(QDialog):
         lbl, _ = a11y.labelled(
             _t("&Size"),
             self.size_combo,
-            description=_t("Smaller sizes convert faster; the times are estimates."),
+            description=_t(
+                "Each size shows the engine that makes it in time and how long it takes; "
+                "smaller sizes convert faster, and the times are estimates."
+            ),
         )
         grid.addWidget(lbl, 0, 0)
         grid.addWidget(self.size_combo, 0, 1)
@@ -349,6 +422,19 @@ class ConvertDialog(QDialog):
         lbl, _ = a11y.labelled(_t("&Format"), self.format_combo)
         grid.addWidget(lbl, 2, 0)
         grid.addWidget(self.format_combo, 2, 1)
+        self.format_combo.currentIndexChanged.connect(lambda _i: self._update_ten_bit())
+
+        self.ten_bit = QCheckBox(_t("&10-bit colour"), self)
+        self.ten_bit.setObjectName("convertTenBit")
+        self.ten_bit.setToolTip(
+            _t(
+                "Less banding in skies and dark gradients, at about the same speed and "
+                "size. Videos that are 10-bit already always stay 10-bit."
+            )
+        )
+        # only offered to a core whose job spec carries the choice
+        self.ten_bit.setVisible(bool(spec_extras(ten_bit=True)))
+        grid.addWidget(self.ten_bit, 3, 1)
 
         out_row = QHBoxLayout()
         self.output_label = QLabel(self)
@@ -366,8 +452,8 @@ class ConvertDialog(QDialog):
         save_to = QLabel(_t("Save to"), self)
         save_to.setTextFormat(Qt.TextFormat.PlainText)
         self.output_label.setAccessibleName(_t("Save to"))
-        grid.addWidget(save_to, 3, 0)
-        grid.addLayout(out_row, 3, 1)
+        grid.addWidget(save_to, 4, 0)
+        grid.addLayout(out_row, 4, 1)
         self.form = QWidget(self)
         self.form.setLayout(grid)
         self.form.setEnabled(False)
@@ -428,6 +514,7 @@ class ConvertDialog(QDialog):
                     _t("Runs on the CPU and keeps most of its cores busy while converting."),
                     Qt.ItemDataRole.ToolTipRole,
                 )
+        self._update_ten_bit()
         notes = [note_text(w.id, without_code(render(w.cause))) for w in probe.warnings]
         kept = _kept_text(probe)
         if kept:
@@ -449,14 +536,16 @@ class ConvertDialog(QDialog):
         self.size_combo.blockSignals(True)
         self.size_combo.clear()
         rate = target_rate(self.target(), probe.fps)
-        for i, s in enumerate(probe.sizes):
+        # the engine can change with the target: 60 fps is about twice the work
+        self._sizes = tuple(for_target(s, rate, probe.fps) for s in probe.sizes)
+        for i, s in enumerate(self._sizes):
             label = size_label(
                 s, original=i == 0, duration_s=probe.duration_s, rate=rate, src_fps=probe.fps
             )
             self.size_combo.addItem(label, size_key((s.width, s.height)))
         idx = self.size_combo.findData(keep) if keep is not None else -1
         if idx < 0:
-            idx = default_size_index(probe.sizes, probe.duration_s, rate, probe.fps)
+            idx = default_size_index(self._sizes, probe.duration_s, rate, probe.fps)
         self.size_combo.setCurrentIndex(idx)
         self.size_combo.blockSignals(False)
 
@@ -470,10 +559,20 @@ class ConvertDialog(QDialog):
             return None
         return None if size == (self.probe.width, self.probe.height) else size
 
+    def chosen_engine(self) -> BackendId | None:
+        """The engine shown for the chosen size (None: the core chooses)."""
+        size = parse_size_key(self.size_combo.currentData())
+        found = next((s for s in self._sizes if (s.width, s.height) == size), None)
+        return size_engine(found) if found is not None else None
+
     def encoder(self) -> str:
         return str(self.format_combo.currentData() or "")
 
+    def _update_ten_bit(self) -> None:
+        self.ten_bit.setEnabled(self.encoder() in TEN_BIT_ENCODERS)
+
     def spec(self) -> RenderJobSpec:
+        ten_bit = self.ten_bit.isChecked() and self.ten_bit.isEnabled()
         return RenderJobSpec(
             source=self.source,
             output=self.output,
@@ -482,6 +581,8 @@ class ConvertDialog(QDialog):
             overwrite=self.overwrite,
             target=self.target(),
             size=self.chosen_size(),
+            engine=self.chosen_engine(),
+            ten_bit=ten_bit,
         )
 
     def _show_output(self) -> None:
@@ -595,11 +696,20 @@ class JobRow(QFrame):
         self.show_button.setAutoDefault(False)
         self.remove_button = QPushButton(_t("Remove"), self)
         self.remove_button.setAutoDefault(False)
+        # a failed remux kept the converted video: finish from it (set ``on_retry``)
+        self.retry_button = QPushButton(_t("Finish the copy"), self)
+        self.retry_button.setObjectName("retryCopy")
+        self.retry_button.setAutoDefault(False)
+        self.retry_button.setToolTip(
+            _t("The converted video was kept; this copies the sound and subtitles again.")
+        )
+        self.retry_button.clicked.connect(self._retry)
+        self.on_retry: Callable[[RenderJobState], None] | None = None
         self.log_button = QPushButton(_t("Copy log"), self)
         self.log_button.setObjectName("copyLog")
         self.log_button.setAutoDefault(False)
         self.log_button.setToolTip(_t("Copy what happened with this copy, to paste in a report."))
-        for b in (self.cancel_button, self.show_button, self.remove_button):
+        for b in (self.cancel_button, self.show_button, self.retry_button, self.remove_button):
             buttons.addWidget(b)
         buttons.addStretch(1)
         buttons.addWidget(self.log_button)
@@ -624,12 +734,33 @@ class JobRow(QFrame):
         self.cancel_button.setVisible(active)
         self.show_button.setVisible(job.state is OpState.SUCCEEDED)
         self.remove_button.setVisible(finished)
+        self.retry_button.setVisible(self.on_retry is not None and retryable(job))
         name = job.spec.output.name
         self.cancel_button.setAccessibleName(_t("Cancel saving {name}").format(name=name))
         self.show_button.setAccessibleName(_t("Show {name} in its folder").format(name=name))
         self.remove_button.setAccessibleName(_t("Remove {name} from the list").format(name=name))
+        self.retry_button.setAccessibleName(_t("Finish saving {name}").format(name=name))
         self.log_button.setAccessibleName(_t("Copy the log for {name}").format(name=name))
         self.setAccessibleName(f"{name} — {self.status.text()}")
+
+    def set_retry(self, handler: Callable[[RenderJobState], None] | None) -> None:
+        """Offer "Finish the copy" on a failed remux, calling ``handler``."""
+        self.on_retry = handler
+        self.update_job(self.job)
+
+    def _retry(self) -> None:
+        if self.on_retry is not None and retryable(self.job):
+            self.on_retry(self.job)
+
+
+def retryable(job: RenderJobState) -> bool:
+    """Only the remux failed: the converted video is kept, and the same job spec
+    added again finishes from it without converting again."""
+    return (
+        job.state is OpState.FAILED
+        and job.error is not None
+        and job.error.code is ErrorCode.REMUX_FAILED
+    )
 
 
 def open_folder(path: Path) -> None:
@@ -640,6 +771,11 @@ __all__ = [
     "ConvertDialog",
     "JobRow",
     "encoder_name",
+    "engine_name",
+    "for_target",
+    "size_engine",
+    "spec_extras",
+    "retryable",
     "fmt_duration",
     "copy_target",
     "target_rate",

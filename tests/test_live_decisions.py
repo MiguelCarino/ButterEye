@@ -965,8 +965,9 @@ async def test_device_lost_during_rife_switches_to_cpu(
 # ---------------------------------------------------------------------------
 
 
-def test_per_frame_properties_wait_for_the_tick(tmp_path: Path) -> None:
-    s = _session(FakeCtx(_paths(tmp_path), _config(_simple())), tmp_path)
+async def test_per_frame_properties_wait_for_the_tick(tmp_path: Path) -> None:
+    ctx = FakeCtx(_paths(tmp_path), _config(_simple()))
+    s = _session(ctx, tmp_path)
     s.wake.clear()
     for name, value in (("playback-time", 1.5), ("frame-drop-count", 3), ("audio-pts", 1.4)):
         s.on_event({"event": "property-change", "name": name, "data": value})
@@ -976,6 +977,7 @@ def test_per_frame_properties_wait_for_the_tick(tmp_path: Path) -> None:
     s.wake.clear()
     s.on_event({"event": "client-message", "args": ["buttereye-request", "toggle"]})
     assert s.wake.is_set()
+    await _settle(ctx)
 
 
 async def test_step_down_skips_lite_only_when_the_bench_says_so(

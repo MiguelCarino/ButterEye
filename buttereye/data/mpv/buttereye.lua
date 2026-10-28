@@ -5,14 +5,18 @@
 --
 --   Alt+b   turn interpolation on/off
 --   Alt+B   show ButterEye status, frame counters and the licence notice
+--   Alt+c   A/B view: source on the left half, smoothed on the right
 --
 -- Rebind in input.conf with:  KEY script-binding buttereye/toggle
 --                             KEY script-binding buttereye/status
+--                             KEY script-binding buttereye/compare
 --
 -- The toggle asks ButterEye first (script-message "buttereye-request toggle").
 -- If ButterEye does not acknowledge within 0.6 s (for example because its
 -- window was closed), the helper flips the @buttereye filter itself, so the
 -- key keeps working without ButterEye. It never adds a filter of its own.
+-- The A/B view is ButterEye's ("buttereye-request compare"): it builds the
+-- split into the filter, so without ButterEye the key only says so.
 --
 -- ButterEye talks to this script with:
 --   script-message-to buttereye status <text> [quiet]
@@ -88,8 +92,17 @@ local function show_status()
     osd(table.concat(lines, "\n"), 6)
 end
 
+local function compare()
+    if own_filter() == nil then
+        osd("ButterEye: the A/B view needs smoothing on.")
+        return
+    end
+    mp.commandv("script-message", "buttereye-request", "compare")
+end
+
 mp.add_key_binding("Alt+b", "toggle", toggle)
 mp.add_key_binding("Alt+B", "status", show_status)
+mp.add_key_binding("Alt+c", "compare", compare)
 
 mp.register_script_message("ack", function()
     if waiting ~= nil then

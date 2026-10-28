@@ -20,15 +20,26 @@ import importlib
 import logging
 import logging.handlers
 import os
+import shutil
 import stat
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
-from PySide6.QtCore import QCoreApplication, QLibraryInfo, QLocale, QSettings, QTranslator
+from PySide6.QtCore import (
+    QCoreApplication,
+    QEvent,
+    QLibraryInfo,
+    QLocale,
+    QObject,
+    QSettings,
+    QTranslator,
+)
+from PySide6.QtGui import QFileOpenEvent
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
+from buttereye.core import api as core_api
 from buttereye.core.api import (
     ButterEye,
     DetachPolicy,
@@ -105,7 +116,7 @@ def fake_opener(scenario: str) -> Opener:
 
 
 # ---------------------------------------------------------------------------
-# XDG locations used by the GUI process itself
+# the GUI process's own files: gui.ini and gui.log
 # ---------------------------------------------------------------------------
 
 
@@ -117,16 +128,89 @@ def _xdg(env: Mapping[str, str], var: str, default: str) -> Path:
 
 
 def state_dir(env: Mapping[str, str]) -> Path:
+    """``$XDG_STATE_HOME/buttereye``: where 0.0.5 kept both files on every
+    platform, and where Linux and Windows still do."""
     return _xdg(env, "XDG_STATE_HOME", ".local/state") / "buttereye"
 
 
+class GuiFiles(NamedTuple):
+    """``core.paths.GuiDirs``, as the GUI holds it."""
+
+    settings_file: Path
+    log_file: Path
+    legacy_settings_file: Path | None = None
+    legacy_log_file: Path | None = None
+
+
+def gui_dirs(env: Mapping[str, str]) -> GuiFiles:
+    """``core.paths.gui_dirs`` through ``core.api``: ``~/Library`` on macOS,
+    ``state_dir`` elsewhere. A ``core.api`` that does not export it yet gets
+    what 0.0.5 answered, ``state_dir`` on every platform."""
+    found = getattr(core_api, "gui_dirs", None)
+    if found is None:
+        state = state_dir(env)
+        return GuiFiles(state / "gui.ini", state / "logs" / "gui.log")
+    d = found(env)
+    return GuiFiles(d.settings_file, d.log_file, d.legacy_settings_file, d.legacy_log_file)
+
+
 def log_file(env: Mapping[str, str]) -> Path:
-    return state_dir(env) / "logs" / "gui.log"
+    return gui_dirs(env).log_file
 
 
 def settings_file(env: Mapping[str, str]) -> Path:
     """Window size and other per-user GUI conveniences (never ``config.toml``)."""
-    return state_dir(env) / "gui.ini"
+    return gui_dirs(env).settings_file
+
+
+def _move(old: Path, new: Path) -> bool:
+    """``old`` to ``new`` unless ``new`` exists already (a newer run wrote it):
+    then the old copy is left alone. ``os.replace`` first, a copy-and-delete
+    across file systems (``~/.local`` on another volume)."""
+    if new.exists() or not old.is_file() or old.is_symlink():
+        return False
+    new.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.replace(old, new)
+    except OSError:
+        shutil.copy2(old, new)
+        old.unlink()
+    return True
+
+
+def migrate_gui_files(dirs: GuiFiles) -> list[Path]:
+    """Move ``gui.ini`` and ``gui.log``, ``.1`` to ``.4`` from where 0.0.5 kept
+    them (``dirs.legacy_*``, macOS only) to where they live now, before the log
+    is opened. Each file moves once and only when nothing is at its new place;
+    the old folders are removed when that leaves them empty. Never raises: a
+    file that can't be moved stays where it was, and the GUI starts with a fresh
+    one. Returns the new paths of what moved, for the log."""
+    pairs: list[tuple[Path, Path]] = []
+    if dirs.legacy_settings_file is not None:
+        pairs.append((dirs.legacy_settings_file, dirs.settings_file))
+    old_log = dirs.legacy_log_file
+    if old_log is not None:
+        pairs.append((old_log, dirs.log_file))
+        for i in range(1, LOG_BACKUPS + 1):
+            pairs.append(
+                (
+                    old_log.with_name(f"{old_log.name}.{i}"),
+                    dirs.log_file.with_name(f"{dirs.log_file.name}.{i}"),
+                )
+            )
+    moved: list[Path] = []
+    for old, new in pairs:
+        try:
+            if _move(old, new):
+                moved.append(new)
+        except OSError as exc:
+            print(f"buttereye-gui: cannot move {old} to {new}: {exc}", file=sys.stderr)
+    if old_log is not None:
+        # logs/ and then the buttereye folder above it, only when empty
+        for d in (old_log.parent, old_log.parent.parent):
+            with contextlib.suppress(OSError):
+                d.rmdir()
+    return moved
 
 
 def lock_path(env: Mapping[str, str]) -> Path | None:
@@ -294,6 +378,65 @@ def version_text() -> str:
     )
 
 
+class FileOpenRouter(QObject):
+    """Finder's Open With and a file dropped on the Dock icon (macOS): Cocoa
+    hands the GUI each file as a ``QEvent.FileOpen`` on the application, never
+    in ``argv``, and the first one can arrive before ``main`` has built the
+    window. Files are kept until ``attach``, which gives them to
+    ``play_when_ready`` as the command line's are; after that one is played at
+    once once the core is open, the way a drop on the window is, and queued
+    with the rest before then. A window without ``play_file`` (the classic one)
+    only has them logged."""
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._pending: list[Path] = []
+        self._window: QObject | None = None
+        self._bridge: CoreBridge | None = None
+
+    @property
+    def pending(self) -> tuple[Path, ...]:
+        return tuple(self._pending)
+
+    def attach(self, window: QObject, bridge: CoreBridge, files: Sequence[Path] = ()) -> None:
+        self._window = window
+        self._bridge = bridge
+        self._pending = [*files, *(f for f in self._pending if f not in files)]
+        self._hand_over()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() != QEvent.Type.FileOpen or not isinstance(event, QFileOpenEvent):
+            return super().eventFilter(watched, event)
+        name = event.file() or event.url().toLocalFile()
+        path = Path(name) if name else None
+        if path is None or not path.is_file():
+            _log.info("open request for something that is not a file: %r", name)
+            return True
+        self.open(path)
+        return True
+
+    def open(self, path: Path) -> None:
+        window, bridge = self._window, self._bridge
+        play = getattr(window, "play_file", None)
+        if bridge is not None and bridge.is_ready and callable(play):
+            play(path)
+            return
+        self._pending.append(path)
+        self._hand_over()
+
+    def _hand_over(self) -> None:
+        """Before the core is open: the window's ``play_when_ready`` replaces
+        its list with the one it is given, so it always gets every file so far."""
+        if self._window is None or not self._pending:
+            return
+        when_ready = getattr(self._window, "play_when_ready", None)
+        if callable(when_ready):
+            when_ready(list(self._pending))
+        else:
+            _log.info("this window does not play files; not opening %s", self._pending)
+            self._pending.clear()
+
+
 def configure_app(app: QApplication) -> None:
     app.setApplicationName("ButterEye")
     app.setApplicationDisplayName("ButterEye")
@@ -324,6 +467,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     existing = QApplication.instance()
     app = existing if isinstance(existing, QApplication) else QApplication([argv[0], *qt_args])
     configure_app(app)
+    # before anything that can spin the event loop: a FileOpen from Finder may
+    # already be queued (the "already open" box below would deliver it)
+    file_open = FileOpenRouter(app)
+    app.installEventFilter(file_open)
 
     lock: InstanceLock | None = None
     lp = lock_path(env)
@@ -344,14 +491,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             _log.warning("single-instance lock unavailable: %s", exc)
             lock = None
 
-    log_path = setup_logging(log_file(env))
+    dirs = gui_dirs(env)
+    moved = migrate_gui_files(dirs)
+    log_path = setup_logging(dirs.log_file)
+    if moved:
+        _log.info("moved the GUI's files to their macOS places: %s", ", ".join(map(str, moved)))
     set_language(None)  # core gettext follows the environment, before any render()
     install_translators(app)
     theme.install(app)
 
     bridge = CoreBridge(opener=opener)
-    settings_path = settings_file(env)
-    settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+    settings = QSettings(str(dirs.settings_file), QSettings.Format.IniFormat)
     window: QMainWindow
     if ns.classic:
         from buttereye.gui.main_window import MainWindow
@@ -359,7 +509,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         window = MainWindow(bridge, settings, log_path=log_path)
     else:
         window = SimpleWindow(bridge, settings, log_path=log_path)
-        window.play_when_ready(ns.files)
+    file_open.attach(window, bridge, ns.files)
 
     def last_resort_shutdown() -> None:
         if not bridge.is_closed:
@@ -372,6 +522,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return app.exec()
     finally:
         last_resort_shutdown()
+        app.removeEventFilter(file_open)
         if lock is not None:
             lock.release()
 
@@ -380,15 +531,19 @@ __all__ = [
     "APP_ID",
     "AlreadyRunning",
     "DEV_ENV",
+    "FileOpenRouter",
+    "GuiFiles",
     "InstanceLock",
     "UnsafeRuntimeDir",
     "configure_app",
     "dev_mode",
     "fake_opener",
+    "gui_dirs",
     "install_translators",
     "lock_path",
     "log_file",
     "main",
+    "migrate_gui_files",
     "parse_args",
     "settings_file",
     "setup_logging",

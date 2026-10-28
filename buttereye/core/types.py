@@ -446,6 +446,30 @@ class Profile:
     hdr: Literal["skip", "passthrough"] = "skip"
     builtin: bool = False
     content: ContentKind = ContentKind.AUTO
+    #: anti-aliasing before smoothing (znedi3 doubling, then back down), so the
+    #: engine sees smooth edges instead of stair-steps; costly, CPU, off by default
+    aa: bool = False
+
+
+#: ``PowerSnapshot.thermal`` and a rule's ``thermal_min``/``thermal_max``, by value:
+#: macOS's ``NSProcessInfoThermalState`` names, 0 to 3
+THERMAL_STATES: tuple[str, ...] = ("nominal", "fair", "serious", "critical")
+
+
+@dataclass(frozen=True, slots=True)
+class PowerSnapshot:
+    """What the machine says about its power and heat (``osapi.power_snapshot``).
+    None = not known: always off macOS."""
+
+    on_battery: bool | None = None
+    low_power: bool | None = None  # macOS Low Power Mode
+    thermal: int | None = None  # index into THERMAL_STATES
+
+    @property
+    def constrained(self) -> bool:
+        """Running hot (serious or worse) or in Low Power Mode: the speed test's
+        answer is no longer what this machine can do."""
+        return self.low_power is True or (self.thermal is not None and self.thermal >= 2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,6 +482,10 @@ class RuleMatch:
     display_hz_min: float | None = None
     interlaced: bool | None = None
     path_glob: str | None = None
+    #: power state (``PowerSnapshot``); unknown reads as mains power and nominal
+    on_battery: bool | None = None
+    thermal_min: int | None = None  # THERMAL_STATES index, inclusive
+    thermal_max: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -469,6 +497,44 @@ class Rule:
 #: what the mpv OSD can show (GeneralSettings.osd_items), in display order
 OSD_ITEMS: tuple[str, ...] = ("rates", "engine", "size", "health")
 
+#: ``PictureAdjust`` fields: mpv's own colour controls, applied after smoothing
+PICTURE_KEYS: tuple[str, ...] = ("brightness", "contrast", "saturation", "gamma", "hue")
+#: the range of each, as mpv's ``--brightness`` etc. take it; 0 = unchanged
+PICTURE_RANGE: tuple[int, int] = (-100, 100)
+#: ``GeneralSettings.deband_grain``, as mpv's ``deband-grain`` takes it (mpv's own
+#: default is 32; its own limit is 4096, far past anything that looks like film)
+DEBAND_GRAIN_RANGE: tuple[int, int] = (0, 100)
+#: deband strength -> mpv ``deband-iterations``, ``deband-threshold``, ``deband-range``.
+#: "light" is mpv's own default; "strong" is three passes at a higher threshold
+#: and a wider reach, for animation and dark gradients (chosen by eye, not measured)
+DEBAND_PRESETS: Mapping[str, Mapping[str, int]] = MappingProxyType(
+    {
+        "light": MappingProxyType(
+            {"deband-iterations": 1, "deband-threshold": 48, "deband-range": 16}
+        ),
+        "strong": MappingProxyType(
+            {"deband-iterations": 3, "deband-threshold": 64, "deband-range": 24}
+        ),
+    }
+)
+#: the file extension of an imported 3D LUT (``GeneralSettings.lut``)
+LUT_SUFFIX = ".cube"
+
+
+@dataclass(frozen=True, slots=True)
+class PictureAdjust:
+    """mpv's colour controls, each -100..100 with 0 = unchanged (``[general.picture]``)."""
+
+    brightness: int = 0
+    contrast: int = 0
+    saturation: int = 0
+    gamma: int = 0
+    hue: int = 0
+
+    @property
+    def neutral(self) -> bool:
+        return not any((self.brightness, self.contrast, self.saturation, self.gamma, self.hue))
+
 
 @dataclass(frozen=True, slots=True)
 class GeneralSettings:
@@ -479,10 +545,12 @@ class GeneralSettings:
     #: contrib/build-vstrt.sh is the opt-in, owner decision 2026-10-10); True = the
     #: Setup opt-in (also plans its downloads); False = turned off
     trt_experimental: bool | None = None
-    #: display upscaling (§15.2, spike M0(o)): mpv's own scaler, or the bundled
-    #: FSRCNNX shader on top of it ("sharper")
-    upscaling: Literal["standard", "sharper"] = "standard"
-    #: mpv's own debanding (libplacebo, ~0 GPU cost) switched on by ButterEye (§15.2)
+    #: display upscaling (§15.2, spike M0(o)): mpv's own scaler, the bundled
+    #: FSRCNNX shader on top of it ("sharper"), or the edge-directed RAVU shader
+    #: (ravu-lite-ar-r3, "ravu"), much cheaper than FSRCNNX per frame
+    upscaling: Literal["standard", "sharper", "ravu"] = "standard"
+    #: mpv's own debanding (libplacebo, ~0 GPU cost) switched on by ButterEye (§15.2);
+    #: how hard is ``deband_strength``
     deband: bool = False
     #: never smooth live at a smaller size to keep up; smooth at the video's own
     #: size even if frames may drop (the user's choice over the speed test)
@@ -494,6 +562,24 @@ class GeneralSettings:
     #: per-file logs to copy (Copy log, closed rows, More logs); off = opted out:
     #: no log buttons, and each mpv log is deleted when the video closes
     keep_logs: bool = True
+    #: colour controls, sent to mpv after smoothing ([general.picture])
+    picture: PictureAdjust = PictureAdjust()
+    #: an imported 3D LUT: a file *name* in ButterEye's own luts folder
+    #: (``profiles.luts``), never a path; None = no LUT
+    lut: str | None = None
+    #: with ``deband`` on: a DEBAND_PRESETS key
+    deband_strength: Literal["light", "strong"] = "light"
+    #: mpv ``deband-grain`` with ``deband`` on; None = mpv's own (32)
+    deband_grain: int | None = None
+    #: A/B view: "split" shows the source on the left half, smoothed on the right
+    compare: Literal["off", "split"] = "off"
+    #: a target the display paces unevenly (24 fps smoothed to 48 on 60 Hz shows
+    #: frames 1-1-1-2): mpv's own blending (interpolation, tscale=oversample) on
+    #: top, so the judder goes; off by default, it blends with ButterEye's frames
+    even_pacing: bool = False
+    #: "Match your display" prefers a smaller size that paces evenly over 2x at
+    #: the full size that doesn't
+    cadence_first: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -825,6 +911,10 @@ class RenderSize:
     width: int
     height: int
     est_fps: float | None  # estimated output fps at 2× (decide.load_rate); None = no benchmark
+    engine: BackendId | None = None  # the engine est_fps is for (render.probe.pick_offline)
+    # every candidate's estimate at this size, best picture first, so a target
+    # other than the profile's can be costed again with the same rule
+    options: tuple[tuple[BackendId, float | None], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -856,6 +946,8 @@ class RenderJobSpec:
     overwrite: bool = False
     target: Target | None = None  # None = the profile's; DISPLAY renders as 2x (§7.8)
     size: tuple[int, int] | None = None  # None = the source size (§7.8)
+    engine: BackendId | None = None  # None = the core picks by time (render.probe.pick_offline)
+    ten_bit: bool = False  # 10-bit output for an 8-bit source (render.pipeline.ten_bit_output)
 
 
 @dataclass(frozen=True, slots=True)
@@ -951,7 +1043,13 @@ class CommandHint:
 from buttereye.core.errors import ButterEyeError, ErrorCode  # noqa: E402
 
 __all__ = [
+    "DEBAND_GRAIN_RANGE",
+    "DEBAND_PRESETS",
+    "LUT_SUFFIX",
     "OSD_ITEMS",
+    "PICTURE_KEYS",
+    "PICTURE_RANGE",
+    "THERMAL_STATES",
     "OpId",
     "SessionId",
     "JobId",
@@ -983,6 +1081,8 @@ __all__ = [
     "RenderPhase",
     "Target",
     "Profile",
+    "PowerSnapshot",
+    "PictureAdjust",
     "RuleMatch",
     "Rule",
     "GeneralSettings",
