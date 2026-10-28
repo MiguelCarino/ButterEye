@@ -22,9 +22,12 @@
 # ffms2 and vulkaninfo come from pinned upstream releases (pins.sh), built by
 # build-tools-in-chroot.sh. The installer (build-installer.sh) packs all of it.
 #
-# Usage: packaging/windows/build-plugins.sh [--no-mock]
+# Usage: packaging/windows/build-plugins.sh [--no-mock | --inputs-digest]
 #   --no-mock: build right here, as root in a fedora:44 container (CI), instead
 #   of in a mock chroot (chroot.sh). The steps are the same.
+#   --inputs-digest: build nothing; print the digest of what a build would be made
+#   from (build_inputs below). components.json records it as build_inputs.sha256,
+#   and build-installer.sh refuses a cache whose digest is not today's.
 # Output: $XDG_CACHE_HOME/buttereye/windows (never the repository). JOBS caps
 # the compile (default 8; the ncnn build is heavy and the machine may be shared).
 # Test the result under Wine with tools/wine-tests.sh.
@@ -42,14 +45,71 @@ specs=$repo/packaging/plugins
 source "$here/pins.sh"
 # shellcheck source=chroot.sh
 source "$here/chroot.sh"
+
+q() { rpmspec -q --srpm --define 'dist %{nil}' --qf "$2" "$specs/$1.spec"; }
+bundled() { rpmspec -q --define 'dist %{nil}' --provides "$specs/$1.spec" | sed -n "s/^bundled($2) = //p"; }
+
+# Everything the DLLs are built from, one line each, for a digest that changes when
+# any of it does: the packages' version-release (which also pins the mvtools, RIFE
+# and models archives) and the ncnn and glslang commits, the pinned ffms2, FFmpeg,
+# dav1d, Vulkan-Tools and volk archives, the Windows build's patches and chroot
+# scripts, and every file of mvgpu/. A version alone is not enough: mvgpu's source
+# changed (766e149) while its version still read 0.0.1, so mvgpu/ is hashed file by
+# file, with the same file list build.sh packs into its tarball.
+# Every value is checked here rather than left to set -e, which does not reach into
+# $(...): without that, a host with no rpmspec printed a digest of empty versions.
+build_inputs() {
+    local s v
+    for s in buttereye-vs-mvtools buttereye-vs-rife-ncnn buttereye-vs-mvgpu buttereye-rife-ncnn-models; do
+        v=$(q "$s" '%{version}-%{release}') && [[ -n $v ]] || { echo "rpmspec can't read $s.spec" >&2; return 1; }
+        printf 'package %s %s\n' "$s" "$v"
+    done
+    for s in ncnn glslang; do
+        v=$(bundled buttereye-vs-rife-ncnn "$s") && [[ -n $v ]] \
+            || { echo "buttereye-vs-rife-ncnn.spec names no bundled($s)" >&2; return 1; }
+        printf 'bundled %s %s\n' "$s" "$v"
+    done
+    printf 'pin %s\n' "$FFMS2_SHA256" "$FFMPEG_SHA256" "$DAV1D_SHA256" \
+        "$VULKAN_TOOLS_SHA256" "$VOLK_SHA256"
+    (cd "$repo" && sha256sum \
+        packaging/plugins/buttereye-vs-mvtools-pkgconfig.patch \
+        packaging/plugins/buttereye-vs-rife-ncnn-host-pool.patch \
+        packaging/plugins/buttereye-vs-rife-ncnn-windows-paths.patch \
+        packaging/windows/build-in-chroot.sh packaging/windows/build-tools-in-chroot.sh \
+        packaging/windows/vulkaninfo-mingw-user32.patch) || return 1
+    if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+        git -C "$repo" ls-files -z -co --exclude-standard -- mvgpu COPYING
+    else  # an unpacked source tar (the Windows installer's): it holds only tracked files
+        (cd "$repo" && find mvgpu COPYING -type f -print0)
+    fi | (cd "$repo" && while IFS= read -r -d '' f; do
+            if [[ -f $f && $f != mvgpu/build* ]]; then printf '%s\0' "$f"; fi
+         done) \
+       | LC_ALL=C sort -z | (cd "$repo" && xargs -0 -r sha256sum)
+}
+inputs_digest() {
+    local lines
+    lines=$(build_inputs) || return 1
+    printf '%s\n' "$lines" | sha256sum | cut -d' ' -f1
+}
+if [[ ${1:-} == --inputs-digest ]]; then
+    (( $# == 1 )) || { echo "--inputs-digest takes no other argument" >&2; exit 2; }
+    inputs_digest
+    exit 0
+fi
+
 win_mode_from_args "$@"
 # what this script itself runs outside the chroot (--no-mock: install them here)
 win_host_install rpm-build rpmdevtools git-core curl python3 dnf5-plugins tar gzip
 
 # ---------------------------------------------------------------- sources
+# taken before anything is built, so a tree edited during the build reads as stale
+inputs=$(inputs_digest)
 # the same fetch, repack and checksum check as the Fedora packages (no SRPM upload)
 SPECS="buttereye-vs-mvtools buttereye-vs-rife-ncnn buttereye-vs-mvgpu buttereye-rife-ncnn-models" \
     "$repo/packaging/build.sh" --srpm-only "$chroot_cfg" >/dev/null
+# by version, not a glob: SOURCES keeps every earlier mvgpu tarball as well
+mvgpu_tar="$src/buttereye-vs-mvgpu-$(q buttereye-vs-mvgpu '%{version}').tar.gz"
+[[ -f $mvgpu_tar ]] || { echo "missing $mvgpu_tar" >&2; exit 1; }
 
 # ffms2 (+ FFmpeg, dav1d) and vulkaninfo (+ volk): pinned upstream releases
 tool_srcs=(
@@ -59,9 +119,6 @@ tool_srcs=(
     "$(fetch "$VULKAN_TOOLS_URL" "$VULKAN_TOOLS_SHA256")"
     "$(fetch "$VOLK_URL" "$VOLK_SHA256")"
 )
-
-q() { rpmspec -q --srpm --define 'dist %{nil}' --qf "$2" "$specs/$1.spec"; }
-bundled() { rpmspec -q --define 'dist %{nil}' --provides "$specs/$1.spec" | sed -n "s/^bundled($2) = //p"; }
 
 # ---------------------------------------------------------------- chroot
 win_init
@@ -73,7 +130,7 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 mkdir "$stage/in"
 cp "$src"/vapoursynth-mvtools-v*.tar.gz "$src"/buttereye-vs-rife-ncnn-r*.tar.gz \
-   "$src"/ncnn-*.tar.gz "$src"/glslang-*.tar.gz "$src"/buttereye-vs-mvgpu-*.tar.gz \
+   "$src"/ncnn-*.tar.gz "$src"/glslang-*.tar.gz "$mvgpu_tar" \
    "$specs"/buttereye-vs-mvtools-pkgconfig.patch "$specs"/buttereye-vs-rife-ncnn-host-pool.patch \
    "$specs"/buttereye-vs-rife-ncnn-windows-paths.patch \
    "$specs"/licenses/LICENSE.rife-ncnn-vulkan "$specs"/licenses/LGPL-2.1.txt "$specs"/licenses/WTFPL.txt \
@@ -111,9 +168,9 @@ cp "$specs"/licenses/LICENSE.Practical-RIFE "$specs"/licenses/LICENSE.ECCV2022-R
    "$specs"/licenses/LICENSE.rife-ncnn-vulkan "$specs"/PROVENANCE-rife-ncnn-models.md \
    "$out/licenses/buttereye-rife-ncnn-models/"
 python3 - "$out" "$(q buttereye-rife-ncnn-models '%{version}-%{release}')" \
-    "$(q buttereye-rife-ncnn-models '%{license}')" <<'EOF'
+    "$(q buttereye-rife-ncnn-models '%{license}')" "$inputs" <<'EOF'
 import json, os, sys
-out, vr, lic = sys.argv[1:4]
+out, vr, lic, inputs = sys.argv[1:5]
 path = os.path.join(out, "components.json")
 data = json.load(open(path))
 tools = os.path.join(out, "components-tools.json")  # ffms2, vulkan-tools
@@ -124,6 +181,9 @@ data["components"].append({
     "name": "buttereye-rife-ncnn-models", "version": vr, "license": lic, "provides": [],
     "licence_files": sorted(f"licenses/buttereye-rife-ncnn-models/{f}" for f in os.listdir(root)),
 })
+# what build-installer.sh checks this cache against; it leaves the key out of the
+# install record
+data["build_inputs"] = {"sha256": inputs}
 json.dump(data, open(path, "w"), indent=2)
 EOF
 
@@ -132,7 +192,7 @@ EOF
 # and the models archive the installer's models come from
 mkdir -p "$out/sources"
 cp "$src"/vapoursynth-mvtools-v*.tar.gz "$src"/buttereye-vs-rife-ncnn-r*.tar.gz \
-   "$src"/ncnn-*.tar.gz "$src"/glslang-*.tar.gz "$src"/buttereye-vs-mvgpu-*.tar.gz \
+   "$src"/ncnn-*.tar.gz "$src"/glslang-*.tar.gz "$mvgpu_tar" \
    "$src"/buttereye-rife-ncnn-models-r*.tar.gz \
    "$specs"/*.patch "$here"/build-plugins.sh "$here"/build-in-chroot.sh "$here"/chroot.sh "$out/sources/"
 # ffms2.dll links FFmpeg (LGPL) statically: its source and the exact build steps

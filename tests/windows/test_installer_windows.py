@@ -13,8 +13,9 @@ Windows only, and only when ``BUTTEREYE_TEST_INSTALLER`` names the setup.exe
 The installed runtime is run with nothing of this test's own Python: its folder
 is taken off PATH (and Wine's WINEPATH dropped), and APPDATA/LOCALAPPDATA point
 at an empty profile, so the first-run path is exercised too. The installer
-registers itself under this user's HKCU and adds a Start-menu shortcut; the
-uninstall at the end removes both.
+registers itself under this user's HKCU, adds a Start-menu shortcut and offers
+ButterEye under "Open with" for the common video types (a ProgID of its own);
+the uninstall at the end removes all three.
 """
 
 from __future__ import annotations
@@ -42,6 +43,8 @@ pytestmark = [
 ]
 
 UNINSTKEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\ButterEye"
+PROGID = "ButterEye.Video"
+VIDEO_TYPES = ("mp4", "mkv", "webm", "mov", "avi", "ts")
 PLUGINS = ("mvtools.dll", "librife.dll", "libmvgpu.dll", "ffms2.dll")
 MODEL = "rife-v4.22_lite_ensembleFalse"
 
@@ -113,6 +116,31 @@ def _registered_location() -> str | None:
                 return ""
     except OSError:
         return None
+
+
+def _reg_value(subkey: str, name: str = "") -> str | None:
+    """A value under HKCU (``""`` is the key's default value), None when the key
+    or the value is missing."""
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey) as key:
+            return str(winreg.QueryValueEx(key, name)[0])
+    except OSError:
+        return None
+
+
+def _open_with_command() -> str | None:
+    return _reg_value(rf"Software\Classes\{PROGID}\shell\open\command")
+
+
+def _offered_for() -> list[str]:
+    """The video types whose OpenWithProgids name ButterEye's ProgID."""
+    return [
+        ext
+        for ext in VIDEO_TYPES
+        if _reg_value(rf"Software\Classes\.{ext}\OpenWithProgids", PROGID) is not None
+    ]
 
 
 def _start_menu_link() -> Path:
@@ -210,6 +238,24 @@ def test_installs_silently_into_the_chosen_folder(installed: Installed) -> None:
     assert entry is not None and entry["DisplayName"] == "ButterEye"
     assert os.path.normcase(entry["InstallLocation"]) == os.path.normcase(str(f))
     assert _start_menu_link().is_file()
+
+
+def test_registers_under_open_with_for_the_video_types(installed: Installed) -> None:
+    f = installed.folder
+    pythonw = f / "python" / "pythonw.exe"
+    command = _open_with_command()
+    assert command is not None
+    assert os.path.normcase(command) == os.path.normcase(f'"{pythonw}" -m buttereye.gui "%1"')
+    icon = _reg_value(rf"Software\Classes\{PROGID}\DefaultIcon")
+    assert icon is not None and os.path.normcase(icon) == os.path.normcase(str(f / "buttereye.ico"))
+    assert _reg_value(rf"Software\Classes\{PROGID}", "FriendlyTypeName") == "ButterEye video"
+    assert _reg_value(rf"Software\Classes\{PROGID}\shell\open", "FriendlyAppName") == "ButterEye"
+    assert _reg_value(rf"Software\Classes\{PROGID}\Application", "ApplicationName") == "ButterEye"
+    assert _offered_for() == list(VIDEO_TYPES)
+    # offered, never made the default: the extension's own default is untouched
+    assert _reg_value(r"Software\Classes\.mkv") != PROGID
+    # not on every pythonw of every Python on this PC
+    assert _reg_value(r"Software\Classes\Applications\pythonw.exe\shell\open\command") is None
 
 
 def test_install_record_lists_every_component_with_its_licences(installed: Installed) -> None:
@@ -392,6 +438,8 @@ def test_an_uninstaller_for_another_folder_leaves_the_entry_and_shortcut(
     assert os.path.normcase(entry["InstallLocation"]) == os.path.normcase(str(installed.folder))
     assert _start_menu_link().is_file()
     assert (installed.folder / "python" / "python.exe").is_file()
+    # and the active copy's "Open with" registration
+    assert _open_with_command() is not None and _offered_for() == list(VIDEO_TYPES)
 
 
 def _hold_mutex(name: str) -> int:
@@ -484,3 +532,5 @@ def test_uninstalls_silently(installed: Installed) -> None:
     assert not folder.exists(), sorted(str(p) for p in folder.rglob("*"))[:20]
     assert _uninstall_entry() is None
     assert not _start_menu_link().exists()
+    assert _reg_value(rf"Software\Classes\{PROGID}") is None
+    assert _open_with_command() is None and _offered_for() == []

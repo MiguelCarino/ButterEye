@@ -395,13 +395,13 @@ APP_REPAIR = M("Download ButterEye again and replace ButterEye.app with the new 
 #: the tools ``tool_fix`` names that ButterEye.app carries itself
 APP_CARRIES = frozenset({"mpv", "vapoursynth", "ffmpeg"})
 #: the Linux AppImage's peer of ``APP_REPAIR``: it carries mpv, VapourSynth,
-#: FFmpeg and MVTools, so the one repair is a fresh copy (``osapi.LINUX_APP``)
+#: FFmpeg, MVTools and mvgpu, so the one repair is a fresh copy
+#: (``osapi.LINUX_APP``)
 APPIMAGE_REPAIR = M("Download the ButterEye AppImage again and replace the old file with it.")
-#: the AppImage never carries RIFE or mvgpu, so a fresh copy cannot bring them:
-#: say where they are instead of a repair that does nothing
-APPIMAGE_NO_GPU = M(
-    "The AppImage smooths with MVTools only. For RIFE and mvgpu on the GPU, use "
-    "ButterEye's Fedora packages."
+#: the AppImage never carries RIFE or its models, so a fresh copy cannot bring
+#: them: say where they are instead of a repair that does nothing
+APPIMAGE_NO_RIFE = M(
+    "The AppImage smooths with MVTools and mvgpu. For RIFE, use ButterEye's Fedora packages."
 )
 #: macOS: ButterEye has no macOS package of its own yet (phase 3 builds the
 #: plugins, phase 4 taps them), and Homebrew has no formula for RIFE-ncnn-Vulkan
@@ -542,11 +542,13 @@ def mvgpu_finding(db: RpmDb, paths: Paths) -> Finding:
             M("Install it from the ButterEye COPR if you want it."),
             (f"sudo dnf install {PKG_MVGPU}",),
             windows=M("Run the ButterEye installer again and include it."),
-            # mvgpu is ButterEye's own Vulkan plugin and there is no Homebrew
-            # formula for it; it runs on MoltenVK bar one instance flag
-            # (docs/PLATFORMS.md), so this is "not yet", not "never".
-            macos=M("ButterEye doesn't build mvgpu for macOS yet, so it can't be installed."),
-            appimage=APPIMAGE_NO_GPU,
+            # ButterEye.app carries libmvgpu.dylib, so inside the app the
+            # advice is APP_REPAIR (platform_fix). This is a Mac running
+            # ButterEye some other way: there is no Homebrew formula for
+            # mvgpu, so nothing to install, and the app is where it comes from.
+            macos=M("mvgpu comes inside ButterEye.app; Homebrew has no package for it."),
+            # the AppImage carries libmvgpu.so: a missing one is a damaged copy,
+            # which APPIMAGE_REPAIR (the default) fixes
         ),
     )
 
@@ -747,7 +749,7 @@ def package_findings(db: RpmDb, paths: Paths) -> list[Finding]:
                     macos=M(
                         "RIFE has no macOS package yet, so only MVTools (CPU) smoothing works here."
                     ),
-                    appimage=APPIMAGE_NO_GPU,
+                    appimage=APPIMAGE_NO_RIFE,
                 ),
             )
         )

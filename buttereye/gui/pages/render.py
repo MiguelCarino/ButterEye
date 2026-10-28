@@ -140,14 +140,10 @@ def status_of(job: RenderJobState) -> tuple[BadgeKind, str]:
 
 
 def playback_notice_text(platform: str = sys.platform) -> str:
-    """What a render does while a video plays. The core stops it (SIGSTOP) until
-    the player closes, as the player and the render share the GPU; Windows has no
-    way to stop a process group, so there it only runs at lower CPU priority."""
-    if platform == "win32":
-        return _t(
-            "A video is playing: the render keeps going at lower CPU priority and "
-            "shares the graphics card with it, so either may slow down."
-        )
+    """What a render does while a video plays. The core stops it until the
+    player closes, as the player and the render share the GPU: SIGSTOP to its
+    process group, and on Windows, which has no such signal, by suspending its
+    processes. The same words on every ``platform``."""
     return _t(
         "A video is playing: the render is paused so it doesn't slow playback down, "
         "and continues when the player is closed."

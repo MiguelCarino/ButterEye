@@ -9,9 +9,9 @@ the way a user would; the extracted tree is used only for the harness, for
 ffprobe on the results, and for the static library check.
 
   version      ``ButterEye.AppImage --version``
-  doctor       ``doctor --json``: mpv, VapourSynth, MVTools, FFMS2 and the
-               render tools are found inside the AppImage and are not blocking;
-               no finding offers a dnf, COPR or rpm line
+  doctor       ``doctor --json``: mpv, VapourSynth, MVTools, mvgpu, FFMS2 and
+               the render tools are found inside the AppImage and are not
+               blocking; no finding offers a dnf, COPR or rpm line
   render       an offline ``render --profile cpu --target 2x`` of a generated
                6 s clip: the output exists, 48 fps, 288 frames
   mpv-filter   the AppImage's mpv with ``--vf=vapoursynth`` and an MVTools
@@ -22,6 +22,12 @@ ffprobe on the results, and for the static library check.
                twice the source rate in real time (mpv's IPC)
   gui          the window, started with no arguments under
                QT_QPA_PLATFORM=offscreen: up, no traceback, then ended
+  nvenc        the AppImage's ffmpeg lists hevc_nvenc and av1_nvenc, and no ELF
+               file in it needs NVIDIA's driver libraries (FFmpeg dlopens them);
+               with an NVIDIA driver on the host, a short hevc_nvenc encode
+  mvgpu        vapoursynth/libmvgpu.so exports VapourSynthPluginInit2 and loads
+               in the AppImage's VapourSynth as the mvgpu namespace; with a
+               Vulkan device on the host, Interpolate doubles a short clip
   libs         every library each ELF file needs (ldd on this host) and every
                library the running mpv and GUI processes have mapped
                (/proc/<pid>/maps) is inside the AppImage, on host-libs.txt, or a
@@ -151,7 +157,9 @@ def t_version() -> str:
 
 
 #: rows that must be OK: what the AppImage carries, found inside it
-MUST_BE_OK = ("mpv.version", "mpv.vf_vapoursynth", "packages.mvtools", "render.ffms2")
+MUST_BE_OK = (
+    "mpv.version", "mpv.vf_vapoursynth", "packages.mvtools", "packages.mvgpu", "render.ffms2",
+)  # fmt: skip
 #: what a blocking row may be about in a GPU-less container (anything else fails)
 GPU_PREFIXES = ("gpu.", "vulkan.", "hw.", "trt.", "display.")
 FOREIGN_WORDS = re.compile(r"\b(dnf|copr|rpm)\b", re.I)
@@ -444,6 +452,94 @@ def host_closure(paths: set[str]) -> set[str]:
     return out
 
 
+#: NVIDIA's driver libraries: FFmpeg's NVDEC and NVENC dlopen them, so no ELF
+#: file in the AppImage may name one (a host without the driver could not start it)
+NVIDIA_LIBS = re.compile(r"^lib(cuda|nvcuvid|nvidia-encode)\.so")
+#: how NVENC says there is no NVIDIA driver or GPU to open: the host's lack, not
+#: the AppImage's (anything else from a real encode is a failure)
+NO_NVENC = re.compile(r"Cannot load libcuda|Cannot load libnvidia-encode|"
+                      r"cuInit\(0\) failed|No capable devices found|"
+                      r"OpenEncodeSessionEx failed", re.I)  # fmt: skip
+
+
+def elf_files() -> list[Path]:
+    out = []
+    for p in TREE.rglob("*"):
+        if p.is_file() and not p.is_symlink():
+            with p.open("rb") as fh:
+                if fh.read(4) == b"\x7fELF":
+                    out.append(p)
+    return out
+
+
+@test
+def t_nvenc() -> str:
+    done = run([str(FFMPEG), "-hide_banner", "-encoders"], name="nvenc-encoders")
+    check(done.returncode == 0, f"ffmpeg -encoders: exit {done.returncode}")
+    listed = set(re.findall(r"^\s*V\S*\s+(\w+_nvenc)\b", done.stdout, re.M))
+    for want in ("hevc_nvenc", "av1_nvenc"):
+        check(want in listed, f"{want} is not in ffmpeg -encoders ({sorted(listed)})")
+    # ldd lists what a file needs and what that needs in turn, so a name that is
+    # not there is not a DT_NEEDED of anything in the tree either
+    linked = sorted({f"{e.relative_to(TREE)}: {name}" for e in elf_files()
+                     for name, _ in ldd(str(e)) if NVIDIA_LIBS.match(name)})  # fmt: skip
+    check(not linked, f"linked to NVIDIA's driver libraries: {linked[:10]}")
+    out = HOME / "nvenc.mkv"
+    enc = run([str(FFMPEG), "-hide_banner", "-loglevel", "error", "-y",
+               "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=2",
+               "-c:v", "hevc_nvenc", "-pix_fmt", "yuv420p", str(out)],
+              timeout=120, name="nvenc-encode")  # fmt: skip
+    if enc.returncode != 0:
+        check(bool(NO_NVENC.search(enc.stderr)), f"hevc_nvenc failed: {enc.stderr[-800:]}")
+        return f"{', '.join(sorted(listed))} listed, nothing links NVIDIA; no NVIDIA GPU here"
+    s = probe(out)
+    check(s["codec_name"] == "hevc" and int(s["nb_read_frames"]) == 48, f"nvenc output {s}")
+    return f"{', '.join(sorted(listed))} listed, nothing links NVIDIA; hevc_nvenc encoded 48 frames"
+
+
+#: how mvgpu says the host has no Vulkan driver or device (a container, or a
+#: machine without a GPU driver): the host's lack, not the plugin's
+NO_VULKAN = re.compile(r"vkCreateInstance failed|no Vulkan device|no compute queue")
+
+
+@test
+def t_mvgpu() -> str:
+    so = TREE / "vapoursynth" / "libmvgpu.so"
+    check(so.is_file(), f"{so} is missing")
+    script = (
+        "import ctypes, sys\n"
+        "import vapoursynth as vs\n"
+        "so = sys.argv[1]\n"
+        "assert hasattr(ctypes.CDLL(so), 'VapourSynthPluginInit2'), 'no VapourSynthPluginInit2'\n"
+        "core = vs.core\n"
+        "core.std.LoadPlugin(so)\n"
+        "assert hasattr(core.mvgpu, 'Interpolate'), 'no mvgpu.Interpolate'\n"
+        "print('loaded')\n"
+        "c = core.std.BlankClip(width=640, height=360, format=vs.YUV420P8, length=24,\n"
+        "                       fpsnum=24, fpsden=1)\n"
+        "try:\n"
+        "    out = core.mvgpu.Interpolate(c, fps_num=48, fps_den=1)\n"
+        "    for f in out.frames():\n"
+        "        pass\n"
+        "    print('frames', out.num_frames, out.fps)\n"
+        "except vs.Error as e:\n"
+        "    print('error', e)\n"
+    )
+    done = run([str(TREE / "python" / "bin" / "python3.14"), "-I", "-B", "-c", script, str(so)],
+               timeout=300, name="mvgpu")  # fmt: skip
+    check(done.returncode == 0, f"exit {done.returncode}: {done.stderr[-1500:]}")
+    check("loaded" in done.stdout, f"mvgpu did not load: {done.stdout[-800:]}")
+    err = re.search(r"^error (.*)$", done.stdout, re.M)
+    if err:
+        check(bool(NO_VULKAN.search(err.group(1))), f"mvgpu.Interpolate failed: {err.group(1)}")
+        return f"loads with VapourSynthPluginInit2; no Vulkan device here ({err.group(1)})"
+    m = re.search(r"^frames (\d+) (\S+)$", done.stdout, re.M)
+    check(m is not None, f"no frame count: {done.stdout[-800:]}")
+    assert m is not None
+    check(m.group(2) == "48", f"mvgpu output at {m.group(2)} fps")
+    return f"loads with VapourSynthPluginInit2; Interpolate gave {m.group(1)} frames at 48 fps"
+
+
 @test
 def t_libs() -> str:
     roots = {str(TREE)}
@@ -458,12 +554,7 @@ def t_libs() -> str:
     def inside(p: str) -> bool:
         return any(p == r or p.startswith(r + "/") for r in roots)
 
-    elfs = []
-    for p in TREE.rglob("*"):
-        if p.is_file() and not p.is_symlink():
-            with p.open("rb") as fh:
-                if fh.read(4) == b"\x7fELF":
-                    elfs.append(p)
+    elfs = elf_files()
     static: dict[str, list[str]] = {}
     missing: list[str] = []
     for e in elfs:

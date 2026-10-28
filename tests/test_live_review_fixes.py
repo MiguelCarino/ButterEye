@@ -367,7 +367,7 @@ def test_setup_choice_applies_to_shipped_profiles(
 
     # Linux and Windows (pinned: this also runs on a Mac, where a shipped
     # profile's unchosen RIFE becomes Automatic - asserted at the end)
-    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda: False)
+    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda _dev: False)
     cfg = sc.default_config(backend_override=BackendId.MVTOOLS)
     s = _session(tmp_path, FakeCtx(sc.fake_paths(tmp_path), cfg))
     by_id = {p.id: p for p in cfg.profiles}
@@ -390,7 +390,7 @@ def test_setup_choice_applies_to_shipped_profiles(
     # macOS (decide.rife_live_needs_proof): with no Setup choice the shipped
     # RIFE profiles ask for Automatic; a Setup choice and a user's own profile
     # still pin, and so does a shipped profile the user moved to another engine
-    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda: True)
+    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda _dev: True)
     for pid in ("quality", "balanced", "fast"):
         assert s.wanted_backend(by_id[pid], sc.default_config()) == (None, None)
         assert s.wanted_backend(by_id[pid], rife_cfg) == (BackendId.RIFE_NCNN, None)

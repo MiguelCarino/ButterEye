@@ -23,10 +23,10 @@
 ; files; ButterEye is already installed in another folder), 4 ButterEye, or a
 ; player it started, is running from that folder and still uses its files.
 ;
-; One installation per user: the uninstall entry and the shortcuts belong to
-; the folder the entry names, so a second copy elsewhere is refused (uninstall
-; the first, or install into its folder to repair it), and an uninstaller run
-; for another folder leaves the entry and shortcuts alone.
+; One installation per user: the uninstall entry, the shortcuts and the "Open
+; with" registration belong to the folder the entry names, so a second copy
+; elsewhere is refused (uninstall the first, or install into its folder to
+; repair it), and an uninstaller run for another folder leaves them alone.
 
 Unicode true
 ManifestDPIAware true
@@ -55,6 +55,12 @@ SetCompressorDictSize 64
 !define VCMINOR   50
 !define VCBUILD   35719
 !define GUI_ARGS  "-m buttereye.gui"
+; "Open with" (HKCU\Software\Classes): a ProgID of ButterEye's own, offered for
+; the video types below and never made their default. Not Applications\pythonw.exe,
+; which would put the entry on every pythonw of every Python on this PC.
+!define CLASSES   "Software\Classes"
+!define PROGID    "ButterEye.Video"
+!define SHCNE_ASSOCCHANGED 0x08000000
 
 Name "${APPNAME}"
 OutFile "${OUTFILE}"
@@ -127,6 +133,23 @@ FunctionEnd
 !macroend
 !insertmacro REMOVE_OWNED ""
 !insertmacro REMOVE_OWNED "un."
+
+; The video types ButterEye is offered for under "Open with": _M once for each
+!macro VIDEO_TYPES _M
+  !insertmacro ${_M} "mp4"
+  !insertmacro ${_M} "mkv"
+  !insertmacro ${_M} "webm"
+  !insertmacro ${_M} "mov"
+  !insertmacro ${_M} "avi"
+  !insertmacro ${_M} "ts"
+!macroend
+!macro OPEN_WITH_ADD _EXT
+  WriteRegStr HKCU "${CLASSES}\.${_EXT}\OpenWithProgids" "${PROGID}" ""
+!macroend
+!macro OPEN_WITH_REMOVE _EXT
+  ; the value only: the key is the extension's, shared with every other program
+  DeleteRegValue HKCU "${CLASSES}\.${_EXT}\OpenWithProgids" "${PROGID}"
+!macroend
 
 ; $0 = "ok" when $INSTDIR is new, empty or an earlier ButterEye install
 Function CheckInstDir
@@ -457,6 +480,21 @@ Section "ButterEye" SecMain
   CreateShortCut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\python\pythonw.exe" "${GUI_ARGS}" \
       "$INSTDIR\buttereye.ico" 0 SW_SHOWNORMAL "" "Smooth motion for mpv"
 
+  ; "Open with": the file goes to the GUI as an argument (gui.app.parse_args).
+  ; No -P: python\._pth already fixes sys.path, as for the shortcut above.
+  WriteRegStr HKCU "${CLASSES}\${PROGID}" "" "${APPNAME} video"
+  WriteRegStr HKCU "${CLASSES}\${PROGID}" "FriendlyTypeName" "${APPNAME} video"
+  WriteRegStr HKCU "${CLASSES}\${PROGID}\DefaultIcon" "" "$INSTDIR\buttereye.ico"
+  ; the name "Open with" shows instead of pythonw's ("Python"): FriendlyAppName on
+  ; the verb, and Application\ApplicationName, which Windows 8 and later read first
+  WriteRegStr HKCU "${CLASSES}\${PROGID}\shell\open" "FriendlyAppName" "${APPNAME}"
+  WriteRegStr HKCU "${CLASSES}\${PROGID}\Application" "ApplicationName" "${APPNAME}"
+  WriteRegStr HKCU "${CLASSES}\${PROGID}\Application" "ApplicationIcon" "$INSTDIR\buttereye.ico"
+  WriteRegStr HKCU "${CLASSES}\${PROGID}\shell\open\command" "" \
+      '"$INSTDIR\python\pythonw.exe" ${GUI_ARGS} "%1"'
+  !insertmacro VIDEO_TYPES OPEN_WITH_ADD
+  System::Call 'shell32::SHChangeNotify(i ${SHCNE_ASSOCCHANGED}, i 0, p 0, p 0)'
+
   WriteRegStr   HKCU "${UNINSTKEY}" "DisplayName" "${APPNAME}"
   WriteRegStr   HKCU "${UNINSTKEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr   HKCU "${UNINSTKEY}" "DisplayIcon" "$INSTDIR\buttereye.ico"
@@ -505,14 +543,17 @@ Section "Uninstall"
   ${EndIf}
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
-  ; the entry and the shortcuts belong to the copy the entry names
+  ; the entry, the shortcuts and "Open with" belong to the copy the entry names
   ReadRegStr $4 HKCU "${UNINSTKEY}" "InstallLocation"
   ${If} $4 == $INSTDIR
     Delete "$SMPROGRAMS\${APPNAME}.lnk"
     Delete "$DESKTOP\${APPNAME}.lnk"
+    !insertmacro VIDEO_TYPES OPEN_WITH_REMOVE
+    DeleteRegKey HKCU "${CLASSES}\${PROGID}"
+    System::Call 'shell32::SHChangeNotify(i ${SHCNE_ASSOCCHANGED}, i 0, p 0, p 0)'
     DeleteRegKey HKCU "${UNINSTKEY}"
   ${ElseIf} $4 != ""
-    DetailPrint "The uninstall entry and the shortcuts belong to the ButterEye in $4: left alone."
+    DetailPrint "The uninstall entry, the shortcuts and Open with belong to the ButterEye in $4: left alone."
   ${EndIf}
   ; your settings (%APPDATA%\ButterEye) and history (%LOCALAPPDATA%\ButterEye) stay
 SectionEnd

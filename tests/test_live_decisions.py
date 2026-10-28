@@ -445,15 +445,17 @@ def test_auto_30fps_goes_to_mvtools() -> None:
 
 @pytest.fixture
 def rife_needs_no_proof(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Linux and Windows: an unmeasured RIFE may run live (``rife_live_needs_proof``
-    is False there). Pinned, because this suite also runs on a Mac."""
-    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda: False)
+    """Linux and Windows on a discrete GPU: an unmeasured RIFE may run live
+    (``rife_live_needs_proof`` is False there). Pinned, because this suite also
+    runs on a Mac."""
+    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda _dev: False)
 
 
 @pytest.fixture
 def rife_needs_proof(monkeypatch: pytest.MonkeyPatch) -> None:
-    """macOS: RIFE-ncnn runs live only on a benchmark that measured it."""
-    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda: True)
+    """macOS, or a GPU that is not discrete: RIFE-ncnn runs live only on a
+    benchmark that measured it."""
+    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda _dev: True)
 
 
 def test_auto_without_rife_benchmark_uses_mvtools(rife_needs_no_proof: None) -> None:

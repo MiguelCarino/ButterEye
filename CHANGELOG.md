@@ -216,6 +216,58 @@ ButterEye that an engine is slow.
   every GPU session on a Mac.
 - **Smaller app:** debug symbols are stripped from the bundled programs.
 
+### Linux and Windows
+
+- **Copies keep the machine awake** while they run: a `systemd-inhibit` lock on
+  Linux (shown by `systemd-inhibit --list`), a power request on Windows that also
+  covers Modern Standby laptops. The display can still sleep.
+- **Copies pause on Windows too** while a video plays or the speed test runs, and
+  continue after (they used to keep going at lower priority and share the GPU).
+- **Battery and Power Saver are read on Linux and Windows laptops.** On a
+  discharging laptop Sharper is left off; with the power saver on (the ACPI
+  platform profile on Linux, Energy Saver on Windows) playback keeps more
+  headroom and no longer teaches ButterEye that an engine is slow; and Details →
+  Settings → Power offers "Use the Battery profile on battery". Desktops don't
+  show the Power box.
+- **NVIDIA's encoders (NVENC) are test-encoded before they are offered** for a
+  copy, as the Mac's media engine is, so a driver that lists `hevc_nvenc` but can't
+  run it no longer fails the copy. A failure that looks temporary (the GPU busy or
+  out of memory) is tried again next time.
+- **ProRes 422 HQ on the CPU** (`prores_ks`) for smooth copies, listed last, when
+  ffmpeg has it. The files are very large and the audio is AAC.
+- **RIFE needs a speed test first on integrated GPUs,** as on a Mac: until one
+  shows it keeps up, live playback uses another engine instead of stalling and
+  falling back at the start of the video.
+- **A video named on the command line with a relative path** now plays from the
+  GUI too (`buttereye-gui clip.mkv`).
+- **"Install ffmpeg-free or RPM Fusion's ffmpeg"** was suggested on every system
+  when the encoders were missing; it now names the command for this one.
+
+### Linux AppImage
+
+- **The AppImage carries mvgpu,** ButterEye's GPU motion vectors, so it smooths
+  4K and high frame rates on the GPU. RIFE still needs the Fedora packages.
+- **Its FFmpeg encodes with NVENC** on an NVIDIA machine (SDR copies; HDR10 still
+  uses x265 or SVT-AV1). Nothing NVIDIA is bundled: the driver's own libraries
+  are used when present.
+
+### Windows
+
+- **"Open with" lists ButterEye** for MP4, MKV, WebM, MOV, AVI and TS files, and
+  the video opens in it. Uninstalling removes the entry (only for the copy that
+  registered it).
+- **The GUI's settings and log moved** next to the core's, to
+  `%APPDATA%\ButterEye\gui.ini` and `%LOCALAPPDATA%\ButterEye\state\logs\gui.log`,
+  from `~/.local/state/buttereye`; the old files are moved once.
+- **The installer refuses a stale plugin build** (mvgpu or RIFE built from older
+  sources than the release) and says to run `build-plugins.sh` again.
+
+### Packages
+
+- `buttereye-vs-mvgpu` 0.0.2 (the odd-pixel motion, sub-pixel and edge-safe median
+  work above) and `buttereye-vs-rife-ncnn` 9.33-3 (the instance kept across seeks);
+  `buttereye` recommends at least these versions.
+
 ## 0.0.5 — 2026-10-14
 
 On a Mac, ButterEye now gets the programs inside it past Gatekeeper on its own the

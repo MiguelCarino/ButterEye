@@ -19,10 +19,12 @@
 # AlmaLinux 8 would have meant building the X11 stack too, for no wider reach.
 #
 #   1. build from pinned source (pins.sh): dav1d, SVT-AV1 (static), FFmpeg
-#      (shared, GPL: x264, x265, SVT-AV1, Vulkan and NVDEC decoding), glslang (static), libplacebo (static, OpenGL and
-#      Vulkan), mpv with the vapoursynth filter on X11 and Wayland, FFMS2, and
-#      MVTools with the RPM's patch; libwayland and wayland-protocols for mpv's
-#      build only (the host's libwayland is the one that runs)
+#      (shared, GPL: x264, x265, SVT-AV1, Vulkan and NVDEC decoding, NVENC
+#      encoding), glslang (static, and its program for mvgpu's shaders),
+#      libplacebo (static, OpenGL and Vulkan), mpv with the vapoursynth filter
+#      on X11 and Wayland, FFMS2, MVTools with the RPM's patch, and mvgpu from
+#      this repository; libwayland and wayland-protocols for mpv's build only
+#      (the host's libwayland is the one that runs)
 #   2. the AppDir:
 #        AppRun                      the entry point (GUI, or CLI with arguments)
 #        python/                     python-build-standalone + site-packages
@@ -31,7 +33,8 @@
 #        bin/                        mpv, ffmpeg, ffprobe
 #        lib/                        FFmpeg's libraries and every other library
 #                                    something needs that is not the host's
-#        vapoursynth/                mvtools.so, libffms2.so (not autoloaded)
+#        vapoursynth/                mvtools.so, libmvgpu.so, libffms2.so (not
+#                                    autoloaded)
 #        licenses/, buttereye-install.json, buttereye.desktop, buttereye.svg
 #   3. closure and check (stage.py): every library outside host-libs.txt is in
 #      the AppDir and found through RUNPATH, never through LD_LIBRARY_PATH
@@ -235,9 +238,10 @@ EOF
 echo "==> Vulkan headers $vkmm.$vkpatch (libplacebo's submodule)"
 
 # ---------------------------------------------------------------- 1. nv-codec-headers
-# Headers and ffnvcodec.pc only, into the build prefix: FFmpeg's NVDEC and mpv's
-# cuda hwdec compile against them and load the driver's libcuda/libnvcuvid at
-# run time (checked below: nothing links them).
+# Headers and ffnvcodec.pc only, into the build prefix: FFmpeg's NVDEC and NVENC
+# and mpv's cuda hwdec compile against them and load the driver's libcuda,
+# libnvcuvid and libnvidia-encode at run time (checked below: nothing links
+# them).
 nv=$work/src/nv-codec-headers
 mkdir -p "$nv"
 tar -xzf "$nvcodec_tar" -C "$nv" --strip-components=1
@@ -250,10 +254,14 @@ logged nvcodec-install make -C "$nv" PREFIX="$deps" LIBDIR=lib install
 # container happens to have: zlib, iconv, dav1d (AV1), x264, x265 and SVT-AV1
 # (the encoders render uses without NVENC; x265 and SVT-AV1 are also the two
 # that write HDR10: --enable-gpl, which makes these libraries GPL),
-# VA-API through libdrm (the host's libva and drivers, never bundled), and
-# Vulkan video decoding (mpv's hwdec=vulkan) and NVDEC (hwdec=nvdec), which
+# VA-API through libdrm (the host's libva and drivers, never bundled), Vulkan
+# video decoding (mpv's hwdec=vulkan) and NVDEC (hwdec=nvdec), and NVENC
+# (hevc_nvenc and av1_nvenc, the SDR saved copies render prefers on an NVIDIA
+# GPU once a test encode has passed; HDR10 stays on x265 or SVT-AV1). These
 # need only headers: FFmpeg dlopens the host's Vulkan loader and NVIDIA's
-# libcuda/libnvcuvid, so no library gains a DT_NEEDED for either.
+# libcuda, libnvcuvid and libnvidia-encode, so no library gains a DT_NEEDED for
+# any of them, and on a machine without the NVIDIA driver the NVENC encoders
+# are listed but fail to open, which is what the test encode is for.
 f=$work/src/ffmpeg
 mkdir -p "$f"
 tar -xJf "$ffmpeg_tar" -C "$f" --strip-components=1
@@ -263,11 +271,14 @@ ffmpeg_flags=(
     --enable-zlib --enable-iconv --enable-libdav1d --enable-libx264
     --enable-libx265 --enable-libsvtav1
     --enable-vaapi --enable-libdrm --enable-vulkan --enable-ffnvcodec --enable-nvdec
+    --enable-nvenc
     --disable-doc --disable-ffplay --disable-debug
 )
 echo "==> FFmpeg $FFMPEG_VER"
 (cd "$f" && logged ffmpeg-configure ./configure "${ffmpeg_flags[@]}")
-for want in CONFIG_GPL CONFIG_LIBX264 CONFIG_LIBX265 CONFIG_LIBSVTAV1 CONFIG_LIBDAV1D CONFIG_VAAPI CONFIG_VULKAN CONFIG_FFNVCODEC CONFIG_NVDEC CONFIG_ZLIB; do
+for want in CONFIG_GPL CONFIG_LIBX264 CONFIG_LIBX265 CONFIG_LIBSVTAV1 CONFIG_LIBDAV1D CONFIG_VAAPI \
+        CONFIG_VULKAN CONFIG_FFNVCODEC CONFIG_NVDEC CONFIG_NVENC CONFIG_HEVC_NVENC_ENCODER \
+        CONFIG_AV1_NVENC_ENCODER CONFIG_ZLIB; do
     grep -q "^$want=yes" "$f/ffbuild/config.mak" || { echo "FFmpeg: $want is not enabled" >&2; exit 1; }
 done
 if grep -Eq '^CONFIG_(NONFREE)=yes' "$f/ffbuild/config.mak"; then
@@ -286,7 +297,7 @@ if readelf -dW "$avcodec" | grep -q 'Shared library: \[libSvtAv1Enc'; then
     exit 1
 fi
 for so in "$deps"/lib/libav*.so.*; do
-    if readelf -dW "$so" | grep -Eq 'Shared library: \[lib(cuda|nvcuvid|vulkan)\.so'; then
+    if readelf -dW "$so" | grep -Eq 'Shared library: \[lib(cuda|nvcuvid|nvidia-encode|vulkan)\.so'; then
         echo "${so##*/} links a GPU driver library; FFmpeg must dlopen those" >&2
         exit 1
     fi
@@ -316,7 +327,9 @@ export PATH=$deps/bin:$PATH
 
 # ---------------------------------------------------------------- 1. glslang
 # libplacebo's Vulkan renderer compiles its shaders to SPIR-V at run time, with
-# glslang (static, into mpv): no SPIRV-Tools optimiser, no HLSL, no programs.
+# glslang (static, into mpv): no SPIRV-Tools optimiser, no HLSL. The glslang
+# program is built as well, for mvgpu's shaders (below); it runs only here and
+# is not carried.
 g=$work/src/glslang
 mkdir -p "$g"
 tar -xzf "$glslang_tar" -C "$g" --strip-components=1
@@ -324,9 +337,10 @@ echo "==> glslang $GLSLANG_VER (static)"
 logged glslang-setup cmake -S "$g" -B "$g/build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$deps" -DCMAKE_INSTALL_LIBDIR=lib \
     -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-    -DENABLE_OPT=OFF -DENABLE_HLSL=OFF -DENABLE_GLSLANG_BINARIES=OFF \
+    -DENABLE_OPT=OFF -DENABLE_HLSL=OFF -DENABLE_GLSLANG_BINARIES=ON \
     -DGLSLANG_TESTS=OFF -DBUILD_EXTERNAL=OFF -DGLSLANG_ENABLE_INSTALL=ON
 logged glslang-build ninja -C "$g/build" -j"$jobs" install
+[[ -x $deps/bin/glslang ]] || { echo "glslang: the program was not built" >&2; exit 1; }
 
 # ---------------------------------------------------------------- 1. libplacebo
 # Static, so mpv carries it; OpenGL and Vulkan (through the host's loader:
@@ -467,6 +481,33 @@ mvtools_so=$deps/lib/buttereye/vapoursynth/mvtools.so
 readelf -dW "$mvtools_so" | grep -q 'Shared library: \[libfftw3f.so.3\]' \
     || { echo "mvtools.so does not link libfftw3f" >&2; exit 1; }
 
+# ---------------------------------------------------------------- 1. mvgpu
+# ButterEye's own GPU motion-vector engine, from mvgpu/ in this repository with
+# no changes: the same out-of-tree meson build packaging/plugins/
+# buttereye-vs-mvgpu.spec and packaging/macos/build-plugins.sh make, with its
+# shaders compiled to SPIR-V by the glslang program built above (named, so no
+# other glslang on PATH is used), against the wheel's VapourSynth headers and
+# the Vulkan headers and loader of vulkan.pc. Like the RPM's %check: the plugin
+# entry point is exported, and it links the Vulkan loader (the host's,
+# host-libs.txt) and the C/C++ runtime, nothing else.
+mg=$work/src/mvgpu-build
+echo "==> mvgpu (this repository)"
+logged mvgpu-setup meson setup "$mg" "$repo/mvgpu" --prefix="$deps" --libdir=lib \
+    -Dbuildtype=release -Dglslang="$deps/bin/glslang" -Dplugindir=lib/buttereye/vapoursynth
+logged mvgpu-build ninja -C "$mg" -j"$jobs" install
+mvgpu_ver=$(meson introspect "$mg" --projectinfo \
+    | "$hostpy" -I -c 'import json, sys; print(json.load(sys.stdin)["version"])')
+mvgpu_so=$deps/lib/buttereye/vapoursynth/libmvgpu.so
+nm -D --defined-only "$mvgpu_so" | grep -q ' VapourSynthPluginInit2$' \
+    || { echo "libmvgpu.so does not export VapourSynthPluginInit2" >&2; exit 1; }
+mvgpu_needed=$(readelf -dW "$mvgpu_so" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort)
+grep -qx 'libvulkan.so.1' <<<"$mvgpu_needed" \
+    || { echo "libmvgpu.so does not link libvulkan.so.1" >&2; exit 1; }
+if grep -vxE 'libvulkan\.so\.1|libstdc\+\+\.so\.6|libm\.so\.6|libgcc_s\.so\.1|libc\.so\.6' <<<"$mvgpu_needed"; then
+    echo "libmvgpu.so links more than the Vulkan loader and the C/C++ runtime (above)" >&2
+    exit 1
+fi
+
 # ---------------------------------------------------------------- 2. the AppDir
 appdir=$work/AppDir
 mkdir -p "$appdir"/{bin,lib,vapoursynth,share,licenses}
@@ -510,6 +551,7 @@ for so in "$deps"/lib/lib{avcodec,avformat,avutil,avfilter,avdevice,swscale,swre
     cp "$so" "$appdir/lib/$soname"
 done
 cp "$mvtools_so" "$appdir/vapoursynth/mvtools.so"
+cp "$mvgpu_so" "$appdir/vapoursynth/libmvgpu.so"
 cp "$s/libffms2.so" "$appdir/vapoursynth/libffms2.so"
 strip --strip-unneeded "$appdir"/bin/* "$appdir"/lib/*.so* "$appdir"/vapoursynth/*.so
 # RUNPATHs of what was built here: mpv also finds VSScript in the wheel's folder
@@ -532,7 +574,7 @@ stagepy closure "$appdir" "$work/closure.json"
 
 # ---------------------------------------------------------------- licences and the record
 lic=$appdir/licenses
-mkdir -p "$lic"/{buttereye/LICENSES,python,pyside6,vapoursynth,mpv,ffmpeg,dav1d,libplacebo,glslang,vulkan-headers,wayland,nv-codec-headers,svt-av1,ffms2,buttereye-vs-mvtools,appimage-runtime}
+mkdir -p "$lic"/{buttereye/LICENSES,python,pyside6,vapoursynth,mpv,ffmpeg,dav1d,libplacebo,glslang,vulkan-headers,wayland,nv-codec-headers,svt-av1,ffms2,buttereye-vs-mvtools,buttereye-vs-mvgpu,appimage-runtime}
 cp "$repo/COPYING" "$repo/THIRD-PARTY.md" "$lic/buttereye/"
 cp "$repo"/LICENSES/*.txt "$lic/buttereye/LICENSES/"
 cp "$pystd/LICENSE.txt" "$lic/python/LICENSE.txt"
@@ -569,6 +611,7 @@ done >"$lic/nv-codec-headers/NOTICES.txt"
 cp "$s/COPYING" "$lic/ffms2/COPYING"
 cp "$v/LICENSE" "$lic/buttereye-vs-mvtools/LICENSE"
 cp "$v/src/asm/include/x86inc.asm" "$lic/buttereye-vs-mvtools/x86inc.asm"
+cp "$repo/COPYING" "$lic/buttereye-vs-mvgpu/COPYING"  # mvgpu is ButterEye's own, AGPL-3.0-or-later
 cat >"$lic/appimage-runtime/NOTICE.txt" <<EOF
 The first $(stat -c %s "$runtime") bytes of the AppImage file are the static
 AppImage type-2 runtime $RUNTIME_VER (https://github.com/AppImage/type2-runtime),
@@ -600,6 +643,7 @@ stagepy record "$work/components.json" "$appdir/buttereye-install.json" \
     "dav1d=$DAV1D_VER=BSD-2-Clause=$(files_of dav1d)" \
     "ffms2=$FFMS2_VER=MIT=$(files_of ffms2)" \
     "buttereye-vs-mvtools=${MVTOOLS_TAG#v}=GPL-2.0-or-later AND ISC=$(files_of buttereye-vs-mvtools)" \
+    "buttereye-vs-mvgpu=$mvgpu_ver=AGPL-3.0-or-later=$(files_of buttereye-vs-mvgpu)" \
     "appimage-runtime=$RUNTIME_VER=MIT=$(files_of appimage-runtime)" \
     "${deb_specs[@]}"
 stagepy sources-txt "$lic/SOURCES.txt" version="$version" repo=https://github.com/MiguelCarino/ButterEye \
@@ -607,7 +651,7 @@ stagepy sources-txt "$lic/SOURCES.txt" version="$version" repo=https://github.co
     ffmpeg="$FFMPEG_VER" dav1d="$DAV1D_VER" mpv="$MPV_VER" libplacebo="$LIBPLACEBO_VER" \
     libplacebo_commit="$LIBPLACEBO_COMMIT" ffms2="$FFMS2_VER" mvtools="$MVTOOLS_TAG" \
     glslang="$GLSLANG_VER" wayland="$WAYLAND_VER" wayland_protocols="$WAYLAND_PROTOCOLS_VER" \
-    nvcodec="$NVCODEC_TAG" svtav1="$SVTAV1_VER" svtav1_commit="$SVTAV1_COMMIT" \
+    nvcodec="$NVCODEC_TAG" svtav1="$SVTAV1_VER" svtav1_commit="$SVTAV1_COMMIT" mvgpu="$mvgpu_ver" \
     runtime="$RUNTIME_VER" debs="$work/deb-sources.txt"
 
 # bytecode, compiled now because the AppImage is read-only and AppRun passes

@@ -212,9 +212,9 @@ OBSERVED: frozenset[str] = OBSERVABLE - frozenset(TICK_PROPS)
 #: engine Automatic chose gives back one step of a lowered estimate at that size
 #: (``livelimits.raised``)
 CLEAN_RECOVER_S = 600.0
-#: The speed test ran cool and on mains power. While macOS reports a serious or
-#: critical thermal state or Low Power Mode (``PowerSnapshot.constrained``) the
-#: chip runs slower than that: live caps are divided by this as well, on top of
+#: The speed test ran cool and on mains power. While the system reports a serious
+#: or critical thermal state (macOS) or a power saver mode (``PowerSnapshot.constrained``)
+#: the chip runs slower than that: live caps are divided by this as well, on top of
 #: ``LIVE_HEADROOM``, so Automatic leaves room instead of learning drops
 PRESSURE_HEADROOM = 1.2
 #: how often the power state (and the window size, for "sharper") is read again
@@ -972,7 +972,7 @@ class _Session:
         return rate * livelimits.factor(self.live_limits(), key)
 
     def read_power(self) -> PowerSnapshot:
-        """``osapi.power_snapshot`` (all None off macOS); never raises."""
+        """``osapi.power_snapshot`` (None where the system does not say); never raises."""
         try:
             return osapi.power_snapshot()
         except Exception:
@@ -1018,8 +1018,8 @@ class _Session:
 
         Not learned, only replaced for this video (``video_limits``), when
         ``learn`` is False (steady moderate drops), when a GPU engine dropped
-        while a TensorRT engine was being built, or while macOS reports a
-        serious thermal state or Low Power Mode (B4: on the fanless Air two hot
+        while a TensorRT engine was being built, or while the system reports
+        a serious thermal state or a power saver mode (B4: on the fanless Air two hot
         episodes ruled mvgpu out at 1080p for a month). What is learned carries
         the power state (``livelimits.record``). Near-total drops
         (``IMPLAUSIBLE_DROP``) never get here (``step``)."""
@@ -1060,9 +1060,9 @@ class _Session:
         elif self.backend in decide.GPU_BACKENDS and self.trt_building():
             why = "while a TensorRT engine was being built on the GPU"
         elif power.constrained:
-            # B4: a hot or Low Power Mode Mac runs everything slower than the
-            # speed test did; learned, it ruled engines out for a month
-            why = "while macOS reported the Mac hot or in Low Power Mode"
+            # B4: a hot machine, or one with the power saver on, runs everything
+            # slower than the speed test did; learned, it ruled engines out for a month
+            why = "while the system reported it running hot or in power-saving mode"
         if why is not None:
             self.video_limits.add(key.text())
             self.log.info(
@@ -1217,8 +1217,10 @@ class _Session:
         keep their shipped engine; CPU (MVTools) and profiles the user pinned to an
         engine keep theirs, with a notice when that differs from the Setup choice.
 
-        On macOS a shipped profile still on its shipped RIFE-ncnn, with no Setup
-        choice, asks for Automatic instead (``decide.rife_live_needs_proof``)."""
+        Where RIFE-ncnn needs a benchmark before it runs live (a Mac, or an
+        interpolation GPU that is not discrete: ``decide.rife_live_needs_proof``),
+        a shipped profile still on its shipped RIFE-ncnn, with no Setup choice,
+        asks for Automatic instead."""
         override = cfg.general.backend_override if cfg is not None else None
         if profile.backend == "auto":
             return override, None
@@ -1226,13 +1228,14 @@ class _Session:
         if (
             override is None
             and pinned is BackendId.RIFE_NCNN
-            and decide.rife_live_needs_proof()
             and _follows_setup_choice(profile)
+            and decide.rife_live_needs_proof(self.gpu_device(cfg))
         ):
-            # macOS: a shipped profile's RIFE is a Linux default, not the user's
-            # choice, and RIFE was measured offline-only on a Mac. Automatic then
-            # trusts RIFE only with a benchmark that caps it (decide.pick_engine);
-            # a profile the user set to RIFE, or RIFE chosen in Setup, still pins it.
+            # a shipped profile's RIFE is a discrete-GPU default, not the user's
+            # choice, and on a Mac or an integrated GPU RIFE was measured offline only. Automatic
+            # then trusts RIFE only with a benchmark that caps it
+            # (decide.pick_engine); a profile the user set to RIFE, or RIFE chosen
+            # in Setup, still pins it.
             return None, None
         if override is None or override is pinned:
             return pinned, None
@@ -1671,6 +1674,9 @@ class _Session:
             wanted, pinned_note = self.backend_override, None
         else:
             wanted, pinned_note = self.wanted_backend(profile, cfg)
+        # an unmeasured RIFE-ncnn needs a benchmark before Automatic runs it live
+        # here (a Mac, a GPU that is not discrete); the engine picks below ask this
+        rife_proof = decide.rife_live_needs_proof(self.gpu_device(cfg))
         notes = [n for n in (profile_note, pinned_note) if n is not None]
         # §11.9: candidate engines in preference order; the target decides among them
         order: list[BackendId]
@@ -1733,6 +1739,7 @@ class _Session:
                 auto=wanted is None,
                 forced=forced,
                 animation=animation,
+                rife_proof=rife_proof,
             )
 
         full_size = cfg is not None and cfg.general.full_size
@@ -1859,6 +1866,7 @@ class _Session:
                     profile.target.kind,
                     profile.target.fps,
                     auto=True,
+                    rife_proof=rife_proof,
                 )
                 if smaller is not None:
                     gp, gsize = smaller
@@ -1881,6 +1889,7 @@ class _Session:
                     auto=wanted is None,
                     forced=self.forced,
                     animation=animation,
+                    rife_proof=rife_proof,
                 )
                 if found is not None:
                     pick, size = found
@@ -2939,7 +2948,9 @@ async def play(
     reg = registry(ctx)
     opts = reg.options
     _profile_known(ctx, profile_id)
-    file = Path(file)
+    # absolute before anything keeps it: mpv, the rules and the session's file
+    # all outlive the caller's working folder, which is not mpv's or the core's
+    file = Path(file).expanduser().absolute()
     if not file.exists():
         raise ButterEyeError(
             ErrorCode.FILE_NOT_LOCAL,

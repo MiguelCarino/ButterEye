@@ -14,7 +14,7 @@
 
 Name:           buttereye-vs-rife-ncnn
 Version:        9.33
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        RIFE frame interpolation for VapourSynth on ncnn/Vulkan (ButterEye build)
 
 # Plugin MIT (HolyWu); bundled RIFE/VapourSynth4.h LGPL-2.1-or-later;
@@ -128,7 +128,7 @@ if ldd %{buildroot}%{_libdir}/buttereye/vapoursynth/librife.so | grep -q 'libncn
 %{_libdir}/buttereye/vapoursynth/librife.so
 
 %changelog
-* Thu Oct 15 2026 The ButterEye contributors - 9.33-2
+* Thu Oct 15 2026 The ButterEye contributors - 9.33-3
 - Keep the GPU instance and the loaded model across mpv's per-seek core
   rebuilds (Patch3): seek -> playback-restart 1.5 s -> 0.25-0.36 s at 640x360.
   Frame buffers (host and GPU) are freed when the last filter goes, so an idle

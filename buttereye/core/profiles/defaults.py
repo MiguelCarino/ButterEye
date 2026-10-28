@@ -14,7 +14,7 @@ benchmark (F14) only.
 vectors at 2×, the lightest GPU engine. No shipped rule picks it, because the
 default rules apply to every platform and a new rule must not change what an
 existing install plays; ``BATTERY_RULE`` is the rule to offer (put first, it
-wins whenever the Mac is on battery).
+wins whenever the laptop is on battery, on any platform).
 """
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ _DEFAULT_RULES: tuple[Rule, ...] = (
     Rule(RuleMatch(fps_min=Fraction(48)), "fast"),
 )
 
-#: the rule that sends a Mac on battery to ``battery`` (not shipped; see above)
+#: the rule that sends a laptop on battery to ``battery`` (not shipped; see above)
 BATTERY_RULE = Rule(RuleMatch(on_battery=True), BATTERY_PROFILE_ID)
 
 

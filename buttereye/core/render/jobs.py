@@ -12,11 +12,12 @@ stopped (``stale_jobs``). Cancel and failure delete every partial file, except
 the encoded video when only the remux failed: hours of encoding are kept, and
 adding the same copy again finishes it without converting again.
 
-The group stops (SIGSTOP) while a video plays in ButterEye or a benchmark runs,
-and continues (SIGCONT) after: the render and the player are separate processes
-on the same GPU, and lower CPU priority does nothing for the GPU. On macOS the
-Mac doesn't idle-sleep while a job runs (``osapi.begin_activity`` and
-``caffeinate -i -w`` on vspipe).
+The group stops (SIGSTOP; on Windows its processes are suspended) while a video
+plays in ButterEye or a benchmark runs, and continues (SIGCONT, or resumed)
+after: the render and the player are separate processes on the same GPU, and
+lower CPU priority does nothing for the GPU. The computer doesn't sleep while a
+job runs (``osapi.begin_activity``, and ``osapi.keep_awake`` on vspipe:
+``caffeinate -i -w`` on macOS, a ``systemd-inhibit`` lock on Linux).
 
 HDR (§7.4): HDR10 sources, and HDR10+ / Dolby Vision ones with an HDR10 base
 layer (their dynamic metadata dropped, with a warning), become HDR10 copies through
@@ -139,7 +140,7 @@ class _Job:
     task: asyncio.Task[None] | None = None
     #: the encoded video kept after a failed remux, until the job is forgotten
     kept: Path | None = None
-    #: stopped (SIGSTOP) while a video plays or a benchmark runs
+    #: stopped (SIGSTOP, or suspended on Windows) while a video plays or a benchmark runs
     paused: bool = False
 
 
@@ -233,45 +234,72 @@ def _mkvmerge() -> str | None:
     return shutil.which("mkvmerge")
 
 
-#: (ffmpeg, its mtime) → the VideoToolbox encoders that encoded a test clip
-_VT_WORKING: dict[tuple[str, int], frozenset[str]] = {}
+#: (ffmpeg, its mtime, the encoders tested) → the ones that encoded a test clip
+_HW_WORKING: dict[tuple[str, int, tuple[str, ...]], frozenset[str]] = {}
+
+#: A failed NVENC test encode whose stderr says one of these may pass later, so
+#: it is not remembered: NVENC's answer when the GPU's memory or its encode
+#: sessions are taken (by a game, a render, another program). "unsupported
+#: device", the answer of a GPU without the encoder, is not among them
+_TRANSIENT_ENCODE_ERRORS = ("out of memory", "incompatible client key")
 
 
-async def _videotoolbox_working(ffmpeg: str, listed: Sequence[str]) -> frozenset[str]:
-    """The listed VideoToolbox encoders that really encode here, with the options
-    a render passes: ``-encoders`` lists them on every macOS build of ffmpeg,
-    with or without the hardware (a VM, an Intel Mac without HEVC). A 6-frame
-    test each, about 0.15 s on an M2, once per ffmpeg."""
-    wanted = [e for e in listed if e in rprobe.VIDEOTOOLBOX_ENCODERS]
+async def _hw_working(ffmpeg: str, listed: Sequence[str]) -> frozenset[str]:
+    """The listed hardware encoders (``rprobe.HW_ENCODERS``) that really encode
+    here, with the options a render passes. ``-encoders`` lists them whenever
+    ffmpeg was built with them, with or without the hardware: VideoToolbox on
+    every macOS build (a VM, an Intel Mac without HEVC), NVENC on any NVIDIA
+    machine (a GPU without AV1 encoding, a laptop chip without an encoder, a
+    driver without libnvidia-encode). A 6-frame test each, about 0.15 s on an
+    M2, once per ffmpeg.
+
+    An NVENC failure that looks temporary (a timeout, ``_TRANSIENT_ENCODE_ERRORS``)
+    counts as working, as NVENC did before it was tested, and the answer is not
+    kept, so the next probe tests again. A VideoToolbox failure is always kept."""
+    wanted = [e for e in listed if e in rprobe.HW_ENCODERS]
     if not wanted:
         return frozenset()
     try:
-        key = (ffmpeg, os.stat(ffmpeg).st_mtime_ns)
+        mtime = os.stat(ffmpeg).st_mtime_ns
     except OSError:
-        key = (ffmpeg, 0)
-    found = _VT_WORKING.get(key)
-    if found is None:
-        ok = []
-        for enc in wanted:
-            res = await run(pipeline.encoder_test_argv(ffmpeg, enc), timeout_s=15.0)
-            if res.ok:
-                ok.append(enc)
-            else:
-                _log.info("%s is listed but doesn't encode here: %s", enc,
-                          (res.stderr or "").strip()[-300:])  # fmt: skip
-        found = _VT_WORKING[key] = frozenset(ok)
+        mtime = 0
+    key = (ffmpeg, mtime, tuple(wanted))
+    found = _HW_WORKING.get(key)
+    if found is not None:
+        return found
+    ok: list[str] = []
+    transient = False
+    for enc in wanted:
+        res = await run(pipeline.encoder_test_argv(ffmpeg, enc), timeout_s=15.0)
+        err = (res.stderr or "").strip()
+        if res.ok:
+            ok.append(enc)
+        elif enc in rprobe.NVIDIA_ENCODERS and (
+            res.timed_out or any(m in err.lower() for m in _TRANSIENT_ENCODE_ERRORS)
+        ):
+            transient = True
+            ok.append(enc)
+            _log.info("%s failed its test encode, maybe only for now: %s", enc, err[-300:])
+        else:
+            _log.info("%s is listed but doesn't encode here: %s", enc, err[-300:])
+    found = frozenset(ok)
+    if not transient:
+        _HW_WORKING[key] = found
     return found
 
 
 async def _encoders(tools: _Tools, *, hdr10: bool, nvidia: bool) -> tuple[str, ...]:
-    """``rprobe.usable_encoders`` from this ffmpeg's list, without VideoToolbox
-    encoders that fail their test."""
+    """``rprobe.usable_encoders`` from this ffmpeg's list, without hardware
+    encoders that fail their test (only the ones this machine would be offered:
+    NVENC with an NVIDIA GPU, VideoToolbox on a Mac; HDR10 copies use neither)."""
     enc = await run((tools.ffmpeg, "-hide_banner", "-encoders"), timeout_s=10.0)
     listed = parse_encoders(enc.stdout) if enc.ok else ()
-    if osapi.IS_MACOS and not hdr10:
-        broken = set(rprobe.VIDEOTOOLBOX_ENCODERS) - await _videotoolbox_working(
-            tools.ffmpeg, listed
+    if not hdr10:
+        offered = (rprobe.NVIDIA_ENCODERS if nvidia else frozenset()) | (
+            rprobe.VIDEOTOOLBOX_ENCODERS if osapi.IS_MACOS else frozenset()
         )
+        candidates = [e for e in listed if e in offered]
+        broken = set(candidates) - await _hw_working(tools.ffmpeg, candidates)
         listed = tuple(e for e in listed if e not in broken)
     return rprobe.usable_encoders(listed, nvidia=nvidia, hdr10=hdr10, apple=osapi.IS_MACOS)
 
@@ -324,7 +352,19 @@ async def _source_info(tools: _Tools, src: Path) -> rprobe.SourceInfo | None:
     return rprobe.source_info(await _ffprobe(tools, src), await _first_frame(tools, src))
 
 
-def _refusal(code: ErrorCode, title: str, cause: str, fix: str, **params: str) -> Finding:
+def _refusal(
+    code: ErrorCode,
+    title: str,
+    cause: str,
+    fix: str,
+    *,
+    commands: tuple[str, ...] = (),
+    **params: str,
+) -> Finding:
+    """A blocking render finding; ``commands`` are install lines shown with it
+    (the ffms2 one is added by itself)."""
+    if code is ErrorCode.FFMS2_MISSING and INSTALL_FFMS2:
+        commands = (INSTALL_FFMS2,)
     return Finding(
         id="render.refusal",
         section=Section.RENDER,
@@ -333,7 +373,30 @@ def _refusal(code: ErrorCode, title: str, cause: str, fix: str, **params: str) -
         title=Msg(title, params),
         cause=Msg(cause, params),
         fix=Msg(fix, params),
-        commands=(INSTALL_FFMS2,) if code is ErrorCode.FFMS2_MISSING and INSTALL_FFMS2 else (),
+        commands=commands,
+    )
+
+
+def encoder_refusal(encoders: Sequence[str], *, hdr10: bool) -> Finding | None:
+    """Why no copy can be encoded with this ffmpeg (``encoders``: the usable ones
+    for this source), with this platform's line that installs a fuller one; None
+    when there is an encoder."""
+    if encoders:
+        return None
+    if hdr10:
+        return _refusal(
+            ErrorCode.ENCODER_FAILED,
+            "HDR10 render needs the x265 or SVT-AV1 encoder",
+            "Only these two take HDR10 mastering data; your ffmpeg lists neither.",
+            "Install an FFmpeg build that has one of them, then try again.",
+            commands=(install_command("ffmpeg"),),
+        )
+    return _refusal(
+        ErrorCode.ENCODER_FAILED,
+        "Your ffmpeg has no encoder ButterEye can use",
+        "ffmpeg lists none of HEVC (NVENC or x265), AV1 (NVENC or SVT-AV1) or x264.",
+        "Install an FFmpeg build that has one of them, then try again.",
+        commands=(install_command("ffmpeg"),),
     )
 
 
@@ -751,21 +814,9 @@ async def probe(ctx: ProviderContext, src: Path, *, profile_id: str | None = Non
     nvidia = report is None or any(g.vendor == "NVIDIA" for g in report.hardware.gpus)
     hdr10 = info is not None and rprobe.renders_as_hdr10(info)
     encoders = await _encoders(tools, hdr10=hdr10, nvidia=nvidia)
-    refusal = refusal_for(info, decoders, _ffms2_lib().exists())
-    if refusal is None and hdr10 and not encoders:
-        refusal = _refusal(
-            ErrorCode.ENCODER_FAILED,
-            "HDR10 render needs the x265 or SVT-AV1 encoder",
-            "Only these two take HDR10 mastering data; your ffmpeg lists neither.",
-            "Install ffmpeg-free (SVT-AV1) or RPM Fusion's ffmpeg (x265).",
-        )
-    if refusal is None and not encoders:
-        refusal = _refusal(
-            ErrorCode.ENCODER_FAILED,
-            "Your ffmpeg has no encoder ButterEye can use",
-            "ffmpeg lists none of HEVC (NVENC or x265), AV1 (NVENC or SVT-AV1) or x264.",
-            "Install ffmpeg-free or RPM Fusion's ffmpeg.",
-        )
+    refusal = refusal_for(info, decoders, _ffms2_lib().exists()) or encoder_refusal(
+        encoders, hdr10=hdr10
+    )
     warnings: list[Finding] = hdr_warnings(info, mkvmerge=tools.mkvmerge is not None)
     cfg = _config(ctx)
     lut_note = _lut_note(ctx, cfg, info)
@@ -1198,7 +1249,8 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
         manifest.data["encode"] = key
         manifest.data["engine"] = engine.value
         manifest.save()
-        # macOS: no idle sleep and no App Nap until the copy is saved (B12)
+        # macOS: no idle sleep and no App Nap, Windows: no sleep, until the copy
+        # is saved (B12); Linux holds its lock through keep_awake in _encode
         activity = osapi.begin_activity(ACTIVITY_REASON)
 
         paths.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -1381,12 +1433,44 @@ def _gpu_index(ctx: ProviderContext) -> int | None:
     return None
 
 
-def _signal_group(pgid: int, stop: bool) -> None:
-    """SIGSTOP (``stop``) or SIGCONT to a render's group; nothing on Windows."""
+#: Windows: a suspended process, as (pid, creation time); see ``_win32.suspend_pids``
+_Held = tuple[int, int]
+
+
+def _suspend(pids: Sequence[int]) -> list[_Held]:
+    """Windows: suspend ``pids``, and every process under each of them."""
     if sys.platform == "win32":
-        return
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(pgid, signal.SIGSTOP if stop else signal.SIGCONT)
+        from buttereye.core.osapi import _win32
+
+        return _win32.suspend_pids(p for pid in pids for p in _win32.tree(pid))
+    return []
+
+
+def _resume(held: Sequence[_Held]) -> None:
+    """Windows: resume exactly what ``_suspend`` returned."""
+    if sys.platform == "win32":
+        from buttereye.core.osapi import _win32
+
+        _win32.resume_pids(held)
+
+
+def _signal_group(
+    pgid: int, stop: bool, *, also: Sequence[int] = (), held: Sequence[_Held] = ()
+) -> list[_Held]:
+    """SIGSTOP (``stop``) or SIGCONT to a render's group. Windows has neither
+    signals nor a group to send them to: stopping suspends ``pgid``'s process
+    tree and the ``also`` pids (ffmpeg, vspipe's sibling there, not its child)
+    and returns what it suspended; continuing resumes exactly ``held``, what the
+    stop returned. Returns [] off Windows."""
+    if osapi.IS_WINDOWS:
+        if stop:
+            return _suspend((pgid, *also))
+        _resume(held)
+        return []
+    if sys.platform != "win32":  # for mypy: os.killpg is POSIX-only
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGSTOP if stop else signal.SIGCONT)
+    return []
 
 
 async def _gpu_wanted_elsewhere(ctx: ProviderContext) -> str | None:
@@ -1410,20 +1494,25 @@ async def _gpu_wanted_elsewhere(ctx: ProviderContext) -> str | None:
 
 @dataclass(slots=True)
 class _Pause:
-    """SIGSTOP / SIGCONT of a render's process group (B11); POSIX only."""
+    """Stopping and continuing a render (B11): SIGSTOP / SIGCONT of its process
+    group, or on Windows suspending vspipe's tree and ffmpeg (``also``), and
+    resuming the same processes after."""
 
     pgid: int
+    also: tuple[int, ...] = ()  # Windows: pids outside pgid's tree (ffmpeg)
     since: float | None = None  # monotonic time it stopped, None = running
     total_s: float = 0.0  # time spent stopped before ``since``
+    held: list[_Held] = field(default_factory=list)  # Windows: what stop() suspended
 
     def stop(self) -> None:
         if self.since is None:
-            _signal_group(self.pgid, True)
+            self.held = _signal_group(self.pgid, True, also=self.also)
             self.since = time.monotonic()
 
     def resume(self) -> None:
         if self.since is not None:
-            _signal_group(self.pgid, False)
+            _signal_group(self.pgid, False, held=self.held)
+            self.held = []
             self.total_s += time.monotonic() - self.since
             self.since = None
 
@@ -1544,11 +1633,10 @@ async def _encode(
         # first whether they start before or after it (threads started later
         # inherit). That is CPU time only; the GPU is shared by stopping (below)
         osapi.lower_group_priority(vs_proc.pid, RENICE)
-        # macOS: no idle sleep while vspipe runs, even if ButterEye dies (B12)
+        # macOS and Linux: no sleep while vspipe runs, even if ButterEye dies (B12)
         awake = osapi.keep_awake(vs_proc.pid)
-        if not osapi.IS_WINDOWS:
-            pause = _Pause(vs_proc.pid)
-            watcher = asyncio.ensure_future(_pause_while_busy(ctx, job, pause, jlog))
+        pause = _Pause(vs_proc.pid, (ff_proc.pid,) if osapi.IS_WINDOWS else ())
+        watcher = asyncio.ensure_future(_pause_while_busy(ctx, job, pause, jlog))
 
         async def read_ffmpeg() -> str:
             assert ff_proc is not None and ff_proc.stderr is not None
@@ -1728,4 +1816,5 @@ __all__ = [
     "offline_target",
     "vspipe_requests",
     "refusal_for",
+    "encoder_refusal",
 ]

@@ -31,12 +31,14 @@ KNOWN_ENCODERS: tuple[str, ...] = (
     "libsvtav1",
     "libx264",
     "prores_videotoolbox",
+    "prores_ks",
 )
 NVIDIA_ENCODERS = frozenset({"hevc_nvenc", "av1_nvenc"})
-#: Apple's media engine, through ffmpeg's VideoToolbox wrappers (macOS only).
-#: Listed by ``ffmpeg -encoders`` is not enough: ``jobs`` test-encodes a few
-#: frames with each before offering it
+#: Apple's media engine, through ffmpeg's VideoToolbox wrappers (macOS only)
 VIDEOTOOLBOX_ENCODERS = frozenset({"hevc_videotoolbox", "prores_videotoolbox"})
+#: Encoders on hardware that ``ffmpeg -encoders`` may list without it being
+#: there: ``jobs`` test-encodes a few frames with each before offering it
+HW_ENCODERS = NVIDIA_ENCODERS | VIDEOTOOLBOX_ENCODERS
 TEN_BIT_ENCODERS = frozenset(
     {"hevc_nvenc", "av1_nvenc", "hevc_videotoolbox", "libx265", "libsvtav1"}
 )
@@ -58,6 +60,8 @@ _BPP: Mapping[str, float] = {
     "hevc_videotoolbox": 0.08,
     # ProRes 422 HQ: about 176 Mbit/s at 1080p30, so a doubled film needs a lot
     "prores_videotoolbox": 2.9,
+    # the same profile on the CPU (prores_ks), with about the same sizes
+    "prores_ks": 2.9,
 }
 
 #: ``r_frame_rate`` and ``avg_frame_rate`` this close (relative) are one constant
@@ -426,7 +430,9 @@ def usable_encoders(
     NVENC on NVIDIA, else SVT-AV1 in software; for HDR10 only x265, then SVT-AV1).
     ``apple``: a Mac, where HEVC on the media engine comes first (it leaves the
     CPU to the smoothing and heats a fanless machine far less than x265) and
-    ProRes last (its files are about 30 times larger)."""
+    ProRes last (its files are about 30 times larger). ProRes on the CPU
+    (``prores_ks``) is last everywhere, and on a Mac only offered when the media
+    engine's ProRes isn't."""
     if hdr10:
         return tuple(e for e in HDR10_ENCODERS if e in listed)
     have = [e for e in KNOWN_ENCODERS if e in listed]
@@ -437,9 +443,12 @@ def usable_encoders(
             have.insert(0, "libsvtav1")
     if not apple:
         have = [e for e in have if e not in VIDEOTOOLBOX_ENCODERS]
-    elif "hevc_videotoolbox" in have:
-        have.remove("hevc_videotoolbox")
-        have.insert(0, "hevc_videotoolbox")
+    else:
+        if "hevc_videotoolbox" in have:
+            have.remove("hevc_videotoolbox")
+            have.insert(0, "hevc_videotoolbox")
+        if "prores_videotoolbox" in have and "prores_ks" in have:
+            have.remove("prores_ks")
     return tuple(have)
 
 
@@ -594,6 +603,7 @@ __all__ = [
     "OFFLINE_FACTOR",
     "KNOWN_ENCODERS",
     "HDR10_ENCODERS",
+    "HW_ENCODERS",
     "Mastering",
     "HdrMeta",
     "SourceInfo",

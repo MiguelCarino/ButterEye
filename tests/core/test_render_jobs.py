@@ -2,8 +2,8 @@
 # Copyright (C) 2026 The ButterEye contributors
 """A render job's process handling without vspipe or a GPU: stopping for
 playback (B11), staying awake (B12), which side failed (B18), the encoded video
-kept after a failed remux (B2), the VideoToolbox test encode (P2). ``sh`` stands
-in for vspipe and ffmpeg."""
+kept after a failed remux (B2), the hardware test encode (P2), the install line
+when ffmpeg has no usable encoder. ``sh`` stands in for vspipe and ffmpeg."""
 
 from __future__ import annotations
 
@@ -112,6 +112,32 @@ async def test_pause_stops_and_continues_the_whole_group() -> None:
         await proc.wait()
 
 
+def test_pause_on_windows_suspends_the_tree_and_ffmpeg_and_resumes_the_same(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Windows has no SIGSTOP: vspipe's tree and ffmpeg (its sibling, not its
+    # child) are suspended, and exactly those resumed. The real calls run under
+    # Wine (tests/windows/test_suspend_windows.py)
+    suspended: list[tuple[int, ...]] = []
+    resumed: list[list[tuple[int, int]]] = []
+
+    def suspend(pids: Any) -> list[tuple[int, int]]:
+        suspended.append(tuple(pids))
+        return [(p, 1000 + p) for p in pids]
+
+    monkeypatch.setattr(osapi, "IS_WINDOWS", True)
+    monkeypatch.setattr(jobs, "_suspend", suspend)
+    monkeypatch.setattr(jobs, "_resume", lambda held: resumed.append(list(held)))
+    pause = jobs._Pause(100, (200,))
+    pause.stop()
+    pause.stop()  # already stopped: not suspended twice (suspensions count)
+    assert suspended == [(100, 200)] and pause.held == [(100, 1100), (200, 1200)]
+    pause.resume()
+    pause.resume()
+    assert resumed == [[(100, 1100), (200, 1200)]] and pause.held == []
+    assert pause.since is None
+
+
 async def test_the_render_waits_for_playback_and_benchmarks(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -133,7 +159,7 @@ async def test_the_render_waits_for_playback_and_benchmarks(
             super().resume()
 
     monkeypatch.setattr(jobs, "_gpu_wanted_elsewhere", wanted)
-    monkeypatch.setattr(jobs, "_signal_group", lambda pgid, sig: None)
+    monkeypatch.setattr(jobs, "_signal_group", lambda *a, **k: [])
     monkeypatch.setattr(jobs, "PAUSE_POLL_S", 0.01)
     spec = RenderJobSpec(tmp_path / "a.mkv", tmp_path / "a.smooth.mkv", "simple", "libx265")
     job = jobs._Job(JobId("j"), spec, state=OpState.RUNNING, eta_s=60.0)
@@ -443,7 +469,7 @@ async def test_the_job_takes_the_engine_the_window_showed(
 
 
 # ---------------------------------------------------------------- P2: test encode
-async def test_videotoolbox_encoders_must_encode_to_be_offered(
+async def test_hardware_encoders_must_encode_to_be_offered(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     ffmpeg = tmp_path / "ffmpeg"
@@ -457,14 +483,130 @@ async def test_videotoolbox_encoders_must_encode_to_be_offered(
         return CmdResult(tuple(argv), rc, "", "no hardware")
 
     monkeypatch.setattr(jobs, "run", run)
-    monkeypatch.setattr(jobs, "_VT_WORKING", {})
+    monkeypatch.setattr(jobs, "_HW_WORKING", {})
     listed = ("libx265", "hevc_videotoolbox", "prores_videotoolbox")
-    got = await jobs._videotoolbox_working(os.fspath(ffmpeg), listed)
+    got = await jobs._hw_working(os.fspath(ffmpeg), listed)
     assert got == frozenset({"hevc_videotoolbox"})
     assert calls == ["hevc_videotoolbox", "prores_videotoolbox"]
-    await jobs._videotoolbox_working(os.fspath(ffmpeg), listed)
+    await jobs._hw_working(os.fspath(ffmpeg), listed)
     assert len(calls) == 2  # once per ffmpeg
-    assert await jobs._videotoolbox_working(os.fspath(ffmpeg), ("libx265",)) == frozenset()
+    assert await jobs._hw_working(os.fspath(ffmpeg), ("libx265",)) == frozenset()
+
+
+async def test_a_timeout_is_temporary_for_nvenc_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # a hung VideoToolbox test is not offered and not tested again, as before
+    # NVENC was tested; a hung NVENC one is offered and tested again next time
+    ffmpeg = tmp_path / "ffmpeg"
+    ffmpeg.write_text("")
+    calls: list[str] = []
+
+    async def run(argv: Any, **_kw: Any) -> CmdResult:
+        calls.append(argv[argv.index("-c:v") + 1])
+        return CmdResult(tuple(argv), None, "", "", timed_out=True)
+
+    monkeypatch.setattr(jobs, "run", run)
+    monkeypatch.setattr(jobs, "_HW_WORKING", {})
+    vt = ("hevc_videotoolbox",)
+    assert await jobs._hw_working(os.fspath(ffmpeg), vt) == frozenset()
+    assert await jobs._hw_working(os.fspath(ffmpeg), vt) == frozenset()
+    assert calls == ["hevc_videotoolbox"]
+    calls.clear()
+    nv = ("hevc_nvenc",)
+    assert await jobs._hw_working(os.fspath(ffmpeg), nv) == frozenset(nv)
+    assert await jobs._hw_working(os.fspath(ffmpeg), nv) == frozenset(nv)
+    assert calls == ["hevc_nvenc", "hevc_nvenc"]
+
+
+async def test_nvenc_is_test_encoded_and_a_busy_gpu_is_asked_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ffmpeg = tmp_path / "ffmpeg"
+    ffmpeg.write_text("")
+    calls: list[str] = []
+    answers = {
+        "hevc_nvenc": (0, ""),
+        # an RTX 30: no AV1 encoder
+        "av1_nvenc": (1, "[av1_nvenc] OpenEncodeSessionEx failed: unsupported device (2)"),
+    }
+
+    async def run(argv: Any, **_kw: Any) -> CmdResult:
+        enc = argv[argv.index("-c:v") + 1]
+        calls.append(enc)
+        rc, err = answers[enc]
+        return CmdResult(tuple(argv), rc, "", err)
+
+    monkeypatch.setattr(jobs, "run", run)
+    monkeypatch.setattr(jobs, "_HW_WORKING", {})
+    listed = ("hevc_nvenc", "av1_nvenc", "libx265")
+    assert await jobs._hw_working(os.fspath(ffmpeg), listed) == frozenset({"hevc_nvenc"})
+    assert await jobs._hw_working(os.fspath(ffmpeg), listed) == frozenset({"hevc_nvenc"})
+    assert calls == ["hevc_nvenc", "av1_nvenc"]  # a lasting failure is kept
+
+    # every encode session taken (a game, another render): offered as before the
+    # test, and tested again next time
+    jobs._HW_WORKING.clear()
+    calls.clear()
+    answers["av1_nvenc"] = (1, "OpenEncodeSessionEx failed: out of memory (10): (no details)")
+    assert await jobs._hw_working(os.fspath(ffmpeg), listed) == frozenset(
+        {"hevc_nvenc", "av1_nvenc"}
+    )
+    answers["av1_nvenc"] = (0, "")
+    assert await jobs._hw_working(os.fspath(ffmpeg), listed) == frozenset(
+        {"hevc_nvenc", "av1_nvenc"}
+    )
+    assert calls == ["hevc_nvenc", "av1_nvenc"] * 2
+    await jobs._hw_working(os.fspath(ffmpeg), listed)
+    assert len(calls) == 4  # now kept
+
+
+async def test_only_the_hardware_this_machine_is_offered_is_tested(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    listed = "\n".join(
+        f" V....D {e:<20} x" for e in ("hevc_nvenc", "av1_nvenc", "libx265", "libsvtav1")
+    )
+    tested: list[tuple[str, ...]] = []
+
+    async def run(argv: Any, **_kw: Any) -> CmdResult:
+        return CmdResult(tuple(argv), 0, " ------\n" + listed + "\n", "")
+
+    async def hw_working(ffmpeg: str, candidates: Any) -> frozenset[str]:
+        tested.append(tuple(candidates))
+        return frozenset(c for c in candidates if c != "av1_nvenc")
+
+    monkeypatch.setattr(jobs, "run", run)
+    monkeypatch.setattr(jobs, "_hw_working", hw_working)
+    monkeypatch.setattr(osapi, "IS_MACOS", False)
+    tools = jobs._Tools("ffprobe", os.fspath(tmp_path / "ffmpeg"), "vspipe", None)
+    got = await jobs._encoders(tools, hdr10=False, nvidia=True)
+    assert got[0] == "hevc_nvenc" and "av1_nvenc" not in got and "libx265" in got
+    assert tested == [("hevc_nvenc", "av1_nvenc")]
+    tested.clear()
+    await jobs._encoders(tools, hdr10=False, nvidia=False)  # no NVIDIA GPU: no test
+    await jobs._encoders(tools, hdr10=True, nvidia=True)  # HDR10 uses neither
+    assert tested == [()]
+
+
+# ---------------------------------------------------------------- A3: install line
+@pytest.mark.parametrize("hdr10", [False, True])
+def test_no_usable_encoder_names_this_platforms_ffmpeg(
+    monkeypatch: pytest.MonkeyPatch, hdr10: bool
+) -> None:
+    asked: list[str] = []
+
+    def install(tool: str) -> str:
+        asked.append(tool)
+        return f"winget install --exact --id Gyan.FFmpeg ({tool})"
+
+    monkeypatch.setattr(jobs, "install_command", install)
+    r = jobs.encoder_refusal((), hdr10=hdr10)
+    assert r is not None and r.code is ErrorCode.ENCODER_FAILED
+    assert r.commands == ("winget install --exact --id Gyan.FFmpeg (ffmpeg)",)
+    assert asked == ["ffmpeg"]
+    assert "RPM Fusion" not in r.fix.key and "ffmpeg-free" not in r.fix.key
+    assert jobs.encoder_refusal(("libx265",), hdr10=hdr10) is None
 
 
 def test_engine_size_is_a_render_size() -> None:

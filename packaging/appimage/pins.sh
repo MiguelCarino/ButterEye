@@ -101,7 +101,8 @@ MVTOOLS_URL=https://github.com/dubhatervapoursynth/vapoursynth-mvtools/archive/$
 MVTOOLS_SHA256=65578c649776ac2da6cfa32b7306841076ae184cac607b914649dfc1237498ce
 
 # SVT-AV1 v4.1.0, static into libavcodec: ButterEye's software AV1 encoder, its
-# default for saved copies without NVENC, and one of the two HDR10 encoders
+# default for saved copies where NVENC is missing (no NVIDIA driver, or its test
+# encode failed), and one of the two HDR10 encoders
 # (render passes mastering-display and content-light, which Ubuntu 22.04's
 # 0.9.0 predates). A git commit, not an archive: GitLab's tag archives are
 # generated on request and carry no published digest, so the commit pins the
@@ -119,9 +120,11 @@ LIBPLACEBO_GIT=https://github.com/haasn/libplacebo.git
 LIBPLACEBO_COMMIT=cee9b076f2c63104ccfd497fa79c39a867293ec4
 
 # glslang: libplacebo's GLSL -> SPIR-V compiler, which its Vulkan renderer needs
-# (static, into mpv). GitHub's tag archive: no published digest, so the SHA-256
-# of the archive as downloaded on 2026-10-14. 16.x is newer than Ubuntu 22.04's
-# 11.8, and its CMake floor (3.22.1) is exactly that Ubuntu's.
+# (static, into mpv), and, as the glslang program, the compiler mvgpu's shaders
+# go through at build time (the program itself is not carried). GitHub's tag
+# archive: no published digest, so the SHA-256 of the archive as downloaded on
+# 2026-10-14. 16.x is newer than Ubuntu 22.04's 11.8, and its CMake floor
+# (3.22.1) is exactly that Ubuntu's.
 GLSLANG_VER=16.6.0
 GLSLANG_URL=https://github.com/KhronosGroup/glslang/archive/$GLSLANG_VER/glslang-$GLSLANG_VER.tar.gz
 GLSLANG_SHA256=9c09b901149c729df745057dafa815278aaa101b84d2b6e14f16a42de52f97f2
@@ -139,13 +142,14 @@ WAYLAND_PROTOCOLS_VER=1.49
 WAYLAND_PROTOCOLS_URL=https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/$WAYLAND_PROTOCOLS_VER/downloads/wayland-protocols-$WAYLAND_PROTOCOLS_VER.tar.xz
 WAYLAND_PROTOCOLS_SHA256=ec4c8f74942d6dff7ace8b4ce4764f0ef9ff618a935d974ea77edee2ad240b14
 
-# nv-codec-headers: the header-only NVIDIA interface FFmpeg's NVDEC (and mpv's
-# cuda hwdec) are compiled against; FFmpeg dlopens libcuda and libnvcuvid from
-# the host's driver, so nothing NVIDIA is linked or carried. n12.1.14.1 is the
-# oldest release FFmpeg 8.1 takes without falling back (configure:
-# "ffnvcodec >= 12.1.14.0"), which keeps the driver floor at its lowest: Linux
-# 530.41.03 (README of the tag). GitHub's tag archive, no published digest: the
-# SHA-256 as downloaded on 2026-10-14.
+# nv-codec-headers: the header-only NVIDIA interface FFmpeg's NVDEC and NVENC
+# (and mpv's cuda hwdec) are compiled against; FFmpeg dlopens libcuda,
+# libnvcuvid and libnvidia-encode from the host's driver, so nothing NVIDIA is
+# linked or carried. n12.1.14.1 is the oldest release FFmpeg 8.1 takes without
+# falling back (configure: "ffnvcodec >= 12.1.14.0"), which keeps the driver
+# floor at its lowest: Linux 530.41.03 (README of the tag), for NVDEC and NVENC
+# alike. GitHub's tag archive, no published digest: the SHA-256 as downloaded on
+# 2026-10-14.
 NVCODEC_TAG=n12.1.14.1
 NVCODEC_URL=https://github.com/FFmpeg/nv-codec-headers/archive/$NVCODEC_TAG/nv-codec-headers-$NVCODEC_TAG.tar.gz
 NVCODEC_SHA256=f40c8a27417eb2688412da32985e382e811196311c4d103d1fcaafad2876cfc1

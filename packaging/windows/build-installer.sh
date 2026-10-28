@@ -6,7 +6,8 @@
 # dev box. Self-contained: no Python, VapourSynth or anything else has to be on
 # the Windows PC first (Microsoft's Visual C++ runtime excepted, see below).
 #
-#   1. the plugins, ffms2.dll and vulkaninfo.exe from build-plugins.sh (run if missing)
+#   1. the plugins, ffms2.dll and vulkaninfo.exe from build-plugins.sh (run if
+#      missing; refused if built from other sources than this tree's)
 #   2. the pinned runtime (pins.sh, SHA-256-checked): Python's embeddable build,
 #      and the PySide6-Essentials, Shiboken6 and VapourSynth wheels for Windows;
 #      Qt's qtbase and qtsvg sources, for the licence notices of the third-party
@@ -51,7 +52,7 @@ source "$here/pins.sh"
 source "$here/chroot.sh"
 win_mode_from_args "$@"
 # what this script itself runs outside the chroot (--no-mock: install them here)
-win_host_install git-core curl python3 python3-pip python3-setuptools tar
+win_host_install git-core curl python3 python3-pip python3-setuptools tar rpm-build
 stagepy() { python3 -I "$here/winstage.py" "$@"; }
 
 version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$repo/buttereye/__init__.py")
@@ -68,6 +69,19 @@ if [[ ! -f $win/components.json || ! -f $win/vapoursynth/ffms2.dll || ! -f $win/
 fi
 (cd "$win" && sha256sum --quiet --strict --ignore-missing -c SHA256SUMS) \
     || { echo "$win doesn't match its SHA256SUMS; run build-plugins.sh again" >&2; exit 1; }
+# Files that match their own SHA256SUMS can still be an older build: the cache
+# outlives every edit to the plugin sources, and an installer packed from it would
+# carry the old DLLs under the new install record. So the digest of the build's
+# inputs (build-plugins.sh --inputs-digest) must be the one the cache was built
+# from, which a cache from before the digest existed never is.
+built=$(python3 -I -c 'import json, sys
+print(json.load(open(sys.argv[1])).get("build_inputs", {}).get("sha256", ""))' "$win/components.json")
+wanted=$("$here/build-plugins.sh" --inputs-digest)
+if [[ $built != "$wanted" ]]; then
+    echo "$win was built from other plugin sources than this tree's" \
+         "(inputs ${built:-not recorded}, now $wanted); run build-plugins.sh again" >&2
+    exit 1
+fi
 # the Corresponding Source of mvtools.dll's fftw, and the models' archive
 for need in 'sources/mingw-fftw-*.src.rpm' 'sources/buttereye-rife-ncnn-models-r*.tar.gz'; do
     compgen -G "$win/$need" >/dev/null \
@@ -152,7 +166,12 @@ stagepy sources-txt "$lic/SOURCES.txt" version="$version" repo=https://github.co
     fftw_srpm="$(cd "$win/sources" && echo mingw-fftw-*.src.rpm)" \
     models="$(cd "$win/sources" && echo buttereye-rife-ncnn-models-r*.tar.gz)"
 
-stagepy record "$win/components.json" "$stage/buttereye-install.json" \
+# the install record without build_inputs, which only this script reads
+python3 -I -c 'import json, sys
+data = json.load(open(sys.argv[1]))
+data.pop("build_inputs", None)
+json.dump(data, open(sys.argv[2], "w"), indent=2)' "$win/components.json" "$work/components.json"
+stagepy record "$work/components.json" "$stage/buttereye-install.json" \
     "buttereye=$version=AGPL-3.0-or-later AND LGPL-3.0-or-later=licenses/buttereye/COPYING,licenses/buttereye/LICENSES/AdditionRef-ButterEye-generated-output.txt,buttereye/data/shaders/LGPL-3.0.txt,buttereye/data/shaders/GPL-3.0.txt" \
     "python3=$PYTHON_VER=PSF-2.0 AND 0BSD AND bzip2-1.0.6 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND Apache-2.0 AND Zlib AND Unlicense AND blessing=licenses/python/LICENSE.txt" \
     "microsoft-vcruntime=$vcver=LicenseRef-Microsoft-Distributable-Code=licenses/python/LICENSE.txt,licenses/python/MICROSOFT-VCRUNTIME.txt,licenses/python/MICROSOFT-TERMS.txt" \

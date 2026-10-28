@@ -3,8 +3,9 @@
 """The Windows calls ``osapi`` needs, through ``ctypes`` only (no pywin32).
 
 Imported only on Windows. Every function here either answers a question about
-this user's processes and files or acts on a process ButterEye started; nothing
-touches another user's objects. Failures read as "not alive" / "not ours", the
+this user's processes and files or this machine's power, or acts on a process
+ButterEye started or on ButterEye's own power request; nothing touches another
+user's objects. Failures read as "not alive" / "not ours", the
 safe side for each caller.
 """
 
@@ -13,6 +14,7 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+from collections.abc import Iterable
 from ctypes import wintypes
 from pathlib import Path
 
@@ -21,6 +23,7 @@ assert sys.platform == "win32"  # mypy: the rest is checked only for --platform 
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _adv = ctypes.WinDLL("advapi32", use_last_error=True)
 _u32 = ctypes.WinDLL("user32", use_last_error=True)
+_nt = ctypes.WinDLL("ntdll")
 
 HANDLE = wintypes.HANDLE
 DWORD = wintypes.DWORD
@@ -28,6 +31,7 @@ BOOL = wintypes.BOOL
 
 PROCESS_TERMINATE = 0x0001
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_SUSPEND_RESUME = 0x0800
 SYNCHRONIZE = 0x00100000
 STILL_ACTIVE = 259
 TOKEN_QUERY = 0x0008
@@ -48,6 +52,12 @@ CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_NO_WINDOW = 0x08000000
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+
+# power requests (winnt.h); ExecutionRequired is Windows 8 and later
+POWER_REQUEST_CONTEXT_VERSION = 0
+POWER_REQUEST_CONTEXT_SIMPLE_STRING = 0x00000001
+POWER_REQUEST_SYSTEM_REQUIRED = 1
+POWER_REQUEST_EXECUTION_REQUIRED = 3
 
 
 class _FILETIME(ctypes.Structure):
@@ -100,6 +110,34 @@ class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
     ]
 
 
+class _REASON_DETAILED(ctypes.Structure):
+    _fields_ = [
+        ("LocalizedReasonModule", wintypes.HMODULE),
+        ("LocalizedReasonId", wintypes.ULONG),
+        ("ReasonStringCount", wintypes.ULONG),
+        ("ReasonStrings", ctypes.POINTER(wintypes.LPWSTR)),
+    ]
+
+
+class _REASON_UNION(ctypes.Union):
+    _fields_ = [("Detailed", _REASON_DETAILED), ("SimpleReasonString", wintypes.LPWSTR)]
+
+
+class _REASON_CONTEXT(ctypes.Structure):
+    _fields_ = [("Version", wintypes.ULONG), ("Flags", DWORD), ("Reason", _REASON_UNION)]
+
+
+class _SYSTEM_POWER_STATUS(ctypes.Structure):
+    _fields_ = [
+        ("ACLineStatus", ctypes.c_ubyte),
+        ("BatteryFlag", ctypes.c_ubyte),
+        ("BatteryLifePercent", ctypes.c_ubyte),
+        ("SystemStatusFlag", ctypes.c_ubyte),
+        ("BatteryLifeTime", DWORD),
+        ("BatteryFullLifeTime", DWORD),
+    ]
+
+
 def _proto(fn: object, res: object, *args: object) -> None:
     fn.restype = res  # type: ignore[attr-defined]
     fn.argtypes = list(args)  # type: ignore[attr-defined]
@@ -132,6 +170,13 @@ _WNDENUMPROC = ctypes.WINFUNCTYPE(BOOL, wintypes.HWND, wintypes.LPARAM)
 _proto(_u32.EnumWindows, BOOL, _WNDENUMPROC, wintypes.LPARAM)
 _proto(_u32.GetWindowThreadProcessId, DWORD, wintypes.HWND, ctypes.POINTER(DWORD))
 _proto(_u32.PostMessageW, BOOL, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+_proto(_k32.PowerCreateRequest, HANDLE, ctypes.POINTER(_REASON_CONTEXT))
+_proto(_k32.PowerSetRequest, BOOL, HANDLE, ctypes.c_int)
+_proto(_k32.PowerClearRequest, BOOL, HANDLE, ctypes.c_int)
+_proto(_k32.GetSystemPowerStatus, BOOL, ctypes.POINTER(_SYSTEM_POWER_STATUS))
+# NTSTATUS (a LONG, negative on failure); undocumented but stable since Windows XP
+_proto(_nt.NtSuspendProcess, ctypes.c_long, HANDLE)
+_proto(_nt.NtResumeProcess, ctypes.c_long, HANDLE)
 
 
 # ---------------------------------------------------------------- SIDs
@@ -231,17 +276,22 @@ def pid_alive(pid: int) -> bool:
         _k32.CloseHandle(h)
 
 
+def _born(h: int) -> int | None:
+    """Creation time of the process behind handle ``h`` (100 ns ticks)."""
+    c, e, k, u = _FILETIME(), _FILETIME(), _FILETIME(), _FILETIME()
+    if not _k32.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(k),
+                                ctypes.byref(u)):  # fmt: skip
+        return None
+    return int((c.hi << 32) | c.lo)
+
+
 def _created(pid: int) -> int | None:
     """Creation time of ``pid`` (100 ns ticks), to tell a child from a reused pid."""
     h = _k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not h:
         return None
     try:
-        c, e, k, u = _FILETIME(), _FILETIME(), _FILETIME(), _FILETIME()
-        if not _k32.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(k),
-                                    ctypes.byref(u)):  # fmt: skip
-            return None
-        return int((c.hi << 32) | c.lo)
+        return _born(h)
     finally:
         _k32.CloseHandle(h)
 
@@ -285,6 +335,48 @@ def tree(pid: int) -> list[int]:
             born[child] = cborn
             out.append(child)
     return out
+
+
+def _suspend_or_resume(pid: int, suspend: bool, born: int | None = None) -> int | None:
+    """``NtSuspendProcess`` (``suspend``) or ``NtResumeProcess`` on ``pid``; its
+    creation time when that worked, else None. With ``born``, only the process
+    created at that time is touched, never a newer one that reused the pid."""
+    h = _k32.OpenProcess(PROCESS_SUSPEND_RESUME | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return None
+    try:
+        created = _born(h)
+        if created is None or (born is not None and created != born):
+            return None
+        code = DWORD()
+        # an exited process lingers while a handle to it is open (asyncio's)
+        if suspend and (not _k32.GetExitCodeProcess(h, ctypes.byref(code))
+                        or code.value != STILL_ACTIVE):  # fmt: skip
+            return None
+        status = (_nt.NtSuspendProcess if suspend else _nt.NtResumeProcess)(h)
+        return created if status >= 0 else None
+    finally:
+        _k32.CloseHandle(h)
+
+
+def suspend_pids(pids: Iterable[int]) -> list[tuple[int, int]]:
+    """Suspend every thread of each of ``pids``, as Resource Monitor's "Suspend
+    process" does: Windows' stand-in for SIGSTOP, which it doesn't have. Returns
+    (pid, creation time) of each one suspended, for ``resume_pids``; a pid that
+    is gone or not ours to suspend is skipped. Suspensions count: each needs its
+    own resume."""
+    held: list[tuple[int, int]] = []
+    for pid in dict.fromkeys(pids):
+        born = _suspend_or_resume(pid, True)
+        if born is not None:
+            held.append((pid, born))
+    return held
+
+
+def resume_pids(held: Iterable[tuple[int, int]]) -> int:
+    """Resume what ``suspend_pids`` returned, each process only if it is still
+    the one suspended (same creation time); how many were resumed."""
+    return sum(_suspend_or_resume(pid, False, born) is not None for pid, born in held)
 
 
 def terminate(pid: int, code: int = 1) -> bool:
@@ -366,6 +458,52 @@ def long_path(path: str) -> str:
     return buf.value if 0 < got < size else path
 
 
+# ---------------------------------------------------------------- power
+#: what each power request ``begin_activity`` makes asks for
+_ACTIVITY_REQUESTS = (POWER_REQUEST_SYSTEM_REQUIRED, POWER_REQUEST_EXECUTION_REQUIRED)
+
+
+def begin_activity(reason: str) -> int | None:
+    """A power request that keeps Windows from sleeping until ``end_activity``:
+    ``SystemRequired``, and ``ExecutionRequired`` for a Modern Standby laptop,
+    which otherwise stops this process's work when the screen goes off.
+    ``reason`` is what ``powercfg /requests`` shows. The display may still turn
+    off. The request's handle, or None when Windows refused the request or the
+    first of the two; ExecutionRequired alone failing (before Windows 8) keeps
+    the rest."""
+    text = ctypes.create_unicode_buffer(reason)  # alive until the request is made
+    ctx = _REASON_CONTEXT()
+    ctx.Version = POWER_REQUEST_CONTEXT_VERSION
+    ctx.Flags = POWER_REQUEST_CONTEXT_SIMPLE_STRING
+    ctx.Reason.SimpleReasonString = ctypes.cast(text, wintypes.LPWSTR)
+    handle = _k32.PowerCreateRequest(ctypes.byref(ctx))
+    del text
+    if not handle or handle == INVALID_HANDLE_VALUE:
+        return None
+    if not _k32.PowerSetRequest(handle, POWER_REQUEST_SYSTEM_REQUIRED):
+        _k32.CloseHandle(handle)
+        return None
+    _k32.PowerSetRequest(handle, POWER_REQUEST_EXECUTION_REQUIRED)
+    return int(handle)
+
+
+def end_activity(handle: int) -> None:
+    """Clear what ``begin_activity`` asked for and close its handle. Clearing a
+    request that was never set fails harmlessly. Never raises."""
+    for kind in _ACTIVITY_REQUESTS:
+        _k32.PowerClearRequest(handle, kind)
+    _k32.CloseHandle(handle)
+
+
+def power_status() -> tuple[int, int, int] | None:
+    """``GetSystemPowerStatus``: (ACLineStatus, BatteryFlag, SystemStatusFlag),
+    or None when it fails. ``osapi`` reads them."""
+    status = _SYSTEM_POWER_STATUS()
+    if not _k32.GetSystemPowerStatus(ctypes.byref(status)):
+        return None
+    return status.ACLineStatus, status.BatteryFlag, status.SystemStatusFlag
+
+
 def pipe_server_pid(handle: int) -> int | None:
     pid = wintypes.ULONG()
     if not _k32.GetNamedPipeServerProcessId(handle, ctypes.byref(pid)):
@@ -379,6 +517,8 @@ __all__ = [
     "CREATE_NEW_PROCESS_GROUP",
     "CREATE_NO_WINDOW",
     "FILE_ATTRIBUTE_REPARSE_POINT",
+    "begin_activity",
+    "end_activity",
     "ensure_job",
     "file_owner_sid",
     "hold_mutex",
@@ -388,7 +528,10 @@ __all__ = [
     "pid_alive",
     "pipe_server_pid",
     "post_close",
+    "power_status",
     "process_sid",
+    "resume_pids",
+    "suspend_pids",
     "terminate",
     "tree",
 ]

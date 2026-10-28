@@ -32,6 +32,7 @@ from buttereye.core.types import (
     Profile,
     SourceFacts,
     TargetKind,
+    VulkanDevice,
 )
 
 #: Preferred multipliers are 2-5x (§5.6); above this, divide the display rate.
@@ -641,10 +642,13 @@ GPU_BACKENDS = frozenset({BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVG
 RIFE_BACKENDS = frozenset({BackendId.RIFE_TRT, BackendId.RIFE_NCNN})
 
 
-def rife_live_needs_proof() -> bool:
+def rife_live_needs_proof(dev: VulkanDevice | None) -> bool:
     """True where RIFE-ncnn may run live only on a benchmark that measured it.
 
-    macOS, and nowhere else. On an Apple M2 through MoltenVK, RIFE-ncnn was
+    ``dev`` is the interpolation device (``backends.select.chosen_device``,
+    ``Session.gpu_device``), None when there is no report or no GPU.
+
+    macOS, whatever ``dev`` says. On an Apple M2 through MoltenVK, RIFE-ncnn was
     measured offline-only at every size (docs/macos-release-bar.md, item 18;
     docs/spikes/m0s.md): 17.9-20.1 fps in mpv at 720p, 8.3-9.3 at 1080p and
     4.6-5.4 at 1440p against the 55.14 fps a real-time 2x of 23.976 needs, and
@@ -659,18 +663,30 @@ def rife_live_needs_proof() -> bool:
     own explicit choice. Offline render is untouched: RIFE is the right engine
     there at any speed.
 
-    Not shared with Linux and Windows, because there it would be wrong rather
-    than cautious: an RTX 4090 runs RIFE v4.26 live at 1080p (M0(f), 56-58 fps
-    in mpv), and the shipped Quality profile is that machine's default before
-    any benchmark. Read at call time, so a test can ask either platform.
+    On Linux and Windows, any device that is not a discrete GPU: an integrated
+    GPU, a virtual one or anything else the driver reports. Nothing measured
+    there says an iGPU does better than the M2's, which shares its design (one
+    memory pool, a GPU sized for the display rather than for compute), and
+    trusting it would cost the same stall, fallback and rollback at the start of
+    playback, or silent slow motion on a file with no audio. A discrete GPU is
+    not asked: an RTX 4090 runs RIFE v4.26 live at 1080p (M0(f), 56-58 fps in
+    mpv), and the shipped Quality profile is that machine's default before any
+    benchmark. No device (None) is not asked either, because RIFE-ncnn does not
+    run without one. Read at call time, so a test can ask any platform.
     """
-    return osapi.IS_MACOS
+    if osapi.IS_MACOS:
+        return True
+    return dev is not None and dev.device_type != "discrete"
 
 
-def _unproven_rife(o: EngineOption) -> bool:
-    return (
-        o.backend is BackendId.RIFE_NCNN and o.sustainable_fps is None and rife_live_needs_proof()
-    )
+def _unproven_rife(o: EngineOption, needs_proof: bool) -> bool:
+    return o.backend is BackendId.RIFE_NCNN and o.sustainable_fps is None and needs_proof
+
+
+def _rife_proof(given: bool | None) -> bool:
+    """``rife_proof`` as the pick functions take it: None (a caller that knows no
+    device) asks :func:`rife_live_needs_proof` without one, which is macOS only."""
+    return rife_live_needs_proof(None) if given is None else given
 
 
 def _display_tier(
@@ -699,6 +715,7 @@ def pick_engine(
     auto: bool,
     forced: bool = False,
     animation: bool = False,
+    rife_proof: bool | None = None,
 ) -> EnginePick:
     """§11.9: the engine is chosen after the target, against each engine's live cap.
 
@@ -714,9 +731,10 @@ def pick_engine(
       "Match your display" a RIFE pick that misses the display rate (then 60
       fps) gives way to mvgpu when mvgpu reaches it. When the only installed
       engines are unmeasured GPU engines, the first is used uncapped (the
-      health detector still guards it) - except an unmeasured RIFE-ncnn where
-      :func:`rife_live_needs_proof` (macOS), which is skipped for the next one,
-      or gives ``NO_REALTIME`` when it is the only engine.
+      health detector still guards it) - except an unmeasured RIFE-ncnn when
+      ``rife_proof`` (:func:`rife_live_needs_proof` for the interpolation
+      device: macOS, or a GPU that is not discrete), which is skipped for the
+      next one, or gives ``NO_REALTIME`` when it is the only engine.
     * pinned (``options[0]`` is the engine the profile asks for): used when it
       reaches a target; a pinned GPU engine that can't falls back to the next
       option that can for this file: mvgpu (after RIFE) with
@@ -732,14 +750,24 @@ def pick_engine(
     uncapped instead, with ``forced_notice``.
     ``ALREADY_AT_RATE`` and "waiting for the display rate" do not depend on the
     engine and are returned at once.
+
+    ``rife_proof`` is computed by the caller, because an ``EngineOption`` names
+    no device; None asks :func:`rife_live_needs_proof` without one (macOS only).
     """
 
-    pick = _pick_engine(options, src, display_hz, kind, fixed, auto=auto, animation=animation)
+    proof = _rife_proof(rife_proof)
+    pick = _pick_engine(
+        options, src, display_hz, kind, fixed, auto=auto, animation=animation, rife_proof=proof
+    )
     if not forced or not options or pick.target.bypass is not BypassReason.NO_REALTIME:
         return pick
-    # "smooth anyway" on Automatic is not a request for RIFE on a Mac: the first
-    # engine that is not an unmeasured RIFE-ncnn there, if there is one
-    first = next((o for o in options if not _unproven_rife(o)), options[0]) if auto else options[0]
+    # "smooth anyway" on Automatic is not a request for an unmeasured RIFE where
+    # it needs proof: the first engine that is not one, if there is one
+    first = (
+        next((o for o in options if not _unproven_rife(o, proof)), options[0])
+        if auto
+        else options[0]
+    )
     tc = choose_target(src, display_hz, kind, fixed)  # the speed test's cap is ignored
     if tc.bypass is not None or tc.target is None:
         return pick
@@ -756,6 +784,7 @@ def pick_size(
     auto: bool,
     forced: bool = False,
     animation: bool = False,
+    rife_proof: bool | None = None,
 ) -> tuple[EnginePick, tuple[int, int]] | None:
     """§11.9: a video too demanding at its own size is smoothed at a smaller one.
 
@@ -770,7 +799,8 @@ def pick_size(
     3. otherwise, with ``forced``, the first engine uncapped at the smallest size.
 
     With ``animation`` step 1 asks only RIFE: mvgpu at a smaller size does not
-    beat MVTools for 2D animation (``pick_engine``).
+    beat MVTools for 2D animation (``pick_engine``). ``rife_proof`` is passed to
+    every ``pick_engine`` here, as there.
 
     None: nothing works at any smaller size (and not forced, or no size).
 
@@ -782,6 +812,7 @@ def pick_size(
     def runs(p: EnginePick) -> bool:
         return p.backend is not None and p.target.bypass is None and p.target.target is not None
 
+    proof = _rife_proof(rife_proof)
     reach = choose_target(src, display_hz, kind, fixed).target  # speed aside
     need = src * 2 * AUTO_DOUBLING_TOLERANCE
     if reach is not None:
@@ -791,18 +822,30 @@ def pick_size(
         gpu = [o for o in opts if o.backend in first and o.sustainable_fps is not None]
         if not gpu:
             continue
-        p = pick_engine(gpu, src, display_hz, kind, fixed, auto=auto, animation=animation)
+        p = pick_engine(
+            gpu, src, display_hz, kind, fixed, auto=auto, animation=animation, rife_proof=proof
+        )
         target = p.target.target
         if runs(p) and target is not None and (not auto or target >= need):
             return p, size
     for size, opts in sized:
-        p = pick_engine(opts, src, display_hz, kind, fixed, auto=auto, animation=animation)
+        p = pick_engine(
+            opts, src, display_hz, kind, fixed, auto=auto, animation=animation, rife_proof=proof
+        )
         if runs(p):
             return p, size
     if forced and sized:
         size, opts = sized[-1]
         p = pick_engine(
-            opts, src, display_hz, kind, fixed, auto=auto, forced=True, animation=animation
+            opts,
+            src,
+            display_hz,
+            kind,
+            fixed,
+            auto=auto,
+            forced=True,
+            animation=animation,
+            rife_proof=proof,
         )
         if runs(p):
             return dataclasses.replace(p, notice=forced_smaller_notice(size[1])), size
@@ -870,6 +913,7 @@ def _pick_engine(
     *,
     auto: bool,
     animation: bool = False,
+    rife_proof: bool = False,
 ) -> EnginePick:
     def target_for(o: EngineOption) -> TargetChoice:
         return choose_target(src, display_hz, kind, fixed, sustainable_fps=o.sustainable_fps)
@@ -878,11 +922,12 @@ def _pick_engine(
         return EnginePick(None, TargetChoice(None, BypassReason.NO_REALTIME), no_realtime_notice())
     if auto:
         # an unmeasured GPU engine is trusted only when it is all there is - and
-        # on a Mac never RIFE-ncnn (rife_live_needs_proof): the next engine, or
-        # nothing, rather than a live 2x at a fraction of real time
+        # never RIFE-ncnn where it needs proof (a Mac, a GPU that is not
+        # discrete: rife_live_needs_proof): the next engine, or nothing, rather
+        # than a live 2x at a fraction of real time
         eligible = [
             o for o in options if o.backend not in GPU_BACKENDS or o.sustainable_fps is not None
-        ] or [o for o in options if not _unproven_rife(o)][:1]
+        ] or [o for o in options if not _unproven_rife(o, rife_proof)][:1]
         if not eligible:
             return EnginePick(
                 None, TargetChoice(None, BypassReason.NO_REALTIME), no_realtime_notice()

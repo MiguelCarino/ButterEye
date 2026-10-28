@@ -21,11 +21,13 @@ Rule semantics (first match wins; an empty ``match`` matches everything):
   (``THERMAL_STATES`` indices: 0 nominal … 3 critical).
 
 What the power conditions see when nothing is known -- no snapshot passed, or a
-field that is None, which is every field off macOS -- is a machine on mains power
-at nominal temperature. So ``on_battery = true`` and ``thermal_min = "fair"``
-never match on Linux or Windows, and ``on_battery = false`` and every
-``thermal_max`` always do: a rule written on a Mac does not stop working anywhere
-else.
+field that is None, which ``thermal`` always is off macOS and ``on_battery`` is on
+a machine without a battery -- is a machine on mains power at nominal
+temperature. So ``thermal_min = "fair"`` never matches on Linux or Windows and
+``on_battery = true`` never matches on a desktop, while ``on_battery = false``
+and every ``thermal_max`` always do there: a rule written on a Mac does not stop
+working anywhere else. A Linux or Windows laptop answers ``on_battery`` as a Mac
+does.
 
 A rule whose profile id does not exist is skipped (shown in the trace). With no
 match the profile is ``defaults.DEFAULT_PROFILE_ID`` (or the first profile when

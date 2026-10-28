@@ -1236,6 +1236,11 @@
     </message>
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>ProRes 422 HQ (CPU, very large files)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
         <source>ProRes 422 HQ (Mac media engine, very large files)</source>
         <translation type="unfinished"></translation>
     </message>
@@ -3301,11 +3306,6 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <message>
         <location filename="buttereye/gui/pages/render.py"/>
         <source>A video is playing: the render is paused so it doesn't slow playback down, and continues when the player is closed.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/pages/render.py"/>
-        <source>A video is playing: the render keeps going at lower CPU priority and shares the graphics card with it, so either may slow down.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

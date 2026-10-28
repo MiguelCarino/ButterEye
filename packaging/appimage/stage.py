@@ -434,10 +434,12 @@ AppImage, holds the Corresponding Source of every part of it:
 
   buttereye-{version}/        ButterEye itself (also at {repo}), with
                               packaging/appimage/ (build-appimage.sh, which made
-                              this AppImage, and its helpers) and
-                              packaging/plugins/ (MVTools' patch)
+                              this AppImage, and its helpers),
+                              packaging/plugins/ (MVTools' patch) and mvgpu/,
+                              ButterEye's own GPU plugin, mvgpu {mvgpu}
+                              (AGPL-3.0-or-later): vapoursynth/libmvgpu.so
   ffmpeg-{ffmpeg}.tar.xz       FFmpeg {ffmpeg}, built with --enable-gpl (libx264,
-                              libx265):
+                              libx265) and NVIDIA's NVDEC and NVENC:
                               bin/ffmpeg, bin/ffprobe, lib/libav*.so, lib/libsw*.so
   dav1d-{dav1d}.tar.xz         dav1d {dav1d}, linked statically into libavcodec
   SVT-AV1-v{svtav1}.tar.gz      SVT-AV1 {svtav1} (git {svtav1_commit}), linked
@@ -448,7 +450,9 @@ AppImage, holds the Corresponding Source of every part of it:
                               its 3rdparty submodules), linked statically into mpv;
                               its 3rdparty/Vulkan-Headers are also the Vulkan
                               headers FFmpeg and mpv were compiled against
-  glslang-{glslang}.tar.gz      glslang {glslang}, linked statically into mpv
+  glslang-{glslang}.tar.gz      glslang {glslang}, linked statically into mpv; its
+                              glslang program, built from the same source,
+                              compiled mvgpu's shaders (it is not carried)
   wayland-{wayland}.tar.xz, wayland-protocols-{wayland_protocols}.tar.xz
                               Wayland {wayland} and wayland-protocols
                               {wayland_protocols}: mpv carries the code
@@ -456,8 +460,9 @@ AppImage, holds the Corresponding Source of every part of it:
                               (libwayland itself is the host's)
   nv-codec-headers-{nvcodec}.tar.gz
                               NVIDIA's codec headers (MIT), which FFmpeg's NVDEC
-                              and mpv's cuda hwdec were compiled against (the
-                              driver's libraries are the host's, loaded at run time)
+                              and NVENC and mpv's cuda hwdec were compiled against
+                              (the driver's libraries are the host's, loaded at
+                              run time)
   ffms2-{ffms2}.tar.gz          FFMS2 {ffms2}: vapoursynth/libffms2.so
   vapoursynth-mvtools-{mvtools}.tar.gz
                               MVTools {mvtools} with

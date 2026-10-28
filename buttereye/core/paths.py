@@ -155,16 +155,23 @@ def resolve(env: Mapping[str, str] | None = None) -> Paths:
     )
 
 
-def _resolve_windows(e: Mapping[str, str]) -> Paths:
-    """Windows: %APPDATA% (roams) for settings, %LOCALAPPDATA% for the rest. The
-    runtime folder needs no session variable: it is a folder of this user's
-    profile, created on first use and checked like the Linux one."""
+def _windows_roots(e: Mapping[str, str]) -> tuple[Path, Path, Path]:
+    """Windows: ``%APPDATA%``, ButterEye's settings folder under it and its folder
+    under ``%LOCALAPPDATA%``, from ``e`` alone. ``_resolve_windows`` and
+    ``gui_dirs`` both start from these, so the GUI's files cannot drift away from
+    the core's."""
     home_s = e.get("USERPROFILE", "")
     home = Path(home_s) if home_s and os.path.isabs(home_s) else Path(os.path.expanduser("~"))
     roaming = _xdg(e, "APPDATA", home, "AppData/Roaming")
     local = _xdg(e, "LOCALAPPDATA", home, "AppData/Local")
-    config = roaming / WINDOWS_APP
-    base = local / WINDOWS_APP
+    return roaming, roaming / WINDOWS_APP, local / WINDOWS_APP
+
+
+def _resolve_windows(e: Mapping[str, str]) -> Paths:
+    """Windows: %APPDATA% (roams) for settings, %LOCALAPPDATA% for the rest. The
+    runtime folder needs no session variable: it is a folder of this user's
+    profile, created on first use and checked like the Linux one."""
+    roaming, config, base = _windows_roots(e)
     mpv_home = e.get("MPV_HOME", "")
     mpv_dir = Path(mpv_home) if mpv_home and os.path.isabs(mpv_home) else roaming / "mpv"
     runtime_dir = base / "run"
@@ -291,8 +298,7 @@ class GuiDirs:
     other conveniences, never ``config.toml``) and ``gui.log``.
 
     ``legacy_*`` is where 0.0.5 and earlier put them when that is a different
-    place, so the GUI can move them once; None when nothing moved (Linux and
-    Windows)."""
+    place, so the GUI can move them once; None when nothing moved (Linux)."""
 
     settings_file: Path
     log_file: Path
@@ -300,14 +306,16 @@ class GuiDirs:
     legacy_log_file: Path | None = None
 
 
-def gui_dirs(env: Mapping[str, str], *, macos: bool | None = None) -> GuiDirs:
+def gui_dirs(
+    env: Mapping[str, str], *, macos: bool | None = None, windows: bool | None = None
+) -> GuiDirs:
     """The GUI's own files, from ``env`` alone: no ``lstat``, no
     ``check_private_dir`` and no runtime folder, because the GUI needs its log
     before the core is open and ``resolve`` raises BE-2010 rather than answering.
 
-    Linux (and Windows, unchanged): ``$XDG_STATE_HOME/buttereye`` holds
-    ``gui.ini`` and ``logs/gui.log``, which is ``Paths.logs_dir`` there, so the
-    Storage page's logs row already counts it.
+    Linux: ``$XDG_STATE_HOME/buttereye`` holds ``gui.ini`` and ``logs/gui.log``,
+    which is ``Paths.logs_dir`` there, so the Storage page's logs row already
+    counts it.
 
     macOS: the log goes in ``~/Library/Logs/ButterEye`` beside the core's logs
     (Console.app reads that folder, Storage counts it, and removing ButterEye's
@@ -318,22 +326,38 @@ def gui_dirs(env: Mapping[str, str], *, macos: bool | None = None) -> GuiDirs:
     The XDG variables are not read for the new places, as in ``_resolve_macos``;
     the legacy pair honours ``XDG_STATE_HOME`` because 0.0.5 did.
 
-    ``macos`` is for tests; None asks ``osapi``."""
+    Windows: ``gui.ini`` in ``%APPDATA%\\ButterEye`` beside ``config.toml``, and
+    the log in ``%LOCALAPPDATA%\\ButterEye\\state\\logs``, which is
+    ``Paths.logs_dir`` there. 0.0.5 used the Linux layout under the user's
+    profile (``.local\\state\\buttereye``), a folder Storage did not count and
+    no Windows user would look in; that is the ``legacy_*`` pair, as on macOS.
+
+    ``macos`` and ``windows`` are for tests; None asks ``osapi``. ``macos`` wins
+    when both are true."""
     home_s = env.get("HOME", "")
     home = Path(home_s) if home_s and os.path.isabs(home_s) else Path(os.path.expanduser("~"))
     state = _xdg(env, "XDG_STATE_HOME", home, ".local/state") / APP
     xdg = GuiDirs(state / GUI_SETTINGS, state / "logs" / GUI_LOG)
-    if not (osapi.IS_MACOS if macos is None else macos):
-        return xdg
-    library = home / "Library"
-    return GuiDirs(
-        # the folder _resolve_macos names for config.toml: storage.locations()
-        # counts it as "Settings, profiles and rules"
-        settings_file=library / "Application Support" / MACOS_APP / "config" / GUI_SETTINGS,
-        log_file=library / "Logs" / MACOS_APP / GUI_LOG,
-        legacy_settings_file=xdg.settings_file,
-        legacy_log_file=xdg.log_file,
-    )
+    if osapi.IS_MACOS if macos is None else macos:
+        library = home / "Library"
+        return GuiDirs(
+            # the folder _resolve_macos names for config.toml: storage.locations()
+            # counts it as "Settings, profiles and rules"
+            settings_file=library / "Application Support" / MACOS_APP / "config" / GUI_SETTINGS,
+            log_file=library / "Logs" / MACOS_APP / GUI_LOG,
+            legacy_settings_file=xdg.settings_file,
+            legacy_log_file=xdg.log_file,
+        )
+    if osapi.IS_WINDOWS if windows is None else windows:
+        _, config, base = _windows_roots(env)
+        return GuiDirs(
+            # the folders _resolve_windows names for config.toml and logs_dir
+            settings_file=config / GUI_SETTINGS,
+            log_file=base / "state" / "logs" / GUI_LOG,
+            legacy_settings_file=xdg.settings_file,
+            legacy_log_file=xdg.log_file,
+        )
+    return xdg
 
 
 def install_dir() -> Path:

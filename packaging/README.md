@@ -75,7 +75,8 @@ SHA-256-checked; downloads cached in `~/.cache/buttereye/windows-dl/`):
 Output in `~/.cache/buttereye/windows/`: `vapoursynth/{mvtools,librife,libmvgpu,ffms2}.dll`,
 `vulkaninfo.exe`, `share/rife-ncnn-models/`, `licenses/<component>/` (including fftw,
 FFmpeg, dav1d, zlib, volk and the MinGW-w64 runtime, which are linked in),
-`components.json` (entries for the installer's `buttereye-install.json`), `sources/`
+`components.json` (entries for the installer's `buttereye-install.json`, and
+`build_inputs.sha256`, the digest `build-plugins.sh --inputs-digest` prints), `sources/`
 (the Corresponding Source, with Fedora's `mingw-fftw` source package, without which
 the build fails, and the models archive) and `SHA256SUMS`.
 Needs `mock` and network for the chroot packages and the downloads.
@@ -88,7 +89,11 @@ tools/wine-tests.sh                   # also installs, checks and uninstalls it 
 ```
 
 Runs `build-plugins.sh` first if its output is missing, checks it against its
-`SHA256SUMS`, fetches the pinned runtime (Python 3.14.8's embeddable build and the
+`SHA256SUMS`, refuses it if it was built from other sources (`build_inputs.sha256`
+is not today's `build-plugins.sh --inputs-digest`: the plugin packages'
+version-release, the ncnn and glslang commits, the pinned ffms2, FFmpeg, dav1d,
+Vulkan-Tools and volk archives, the Windows patches and chroot scripts, and every
+file of `mvgpu/`; run `build-plugins.sh` again then), fetches the pinned runtime (Python 3.14.8's embeddable build and the
 PySide6-Essentials, Shiboken6 and VapourSynth R81 wheels for Windows; `pip` only unpacks
 them, `--no-index`), stages the install folder in `~/.cache/buttereye/windows-installer/`
 (Qt trimmed to Core, Gui, Widgets, Svg and SvgWidgets and the platform, style and SVG
@@ -339,7 +344,9 @@ licence work, `macos/launcher.c` is the app's main executable, and
 `ButterEye-<version>-macos-arm64.dmg`, `ButterEye-<version>-macos-sources.tar`
 (Corresponding Source of every GPL/LGPL/MPL part and every Homebrew recipe; needs
 network for `brew fetch --build-from-source`) and `SHA256SUMS`; `--no-sources` skips
-the tar for a quick local build, never for a release. Ad-hoc signed only: the README's
+the tar for a quick local build, never for a release. A plugin build whose `sources/`
+no longer matches this tree (`mvgpu/`, `build-plugins.sh`, `build-rife.sh` or a RIFE
+patch it applied) is refused: run `build-plugins.sh` again. Ad-hoc signed only: the README's
 macOS section has the one Terminal command a user runs after downloading it.
 
 What the app carries beyond mpv and FFmpeg, and why:

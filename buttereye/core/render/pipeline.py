@@ -47,12 +47,15 @@ _ENCODER_ARGS: Mapping[str, tuple[str, ...]] = {
     "hevc_videotoolbox": ("-q:v", "60", "-tag:v", "hvc1"),
     # ProRes 422 HQ, always 4:2:2 10-bit (ffmpeg converts the 4:2:0 frames)
     "prores_videotoolbox": ("-profile:v", "hq"),
+    # the same on the CPU: profile 3 is 422 HQ; the apl0 vendor tag marks the
+    # stream as Apple's, which some Apple software checks for
+    "prores_ks": ("-profile:v", "3", "-vendor", "apl0"),
 }
 _TEN_BIT_PIX = {"hevc_nvenc": "p010le", "av1_nvenc": "p010le", "hevc_videotoolbox": "p010le"}
 #: encoders whose 10-bit output needs ``-profile:v main10``
 _MAIN10 = frozenset({"hevc_nvenc", "hevc_videotoolbox"})
 #: encoders with one fixed pixel format of their own
-_FIXED_PIX = {"prores_videotoolbox": "p210le"}
+_FIXED_PIX = {"prores_videotoolbox": "p210le", "prores_ks": "yuv422p10le"}
 
 #: ffprobe ``color_space`` → the matrix name of ffmpeg's scale filter
 _SCALE_MATRIX: Mapping[str, str] = {

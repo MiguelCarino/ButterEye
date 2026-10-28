@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -125,6 +126,14 @@ print(json.dumps({"pan1": mid(texture, 1), "pan3": mid(texture, 3), "bar4": mid(
 """
 
 
+def _meson_version() -> list[int]:
+    """The plugin version mvgpu/meson.build gives the build, as VapourSynth reports it."""
+    text = (Path(__file__).resolve().parents[2] / "mvgpu" / "meson.build").read_text()
+    m = re.search(r"^project\('mvgpu'.*version: '(\d+)\.(\d+)\.(\d+)'", text, re.M)
+    assert m is not None
+    return [int(m[1]), int(m[2]) * 100 + int(m[3])]
+
+
 def _run(tmp_path: Path, name: str, code: str) -> dict[str, Any]:
     script = tmp_path / name
     script.write_text(code)
@@ -142,7 +151,7 @@ def _run(tmp_path: Path, name: str, code: str) -> dict[str, Any]:
 def test_mvgpu_moves_a_square_and_keeps_sources(tmp_path: Path) -> None:
     r = _run(tmp_path, "mvgpu_check.py", SCRIPT)
     assert (r["len2"], r["len5"], r["fps2"]) == (12, 30, [48, 1])
-    assert r["version"] == [0, 1], "0.0.1 is reported as (0, 1) (meson.build)"
+    assert r["version"] == _meson_version(), "x.y.z is reported as (x, y * 100 + z) (meson.build)"
     assert r["n_errors"] == 20 and r["errors"] == ["mvgpu.Interpolate: no Vulkan device 99"]
     assert r["source_kept"], "source positions must be the source frames, untouched"
     assert r["scene_repeat"], "a frame marked _SceneChangeNext is repeated"

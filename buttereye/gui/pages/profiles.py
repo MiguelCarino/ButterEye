@@ -1921,7 +1921,7 @@ class ProfilesPage(Page):
             lines.append(self.tr("Enter a frame rate to test, such as 24000/1001."))
         else:
             try:
-                # this Mac's power and heat now, for on_battery / thermal_* rules
+                # this machine's power and heat now, for on_battery / thermal_* rules
                 trace = explain_rules(cfg, facts, osapi.power_snapshot())
             except ButterEyeError as err:
                 lines.append(render(err.cause))

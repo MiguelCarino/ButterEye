@@ -227,6 +227,13 @@ jobs:
           foreach ($f in 'buttereye.cmd', 'python\python.exe', 'vapoursynth\mvtools.dll', 'Uninstall.exe') {
             if (-not (Test-Path "$inst\$f")) { throw "$f is missing" }
           }
+          # "Open with": ButterEye's own ProgID, offered for the video types
+          $cmd = (Get-ItemProperty 'HKCU:\Software\Classes\ButterEye.Video\shell\open\command').'(default)'
+          if ($cmd -ne "`"$inst\python\pythonw.exe`" -m buttereye.gui `"%1`"") { throw "Open with runs '$cmd'" }
+          foreach ($ext in 'mp4', 'mkv', 'webm', 'mov', 'avi', 'ts') {
+            $owp = Get-ItemProperty "HKCU:\Software\Classes\.$ext\OpenWithProgids" -ErrorAction SilentlyContinue
+            if (-not $owp -or $null -eq $owp.'ButterEye.Video') { throw ".$ext does not offer ButterEye under Open with" }
+          }
           "$($key.DisplayName) $($key.DisplayVersion) in $inst"
           "$((Get-ChildItem $inst -Recurse -File | Measure-Object).Count) files, " +
             "$([math]::Round((Get-ChildItem $inst -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)) MiB"
@@ -277,7 +284,12 @@ jobs:
           }
           if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ButterEye') { throw "the uninstall entry is still there" }
           if (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\ButterEye.lnk") { throw "the Start-menu shortcut is still there" }
-          "uninstalled: folder, uninstall entry and shortcut are gone"
+          if (Test-Path 'HKCU:\Software\Classes\ButterEye.Video') { throw "the Open with ProgID is still there" }
+          foreach ($ext in 'mp4', 'mkv', 'webm', 'mov', 'avi', 'ts') {
+            $owp = Get-ItemProperty "HKCU:\Software\Classes\.$ext\OpenWithProgids" -ErrorAction SilentlyContinue
+            if ($owp -and $null -ne $owp.'ButterEye.Video') { throw ".$ext still offers ButterEye under Open with" }
+          }
+          "uninstalled: folder, uninstall entry, shortcut and Open with are gone"
 
       - name: Upload the doctor's report
         if: always()

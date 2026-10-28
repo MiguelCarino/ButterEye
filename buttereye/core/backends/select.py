@@ -18,10 +18,11 @@
    same run's best real-time rankable measurement stands in for it, so an
    engine that run measured too slow for live play is not picked over one it
    measured fast enough (:func:`_from_bench`). Otherwise the
-   §5.3 conservative defaults - except on macOS, where an unbenchmarked RIFE
-   is never the live default and MVTools is proposed instead
-   (``decide.rife_live_needs_proof``): RIFE v4.26 on a discrete GPU with >= 16 GiB,
-   else v4.22-lite (the packaged models in the report decide what exists).
+   §5.3 conservative defaults - except on macOS and on a GPU that is not
+   discrete, where an unbenchmarked RIFE is never the live default and MVTools
+   is proposed instead (``decide.rife_live_needs_proof``): RIFE v4.26 on a
+   discrete GPU with >= 16 GiB, else v4.22-lite (the packaged models in the
+   report decide what exists).
    Quality above that default comes from the benchmark, not from the device
    list: see :func:`_high_end_gpu` for why an integrated GPU's heap size is no
    evidence, on an Apple Silicon Mac as on a Linux iGPU.
@@ -478,24 +479,34 @@ def select(report: DoctorReport, cfg: Config, bench: tuple[BenchResult, ...]) ->
         )
 
     first = ranked[0]
+    proof_dev = chosen_device(report)
     if (
         first is BackendId.RIFE_NCNN
         and BackendId.MVTOOLS in ranked
-        and decide.rife_live_needs_proof()
+        and decide.rife_live_needs_proof(proof_dev)
     ):
-        # macOS: no benchmark here showed RIFE holding real time, and RIFE on an
-        # M2 was measured offline-only at every size (decide.rife_live_needs_proof).
-        # MVTools is the measured live default there - real time at 720p, 1080p
-        # and 1440p in docs/spikes/m0s.md, level with mvgpu, which is never ranked.
-        # RIFE stays ranked: offline render and an explicit choice still use it.
+        # no benchmark here showed RIFE holding real time, and RIFE on an M2 was
+        # measured offline-only at every size (decide.rife_live_needs_proof); a
+        # GPU that is not discrete is given the same caution. MVTools is the
+        # measured live default on a Mac - real time at 720p, 1080p and 1440p in
+        # docs/spikes/m0s.md, level with mvgpu, which is never ranked. RIFE stays
+        # ranked: offline render and an explicit choice still use it.
+        if osapi.IS_MACOS:
+            why = M(
+                "MVTools on the CPU: RIFE is too slow for live playback on this Mac "
+                "unless a benchmark here shows otherwise. RIFE is still used to convert videos."
+            )
+        else:
+            why = M(
+                "MVTools on the CPU: RIFE may be too slow for live playback on {gpu} "
+                "unless a benchmark here shows otherwise. RIFE is still used to convert videos.",
+                {"gpu": proof_dev.name if proof_dev is not None else "?"},
+            )
         return Selection(
             BackendId.MVTOOLS,
             None,
             _profile_for(cfg, BackendId.MVTOOLS, None),
-            M(
-                "MVTools on the CPU: RIFE is too slow for live playback on this Mac "
-                "unless a benchmark here shows otherwise. RIFE is still used to convert videos."
-            ),
+            why,
             False,
             ranked,
         )

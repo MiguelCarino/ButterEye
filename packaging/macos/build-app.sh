@@ -7,7 +7,8 @@
 # self-contained in the same sense: the Mac it is opened on needs nothing else -
 # no Homebrew, no Python, no VapourSynth.
 #
-#   1. ButterEye's own plugin builds, from build-plugins.sh (run if missing):
+#   1. ButterEye's own plugin builds, from build-plugins.sh (run if missing;
+#      refused if built from other sources than this tree's):
 #      libmvgpu.dylib, librife.dylib and the RIFE models
 #   2. the pinned downloads (pins.sh, SHA-256-checked): python-build-standalone's
 #      CPython, the PySide6-Essentials, Shiboken6 and VapourSynth wheels, and the
@@ -124,6 +125,28 @@ if [[ ! -f $mac/components.json || ! -f $mac/vapoursynth/librife.dylib \
 fi
 (cd "$mac" && shasum -a 256 --quiet --strict --ignore-missing -c SHA256SUMS) \
     || { echo "$mac doesn't match its SHA256SUMS; run build-plugins.sh again" >&2; exit 1; }
+# Files that match their own SHA256SUMS can still be an older build: the cache
+# outlives every edit to the plugin sources. Its sources/ holds what it was built
+# from (mvgpu/ as it stood, the two build scripts, the RIFE patches applied), so
+# that must still be this tree's - a version check would not do, since mvgpu's
+# source changed (766e149) while its version still read 0.0.1.
+stale=()
+diff -rq -x build -x 'build-*' -x '*.pyc' -x __pycache__ "$repo/mvgpu" "$mac/sources/mvgpu" \
+    >/dev/null 2>&1 || stale+=(mvgpu/)
+for f in build-plugins.sh build-rife.sh; do
+    [[ ! -f $here/$f ]] || cmp -s "$here/$f" "$mac/sources/$f" || stale+=("packaging/macos/$f")
+done
+if [[ -f $mac/vapoursynth/librife.dylib ]]; then
+    for p in "$mac"/sources/buttereye-vs-rife-ncnn-*.patch; do
+        [[ -f $p ]] || { stale+=("the RIFE patches (none recorded)"); break; }
+        cmp -s "$p" "$repo/packaging/plugins/${p##*/}" || stale+=("packaging/plugins/${p##*/}")
+    done
+fi
+if ((${#stale[@]})); then
+    echo "$mac was built from other sources than this tree's (${stale[*]});" \
+         "run build-plugins.sh again" >&2
+    exit 1
+fi
 
 # ---------------------------------------------------------------- 2. downloads
 py_tgz=$(fetch "$PYTHON_URL" "$PYTHON_SHA256")

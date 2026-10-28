@@ -44,9 +44,9 @@ Requires:       ibm-plex-mono-fonts
 Requires:       redhat-display-fonts
 # MVTools is the only path without a GPU
 Requires:       buttereye-vs-mvtools
-Recommends:     buttereye-vs-rife-ncnn
+Recommends:     buttereye-vs-rife-ncnn >= 9.33-3
 # the live engine where RIFE can't keep up (4K at high rates)
-Recommends:     buttereye-vs-mvgpu
+Recommends:     buttereye-vs-mvgpu >= 0.0.2
 Recommends:     buttereye-rife-ncnn-models
 Recommends:     mkvtoolnix
 Recommends:     ffms2

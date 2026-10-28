@@ -105,7 +105,7 @@ def linux_rife_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     RIFE is the right default. Pinned, because this suite also runs on a Mac,
     where ``decide.rife_live_needs_proof`` says otherwise (tested in
     tests/core/test_macos_doctor_pure.py)."""
-    monkeypatch.setattr(select_mod.decide, "rife_live_needs_proof", lambda: False)
+    monkeypatch.setattr(select_mod.decide, "rife_live_needs_proof", lambda _dev: False)
 
 
 @pytest.fixture

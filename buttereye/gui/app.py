@@ -93,9 +93,15 @@ def parse_args(args: Sequence[str], env: Mapping[str, str]) -> tuple[argparse.Na
     parser.add_argument("--classic", action="store_true", help=argparse.SUPPRESS)
     ns, rest = parser.parse_known_args(list(args))
     # videos to play ("Open with ButterEye", desktop Exec %F): existing files only, so
-    # the value of a Qt option (``-platform offscreen``) is never taken for a video
-    ns.files = [Path(a) for a in rest if not a.startswith("-") and Path(a).is_file()]
-    rest = [a for a in rest if a.startswith("-") or not Path(a).is_file()]
+    # the value of a Qt option (``-platform offscreen``) is never taken for a video.
+    # Absolute, because mpv and the core run with their own working folder and a
+    # name typed in a terminal ("buttereye-gui clip.mkv") means this one's.
+    ns.files = [
+        Path(a).expanduser().absolute()
+        for a in rest
+        if not a.startswith("-") and Path(a).expanduser().is_file()
+    ]
+    rest = [a for a in rest if a.startswith("-") or not Path(a).expanduser().is_file()]
     if ns.fake is not None and not dev_mode(env):
         parser.error(f"--fake needs {DEV_ENV}=1 (development only)")
     if ns.classic and not dev_mode(env):
@@ -129,7 +135,7 @@ def _xdg(env: Mapping[str, str], var: str, default: str) -> Path:
 
 def state_dir(env: Mapping[str, str]) -> Path:
     """``$XDG_STATE_HOME/buttereye``: where 0.0.5 kept both files on every
-    platform, and where Linux and Windows still do."""
+    platform, and where Linux still does."""
     return _xdg(env, "XDG_STATE_HOME", ".local/state") / "buttereye"
 
 
@@ -144,8 +150,9 @@ class GuiFiles(NamedTuple):
 
 def gui_dirs(env: Mapping[str, str]) -> GuiFiles:
     """``core.paths.gui_dirs`` through ``core.api``: ``~/Library`` on macOS,
-    ``state_dir`` elsewhere. A ``core.api`` that does not export it yet gets
-    what 0.0.5 answered, ``state_dir`` on every platform."""
+    ``%APPDATA%`` and ``%LOCALAPPDATA%`` on Windows, ``state_dir`` on Linux. A
+    ``core.api`` that does not export it yet gets what 0.0.5 answered,
+    ``state_dir`` on every platform."""
     found = getattr(core_api, "gui_dirs", None)
     if found is None:
         state = state_dir(env)
@@ -180,7 +187,7 @@ def _move(old: Path, new: Path) -> bool:
 
 def migrate_gui_files(dirs: GuiFiles) -> list[Path]:
     """Move ``gui.ini`` and ``gui.log``, ``.1`` to ``.4`` from where 0.0.5 kept
-    them (``dirs.legacy_*``, macOS only) to where they live now, before the log
+    them (``dirs.legacy_*``, macOS and Windows) to where they live now, before the log
     is opened. Each file moves once and only when nothing is at its new place;
     the old folders are removed when that leaves them empty. Never raises: a
     file that can't be moved stays where it was, and the GUI starts with a fresh
@@ -495,7 +502,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     moved = migrate_gui_files(dirs)
     log_path = setup_logging(dirs.log_file)
     if moved:
-        _log.info("moved the GUI's files to their macOS places: %s", ", ".join(map(str, moved)))
+        _log.info(
+            "moved the GUI's files from where 0.0.5 kept them: %s", ", ".join(map(str, moved))
+        )
     set_language(None)  # core gettext follows the environment, before any render()
     install_translators(app)
     theme.install(app)

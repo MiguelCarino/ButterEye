@@ -23,7 +23,9 @@ def _calls(bridge: Any) -> list[Any]:
 
 
 @pytest.fixture
-def panel(make_bridge: Any, qtbot: Any) -> Any:
+def panel(make_bridge: Any, qtbot: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    # the power box as a Mac builds it, with every preset, on any platform
+    monkeypatch.setattr(osapi, "IS_MACOS", True)
     bridge = make_bridge("all_ready")
     p = sp.SettingsPanel(bridge)
     qtbot.addWidget(p)
@@ -189,11 +191,42 @@ def test_the_battery_preset_writes_rules(panel: Any, qtbot: Any) -> None:
     assert saved.rules[2:] == cfg.rules
 
 
-def test_the_power_preset_is_shown_only_on_a_mac(
+@pytest.mark.parametrize(
+    ("mac", "battery", "shown"),
+    [(True, False, True), (True, True, True), (False, True, True), (False, False, False)],
+)
+def test_the_power_preset_is_shown_on_a_mac_or_with_a_battery(
+    make_bridge: Any,
+    qtbot: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    mac: bool,
+    battery: bool,
+    shown: bool,
+) -> None:
+    monkeypatch.setattr(osapi, "IS_MACOS", mac)
+    monkeypatch.setattr(osapi, "has_system_battery", lambda: battery)
+    p = sp.SettingsPanel(make_bridge("all_ready"))
+    qtbot.addWidget(p)
+    assert p.power_box.isVisibleTo(p) is shown
+    # only macOS says how hot it is, so only a Mac is offered the heat preset
+    assert (p.power.findData("cool") >= 0) is mac
+
+
+def test_heat_rules_from_a_mac_show_as_they_are(
     make_bridge: Any, qtbot: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for mac in (True, False):
-        monkeypatch.setattr(osapi, "IS_MACOS", mac)
-        p = sp.SettingsPanel(make_bridge("all_ready"))
-        qtbot.addWidget(p)
-        assert p.power_box.isVisibleTo(p) is mac
+    monkeypatch.setattr(osapi, "IS_MACOS", False)
+    monkeypatch.setattr(osapi, "has_system_battery", lambda: True)
+    p = sp.SettingsPanel(make_bridge("all_ready"))
+    qtbot.addWidget(p)
+    qtbot.waitUntil(lambda: p.load is not None, timeout=5000)
+    assert p.load is not None
+    cfg = p.load.config
+    load = dataclasses.replace(
+        p.load,
+        config=dataclasses.replace(cfg, rules=sp.with_power_rules(cfg.rules, "cool")),
+    )
+    p._show(load)
+    p._show(load)  # shown again: the item is not added twice
+    assert p.power.currentData() == "cool"
+    assert [p.power.itemData(i) for i in range(p.power.count())].count("cool") == 1

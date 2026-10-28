@@ -81,7 +81,7 @@ def _t(text: str) -> str:
 
 
 #: Software encoders: heavy on the CPU at the doubled frame rate.
-CPU_ENCODERS = frozenset({"libx265", "libsvtav1", "libx264"})
+CPU_ENCODERS = frozenset({"libx265", "libsvtav1", "libx264", "prores_ks"})
 #: Encoders that can write 10 bits (the core's ``render.probe.TEN_BIT_ENCODERS``)
 TEN_BIT_ENCODERS = frozenset(
     {"hevc_nvenc", "av1_nvenc", "hevc_videotoolbox", "libx265", "libsvtav1"}
@@ -94,6 +94,7 @@ def encoder_name(encoder: str) -> str:
         "av1_nvenc": _t("AV1 (NVIDIA GPU)"),
         "hevc_videotoolbox": _t("HEVC (Mac media engine)"),
         "prores_videotoolbox": _t("ProRes 422 HQ (Mac media engine, very large files)"),
+        "prores_ks": _t("ProRes 422 HQ (CPU, very large files)"),
         "libx265": _t("HEVC (CPU, x265)"),
         "libsvtav1": _t("AV1 (CPU, SVT-AV1)"),
         "libx264": _t("H.264 (CPU, x264)"),

@@ -65,10 +65,11 @@ SLIDER_SAVE_MS = 400
 #: the shipped profile the power preset switches to (``defaults.BATTERY_PROFILE_ID``)
 BATTERY_PROFILE = "battery"
 #: the rules each power preset puts first in ``[[rules]]``. "battery" is
-#: ``defaults.BATTERY_RULE``; "cool" adds the same profile while macOS reports
-#: the Mac as running hot (serious or worse, ``THERMAL_STATES[2]``), which on a
-#: fanless Air is when it starts slowing down. Off macOS the power state is
-#: unknown and reads as mains power at nominal temperature, so neither matches.
+#: ``defaults.BATTERY_RULE``, which matches on a discharging laptop on every
+#: platform; "cool" adds the same profile while macOS reports the Mac as running
+#: hot (serious or worse, ``THERMAL_STATES[2]``), which on a fanless Air is when
+#: it starts slowing down. Only macOS says how hot it is (elsewhere that reads as
+#: nominal), so "cool" is offered on a Mac only.
 POWER_RULES: dict[str, tuple[Rule, ...]] = {
     "off": (),
     "battery": (Rule(RuleMatch(on_battery=True), BATTERY_PROFILE),),
@@ -388,9 +389,10 @@ class SettingsPanel(QWidget):
         for text, key in (
             (self.tr("Always use my choice"), "off"),
             (self.tr("Use the Battery profile on battery"), "battery"),
-            (self.tr("Battery profile on battery or when the Mac runs hot"), "cool"),
         ):
             self.power.addItem(text, key)
+        if osapi.IS_MACOS:
+            self._add_cool()
         note = self._note(
             self.tr(
                 "The Battery profile smooths with GPU motion vectors at 2×, which uses "
@@ -405,9 +407,13 @@ class SettingsPanel(QWidget):
         bl.addLayout(row)
         bl.addWidget(note)
         self.power.activated.connect(lambda _i: self._power_changed())
-        # the power state is only read on macOS; elsewhere these rules never match
-        box.setVisible(osapi.IS_MACOS)
+        # on a machine with no battery the battery rule never matches; a Mac
+        # always gets the box, for heat
+        box.setVisible(osapi.IS_MACOS or osapi.has_system_battery())
         lay.addWidget(box)
+
+    def _add_cool(self) -> None:
+        self.power.addItem(self.tr("Battery profile on battery or when the Mac runs hot"), "cool")
 
     # ------------------------------------------------------------------ load
     def refresh(self) -> None:
@@ -448,7 +454,10 @@ class SettingsPanel(QWidget):
             self.compare.setChecked(g.compare == "split")
             self.even_pacing.setChecked(g.even_pacing)
             self.cadence_first.setChecked(g.cadence_first)
-            self.power.setCurrentIndex(self.power.findData(power_choice(load.config.rules)))
+            choice = power_choice(load.config.rules)
+            if self.power.findData(choice) < 0:
+                self._add_cool()  # rules written on a Mac: show them as they are
+            self.power.setCurrentIndex(self.power.findData(choice))
             # a rule naming a profile that is not there would not validate
             has_battery = any(p.id == BATTERY_PROFILE for p in load.config.profiles)
             self.power.setEnabled(has_battery)

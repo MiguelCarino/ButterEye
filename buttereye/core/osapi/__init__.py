@@ -59,12 +59,17 @@ Linux path everywhere the rows below do not say otherwise:
   and the children's environment is ``point_at_appimage``'s. Fedora's RPMs never
   meet any of it: their Python is ``/usr/bin/python3``.
 
-- power and heat: macOS says how hot it is, whether Low Power Mode is on and
-  whether it runs from a battery (``thermal_state``, ``low_power_mode``,
-  ``on_battery``, all three in one ``power_snapshot``), and can be kept from idle
-  sleep while ButterEye works (``keep_awake``, ``activity``). Linux and Windows
-  answer None and keep nothing awake: a rule that asks reads them as a cool
-  machine on mains power (``rules.py``).
+- power and heat: whether the machine runs from a battery and whether the
+  system's power saver is on (``on_battery``, ``low_power_mode``) come from IOKit
+  and Low Power Mode on macOS, ``GetSystemPowerStatus`` on Windows, and
+  ``/sys/class/power_supply`` and the ACPI platform profile on Linux. How hot it
+  is (``thermal_state``) only macOS says; Linux and Windows answer None there.
+  All three come in one ``power_snapshot``, and a rule reads an unknown as a cool
+  machine on mains power (``rules.py``). ``has_system_battery`` is whether there
+  is a battery at all. The machine is kept from idle sleep while ButterEye works:
+  ``caffeinate -w`` on macOS and a ``systemd-inhibit`` lock on Linux, both tied
+  to a process (``keep_awake``), and a power request on Windows and an
+  ``NSProcessInfo`` activity on macOS for as long as a job runs (``activity``).
 
 mypy checks all three: ``mypy --platform linux``, ``mypy --platform win32``
 and ``mypy --platform darwin``.
@@ -87,6 +92,7 @@ import stat
 import struct
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 from pathlib import Path
@@ -1336,28 +1342,186 @@ def ipc_peer(writer: asyncio.StreamWriter) -> tuple[int | None, bool] | None:
 
 
 # ======================================================================== power and heat
+#: ``/sys/class/power_supply/*/type`` values that are the wall (or a charger on a
+#: USB port): one of these online means the machine is not on its battery.
+#: ``USB_C``, ``USB_PD`` and the rest of the ``USB_*`` family are what kernels
+#: before 5.x reported for a USB charger, so any ``USB`` prefix counts.
+_LINUX_WALL_TYPES = frozenset({"Mains"})
+#: ``/sys/firmware/acpi/platform_profile`` values that are a power saver outright
+#: (the kernel's ``platform_profile_names``)
+_LINUX_SAVER_PROFILES = frozenset({"low-power"})
+#: values that are a power saver only on firmware that offers no ``low-power``:
+#: then the quietest profile is the one a saver applet picks
+_LINUX_QUIET_PROFILES = frozenset({"quiet", "cool"})
+#: values that are not a power saver
+_LINUX_FULL_PROFILES = frozenset({"balanced", "balanced-performance", "performance"})
+
+
+def _sys_root(sys_root: Path | None) -> Path:
+    if sys_root is not None:
+        return sys_root
+    from buttereye.core.hw import detect  # detect imports this module
+
+    return detect.SYS_ROOT
+
+
+def _read_sys(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="ascii", errors="replace").strip()
+    except OSError:
+        return None
+
+
+def _linux_supplies(sys_root: Path | None = None) -> list[tuple[str, str, Path]] | None:
+    """(type, scope, folder) of each power supply that powers the machine itself,
+    from ``<sys>/class/power_supply``: a ``Device`` scope (a wireless mouse's or a
+    controller's battery) and a ``UPS`` are left out. None when the folder cannot
+    be read; empty on a desktop."""
+    folder = _sys_root(sys_root) / "class" / "power_supply"
+    try:
+        entries = sorted(folder.iterdir())
+    except OSError:
+        return None
+    out: list[tuple[str, str, Path]] = []
+    for entry in entries:
+        kind = _read_sys(entry / "type")
+        scope = _read_sys(entry / "scope") or "Unknown"
+        if kind is None or kind == "UPS" or scope == "Device":
+            continue
+        out.append((kind, scope, entry))
+    return out
+
+
+def _linux_on_battery(sys_root: Path | None = None) -> bool | None:
+    """Linux: is this machine running from its battery? Pure but for reading
+    ``<sys>/class/power_supply`` (``hw.detect.SYS_ROOT`` unless given).
+
+    False as soon as a wall supply (``Mains``, ``USB``, ``USB_C`` ...) is online,
+    whatever a battery says: a battery that is full, held at a charge limit or
+    between charges reads ``Not charging`` or ``Unknown`` on mains. Otherwise True
+    when a system battery is ``Discharging`` and False when it is not. None
+    without a system battery (a desktop) or when nothing can be read."""
+    supplies = _linux_supplies(sys_root)
+    if not supplies:
+        return None
+    batteries: list[Path] = []
+    for kind, _scope, entry in supplies:
+        if kind in _LINUX_WALL_TYPES or kind.startswith("USB"):
+            if _read_sys(entry / "online") == "1":
+                return False
+        elif kind == "Battery":
+            batteries.append(entry)
+    if not batteries:
+        return None
+    return any(_read_sys(b / "status") == "Discharging" for b in batteries)
+
+
+def _linux_has_battery(sys_root: Path | None = None) -> bool:
+    """Linux: does a battery power this machine (not a mouse's, not a UPS)?"""
+    return any(kind == "Battery" for kind, _s, _e in _linux_supplies(sys_root) or ())
+
+
+def _linux_low_power(sys_root: Path | None = None) -> bool | None:
+    """Linux: is the ACPI platform profile a power saver
+    (``<sys>/firmware/acpi/platform_profile``, what GNOME's and KDE's power
+    profile switch sets on most laptops)? ``low-power`` is; ``quiet`` and
+    ``cool`` are only on firmware that has no ``low-power`` among its
+    ``platform_profile_choices``; ``balanced`` and ``performance`` are not.
+    None without the file (a desktop, or a laptop whose saver is only
+    power-profiles-daemon's own setting) and for ``custom`` or a value this
+    does not know."""
+    acpi = _sys_root(sys_root) / "firmware" / "acpi"
+    profile = _read_sys(acpi / "platform_profile")
+    if profile is None:
+        return None
+    if profile in _LINUX_SAVER_PROFILES:
+        return True
+    if profile in _LINUX_QUIET_PROFILES:
+        choices = (_read_sys(acpi / "platform_profile_choices") or "").split()
+        return "low-power" not in choices
+    if profile in _LINUX_FULL_PROFILES:
+        return False
+    return None
+
+
+def _win_power() -> tuple[int, int, int] | None:
+    """Windows: ``GetSystemPowerStatus``'s (ACLineStatus, BatteryFlag,
+    SystemStatusFlag), or None when it fails."""
+    if sys.platform == "win32":
+        return w.power_status()
+    return None
+
+
+#: ``SYSTEM_POWER_STATUS.BatteryFlag``: 128 no system battery, 255 unknown
+_WIN_NO_BATTERY = frozenset({128, 255})
+
+
+def _win_on_battery(status: tuple[int, int, int] | None) -> bool | None:
+    """Windows: ``ACLineStatus`` 0 (offline) is on battery, 1 is on mains, 255
+    is not known; None too when there is no system battery or Windows does not
+    know its state (``BatteryFlag`` 128 or 255). Pure."""
+    if status is None:
+        return None
+    ac_line, battery_flag, _saver = status
+    if battery_flag in _WIN_NO_BATTERY:
+        return None
+    return {0: True, 1: False}.get(ac_line)
+
+
+def _win_low_power(status: tuple[int, int, int] | None) -> bool | None:
+    """Windows: is Battery Saver (Windows 10) or Energy Saver (Windows 11) on
+    (bit 0 of ``SystemStatusFlag``)? Windows before 10 leaves the field 0, which
+    reads as off. Pure."""
+    if status is None:
+        return None
+    return bool(status[2] & 1)
+
+
 def thermal_state() -> int | None:
     """How hot macOS says this Mac is: 0 nominal, 1 fair, 2 serious, 3 critical
     (``NSProcessInfo.thermalState``; ``types.THERMAL_STATES`` names them). None
-    on Linux and Windows, and when macOS does not answer."""
+    on Linux and Windows, which have no such scale, and when macOS does not
+    answer."""
     if sys.platform == "darwin":
         return d.thermal_state()
     return None
 
 
 def low_power_mode() -> bool | None:
-    """Is macOS's Low Power Mode on? None on Linux and Windows."""
+    """Is the system's power saver on? macOS's Low Power Mode, Windows' Battery
+    Saver or Energy Saver, and on Linux an ACPI platform profile of
+    ``low-power`` (``_linux_low_power``). None when it cannot be read."""
     if sys.platform == "darwin":
         return d.low_power_mode()
-    return None
+    if sys.platform == "win32":
+        return _win_low_power(_win_power())
+    return _linux_low_power()
 
 
 def on_battery() -> bool | None:
-    """Is this machine running from a battery (IOKit's providing power source)?
-    None on Linux and Windows, and when it cannot be read."""
+    """Is this machine running from a battery? IOKit's providing power source on
+    macOS, ``GetSystemPowerStatus`` on Windows, ``/sys/class/power_supply`` on
+    Linux (``_linux_on_battery``). None when it cannot be read, and off macOS on
+    a machine without a battery."""
     if sys.platform == "darwin":
         return d.on_battery()
-    return None
+    if sys.platform == "win32":
+        return _win_on_battery(_win_power())
+    return _linux_on_battery()
+
+
+def has_system_battery() -> bool:
+    """Does a battery power this machine, so that ``on_battery`` can ever be
+    True? For what the GUI offers: ``on_battery() is not None`` is not the
+    question, because macOS answers False on mains on a Mac mini too. On macOS
+    this is whether a power source can be read at all, which is every Mac; the
+    settings offer the power preset on every Mac anyway, for heat."""
+    if sys.platform == "darwin":
+        return d.on_battery() is not None
+    if sys.platform == "win32":
+        status = _win_power()
+        return status is not None and status[1] not in _WIN_NO_BATTERY
+    return _linux_has_battery()
 
 
 def power_snapshot() -> PowerSnapshot:
@@ -1365,8 +1529,9 @@ def power_snapshot() -> PowerSnapshot:
 
     Cheap enough to ask whenever a decision is made: on the dev Mac all three
     together take about 0.1 ms (two Objective-C messages and one IOKit call that
-    asks powerd), so nothing caches them and an answer is never stale. Every
-    field is None off macOS."""
+    asks powerd); on Linux they are a few small reads in ``/sys``, on Windows one
+    ``GetSystemPowerStatus`` each. So nothing caches them and an answer is never
+    stale. ``thermal`` is None off macOS."""
     from buttereye.core.types import PowerSnapshot  # types imports this module
 
     return PowerSnapshot(
@@ -1374,35 +1539,99 @@ def power_snapshot() -> PowerSnapshot:
     )
 
 
-def keep_awake(pid: int) -> subprocess.Popen[bytes] | None:
-    """Keep macOS from idle-sleeping until ``pid`` exits: ``caffeinate -i -w <pid>``.
+#: Linux: what holds the sleep lock, by full path, so an AppImage runs the host's
+#: (logind is the host's) rather than whatever ``PATH`` finds first
+SYSTEMD_INHIBIT = "/usr/bin/systemd-inhibit"
+#: what the lock waits on: ``tail --pid`` ends when that process does
+TAIL = "/usr/bin/tail"
+#: what ``systemd-inhibit --list`` shows for a render's lock
+INHIBIT_WHY = "Saving a smooth copy"
 
-    The caller owns the returned process and may end it early (``terminate``);
-    otherwise it exits by itself with ``pid``, so a ButterEye that crashes leaves
-    nothing holding the machine awake past the job it was watching. The display
-    still sleeps. None off macOS and when ``caffeinate`` cannot be started."""
+
+def inhibit_argv(pid: int) -> list[str]:
+    """Linux: ``systemd-inhibit`` holding an idle and sleep lock for as long as
+    ``tail --pid=<pid>`` runs, which is until ``pid`` exits. ``--mode=block``:
+    logind refuses to suspend while it is held, as ``caffeinate -i`` does on
+    macOS; the screen may still blank and lock."""
+    return [
+        SYSTEMD_INHIBIT, "--what=idle:sleep", "--mode=block", "--who=ButterEye",
+        f"--why={INHIBIT_WHY}", "--", TAIL, f"--pid={pid}", "-f", "/dev/null",
+    ]  # fmt: skip
+
+
+#: how long after it starts a lock that ends counts as refused (no logind)
+INHIBIT_CHECK_S = 2.0
+
+
+def _watch_inhibit(proc: subprocess.Popen[bytes], pid: int) -> None:
+    """Log when ``systemd-inhibit`` gives up at once (no logind, or no D-Bus to
+    reach it): the render goes on, but the machine may sleep under it. An end
+    by a signal is the caller's ``terminate``, not a refusal."""
+    try:
+        rc = proc.wait(timeout=INHIBIT_CHECK_S)
+    except subprocess.TimeoutExpired:
+        return
+    if rc > 0:
+        _log.warning(
+            "systemd-inhibit for pid %d exited at once (%d): the computer may sleep "
+            "during the render (is systemd-logind running?)",
+            pid, rc,
+        )  # fmt: skip
+
+
+def keep_awake(pid: int) -> subprocess.Popen[bytes] | None:
+    """Keep the machine from idle-sleeping until ``pid`` exits: on macOS
+    ``caffeinate -i -w <pid>``, on Linux a ``systemd-inhibit`` lock around
+    ``tail --pid=<pid>`` (``inhibit_argv``).
+
+    The caller owns the returned process and may end it early (``terminate``;
+    on Linux that ends ``tail`` as well and releases the lock); otherwise it
+    exits by itself with ``pid``, so a ButterEye that crashes leaves nothing
+    holding the machine awake past the job it was watching. The display still
+    sleeps. None on Windows (``begin_activity`` holds it there), and when the
+    program is missing or cannot be started."""
+    if IS_WINDOWS:
+        return None
     if sys.platform == "darwin":
-        try:
-            return subprocess.Popen(
-                d.caffeinate_argv(pid),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
-            )
-        except OSError as exc:
-            _log.warning("could not start caffeinate for pid %d: %s", pid, exc)
-    return None
+        argv, name = d.caffeinate_argv(pid), "caffeinate"
+    else:
+        if not os.path.exists(SYSTEMD_INHIBIT) or not os.path.exists(TAIL):
+            _log.info("no %s: the computer may sleep during the render", SYSTEMD_INHIBIT)
+            return None
+        argv, name = inhibit_argv(pid), "systemd-inhibit"
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except OSError as exc:
+        _log.warning("could not start %s for pid %d: %s", name, pid, exc)
+        return None
+    if sys.platform != "darwin":
+        threading.Thread(
+            target=_watch_inhibit, args=(proc, pid), name="inhibit-watch", daemon=True
+        ).start()
+    return proc
 
 
 def begin_activity(reason: str) -> int | None:
-    """Tell macOS this process is doing work the user asked for: no idle system
-    sleep and no App Nap until ``end_activity`` (``NSProcessInfo``
-    ``beginActivityWithOptions:reason:``, ``NSActivityUserInitiated``). ``reason``
-    is what ``pmset -g assertions`` shows. Returns a token for ``end_activity``,
-    or None (off macOS, or when macOS refused), which ``end_activity`` accepts."""
+    """Tell the system this process is doing work the user asked for, until
+    ``end_activity``. macOS: no idle system sleep and no App Nap
+    (``NSProcessInfo`` ``beginActivityWithOptions:reason:``,
+    ``NSActivityUserInitiated``); ``reason`` is what ``pmset -g assertions``
+    shows. Windows: no sleep, also on a Modern Standby laptop whose lid closes
+    (``PowerCreateRequest`` with ``SystemRequired`` and ``ExecutionRequired``);
+    ``reason`` is what ``powercfg /requests`` shows. Linux has nothing
+    per-process: ``keep_awake`` holds the lock there. Returns a token for
+    ``end_activity``, or None (on Linux, or when the system refused), which
+    ``end_activity`` accepts."""
     if sys.platform == "darwin":
         return d.begin_activity(reason)
+    if sys.platform == "win32":
+        return w.begin_activity(reason)
     return None
 
 
@@ -1412,6 +1641,8 @@ def end_activity(token: int | None) -> None:
         return
     if sys.platform == "darwin":
         d.end_activity(token)
+    elif sys.platform == "win32":
+        w.end_activity(token)
 
 
 @contextlib.contextmanager
@@ -1450,6 +1681,8 @@ __all__ = [
     "activity",
     "begin_activity",
     "end_activity",
+    "has_system_battery",
+    "inhibit_argv",
     "keep_awake",
     "low_power_mode",
     "on_battery",

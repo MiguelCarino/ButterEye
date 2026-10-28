@@ -459,16 +459,19 @@ THERMAL_STATES: tuple[str, ...] = ("nominal", "fair", "serious", "critical")
 @dataclass(frozen=True, slots=True)
 class PowerSnapshot:
     """What the machine says about its power and heat (``osapi.power_snapshot``).
-    None = not known: always off macOS."""
+    None = not known: on a machine without a battery, and ``thermal`` always off
+    macOS."""
 
     on_battery: bool | None = None
-    low_power: bool | None = None  # macOS Low Power Mode
-    thermal: int | None = None  # index into THERMAL_STATES
+    #: the system's power saver: macOS Low Power Mode, Windows Battery Saver or
+    #: Energy Saver, a Linux ``low-power`` platform profile
+    low_power: bool | None = None
+    thermal: int | None = None  # index into THERMAL_STATES; macOS only
 
     @property
     def constrained(self) -> bool:
-        """Running hot (serious or worse) or in Low Power Mode: the speed test's
-        answer is no longer what this machine can do."""
+        """Running hot (serious or worse) or with the power saver on: the speed
+        test's answer is no longer what this machine can do."""
         return self.low_power is True or (self.thermal is not None and self.thermal >= 2)
 
 

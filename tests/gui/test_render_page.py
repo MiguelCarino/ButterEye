@@ -286,10 +286,11 @@ def test_playback_notice_when_a_session_is_active(make_window: Any, qtbot: Any) 
 
 
 def test_playback_notice_says_what_the_platform_does() -> None:
-    assert "paused" in playback_notice_text("darwin")
-    assert "paused" in playback_notice_text("linux")
-    win = playback_notice_text("win32")
-    assert "lower CPU priority" in win and "paused" not in win
+    # Windows suspends the render's processes now, so every platform pauses it
+    texts = {p: playback_notice_text(p) for p in ("darwin", "linux", "win32")}
+    assert all("paused" in t for t in texts.values())
+    assert "lower CPU priority" not in texts["win32"]
+    assert len(set(texts.values())) == 1
 
 
 def test_a_failed_remux_can_be_finished(make_window: Any, qtbot: Any) -> None:

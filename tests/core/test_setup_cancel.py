@@ -131,7 +131,7 @@ def linux_rife_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     ``test_a_mac_setup_proposes_mvtools_and_smoke_tests_it`` below."""
     from buttereye.core.mpvctl import decide
 
-    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda: False)
+    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda _dev: False)
 
 
 @pytest.fixture
@@ -343,7 +343,7 @@ async def test_a_mac_setup_proposes_mvtools_and_smoke_tests_it(
     benchmark. Picking RIFE anyway is stored as the user's explicit choice."""
     from buttereye.core.mpvctl import decide
 
-    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda: True)
+    monkeypatch.setattr(decide, "rife_live_needs_proof", lambda _dev: True)
     tested: list[BackendId] = []
 
     async def smoke(paths: Paths, backend: BackendId, **kw: Any) -> SmokeOutcome:

@@ -42,17 +42,25 @@ session, sound, VA-API, and FUSE on a distribution's own setup.
 | VapourSynth | R81 | the official `manylinux_2_28_x86_64` wheel (it exists, so VapourSynth is not built) |
 | mpv | 0.41.0 | built: X11 and Wayland, each with OpenGL (EGL) and Vulkan contexts; VA-API (copy-back, through X11: not libva-wayland, which Debian and Ubuntu may lack) Vulkan and NVDEC decoding; ALSA, PulseAudio, Lua, **vapoursynth** |
 | libplacebo | 7.360.1 | built, static into mpv, OpenGL and Vulkan (7.351.0's Vulkan code generator fails under Python 3.14) |
-| glslang | 16.6.0 | built, static into mpv: libplacebo's SPIR-V compiler for Vulkan |
+| glslang | 16.6.0 | built, static into mpv: libplacebo's SPIR-V compiler for Vulkan; since 0.0.6 its `glslang` program is built too, for mvgpu's shaders, and not carried |
 | Wayland, wayland-protocols | 1.26.0, 1.49 | built for mpv's build only (headers, wayland-scanner, protocol XML); libwayland itself is the host's |
-| FFmpeg | 8.1.3 | built, shared, `--enable-gpl` (x264, x265), dav1d, SVT-AV1 (HDR10 render: x265 or SVT-AV1), zlib, iconv, VA-API via libdrm, Vulkan and NVDEC (headers only: it dlopens the host's Vulkan loader and NVIDIA's libcuda/libnvcuvid; nv-codec-headers n12.1.14.1, NVIDIA driver 530.41 or newer); nothing auto-detected |
+| FFmpeg | 8.1.3 | built, shared, `--enable-gpl` (x264, x265), dav1d, SVT-AV1 (HDR10 render: x265 or SVT-AV1), zlib, iconv, VA-API via libdrm, Vulkan and NVDEC decoding and, since 0.0.6, NVENC encoding (`hevc_nvenc`, `av1_nvenc`; SDR only, HDR10 stays on x265 or SVT-AV1) - headers only: it dlopens the host's Vulkan loader and NVIDIA's libcuda/libnvcuvid/libnvidia-encode; nv-codec-headers n12.1.14.1, NVIDIA driver 530.41 or newer; nothing auto-detected |
 | dav1d | 1.5.4 | built, static into libavcodec |
 | SVT-AV1 | 4.1.0 | built from a pinned commit, static into libavcodec (Ubuntu 22.04's 0.9.0 predates the HDR10 options render passes) |
 | FFMS2 | 5.0 | built (compiled the way the Windows build does) |
 | MVTools | v29_2 | built from the RPM spec's tag and patch |
+| mvgpu | the repository's (`mvgpu/meson.build`) | since 0.0.6: built from `mvgpu/` with no changes, the same meson build as the RPM and the Mac app; links only the host's Vulkan loader and the C/C++ runtime |
 | libass, FriBidi, Lua 5.2, x264, x265 (with libnuma), FFTW, libXss/Xpresent/Xrandr/Xrender, xcb-util × 6 | Ubuntu 22.04's | copied from the build container's packages, each one's exact Debian version recorded |
 | AppImage runtime | type2-runtime 20251108 | static (no libfuse2 on the host), SHA-256 pinned |
 
-The engine is MVTools only: no RIFE, no mvgpu, no models.
+The engines are MVTools and, since 0.0.6, mvgpu (GPU, through the host's
+Vulkan driver): no RIFE and no models. The 0.0.6 additions - mvgpu and NVENC -
+are built and checked by `build-appimage.sh` and tested by `appimage_tests.py`
+(`nvenc`, `mvgpu`, and `packages.mvgpu` among the doctor rows that must be OK),
+but every measurement on this page is from the trial and the 0.0.5 build,
+before them. On a machine with no NVIDIA driver the NVENC encoders are listed
+but fail to open, and render's test encode keeps them out of the list; on one
+with no Vulkan device mvgpu loads but has nothing to run on, as with the RPM.
 
 **Base image: `ubuntu:22.04`, not manylinux_2_28.** The decision was measured
 rather than assumed: the PySide6 6.11.2 wheel is `manylinux_2_34`, so the AppImage
@@ -273,7 +281,9 @@ accommodates.
    AppImage again" now replaces every Fedora command - correct for what the
    AppImage carries, wrong for `packages.rife`, `packages.mvgpu` (a fresh copy
    still has neither) and `vulkan.icd` (the GPU driver is the host's). Left as
-   is for the trial; it wants per-row AppImage wording.
+   is for the trial; it wants per-row AppImage wording. Since then RIFE's row
+   says where RIFE is instead, and since 0.0.6 the AppImage carries mvgpu, so a
+   fresh copy is the right advice for that row.
 3. **Build-environment fixes, none of them source patches:** libplacebo's
    stub of the Vulkan API includes Vulkan headers even with Vulkan off (its
    `3rdparty/Vulkan-Headers` submodule is fetched); static libplacebo is C++
@@ -338,8 +348,9 @@ Before the AppImage could ship as an experimental download:
 3. the doctor's AppImage wording per row (2)
 4. ~~Wayland in mpv~~ - done the second way: mpv compiles against libwayland 1.26
    and runs with the host's (measured on one NVIDIA desktop, Hyprland)
-5. RIFE and mvgpu, if the AppImage is to be more than MVTools (both need the
-   host's Vulkan, which the allow-list already allows)
+5. RIFE, if the AppImage is to be more than MVTools and mvgpu (it needs the
+   host's Vulkan, which the allow-list already allows; mvgpu is carried since
+   0.0.6)
 6. a pinned Ubuntu snapshot, re-derived Qt notices, a signature, and update
    information (zsync) if updates are wanted
 7. a decision on the advertised floor: glibc 2.35 / Ubuntu 22.04 era

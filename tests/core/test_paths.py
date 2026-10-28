@@ -163,7 +163,7 @@ def test_xdg_dotdot_values_ignored_and_values_normalised(tmp_path: Path, xdg_lay
 def test_gui_files_stay_in_the_xdg_state_folder_off_macos(tmp_path: Path) -> None:
     from buttereye.core.paths import gui_dirs
 
-    d = gui_dirs(_env(tmp_path), macos=False)
+    d = gui_dirs(_env(tmp_path), macos=False, windows=False)
     assert d.settings_file == tmp_path / "state" / "buttereye" / "gui.ini"
     assert d.log_file == tmp_path / "state" / "buttereye" / "logs" / "gui.log"
     assert d.legacy_settings_file is None and d.legacy_log_file is None
@@ -195,8 +195,74 @@ def test_gui_files_are_pure(tmp_path: Path) -> None:
 
     env = _env(tmp_path, XDG_RUNTIME_DIR="relative/not-checked")
     gui_dirs(env, macos=True)
-    gui_dirs(env, macos=False)
+    gui_dirs(env, macos=False, windows=False)
+    gui_dirs(_win_env(tmp_path), macos=False, windows=True)
     assert not (tmp_path / "home").exists() and not (tmp_path / "state").exists()
+    assert not (tmp_path / "Roaming").exists() and not (tmp_path / "Local").exists()
+
+
+def _win_env(tmp_path: Path, **over: str) -> dict[str, str]:
+    """A Windows environment whose folders are absolute on the host running the
+    test, so ``_resolve_windows`` can be asked from Linux as well."""
+    env = {
+        "HOME": str(tmp_path / "home"),
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+        "USERPROFILE": str(tmp_path / "profile"),
+        "APPDATA": str(tmp_path / "Roaming"),
+        "LOCALAPPDATA": str(tmp_path / "Local"),
+    }
+    env.update(over)
+    return env
+
+
+def test_gui_files_live_beside_the_cores_on_windows_and_name_where_0_0_5_put_them(
+    tmp_path: Path,
+) -> None:
+    from buttereye.core.paths import _resolve_windows, gui_dirs
+    from buttereye.core.storage import locations
+    from buttereye.core.types import StorageKind
+
+    env = _win_env(tmp_path)
+    d = gui_dirs(env, macos=False, windows=True)
+    assert d.settings_file == tmp_path / "Roaming" / "ButterEye" / "gui.ini"
+    assert d.log_file == tmp_path / "Local" / "ButterEye" / "state" / "logs" / "gui.log"
+    # 0.0.5 used the Linux layout on Windows too
+    assert d.legacy_settings_file == tmp_path / "state" / "buttereye" / "gui.ini"
+    assert d.legacy_log_file == tmp_path / "state" / "buttereye" / "logs" / "gui.log"
+    # the same folders the core resolves, so Storage counts both
+    paths = _resolve_windows(env)
+    assert d.log_file.parent == paths.logs_dir
+    assert d.settings_file.parent == paths.config_file.parent
+    rows = {loc.kind: loc.path for loc in locations(paths)}
+    assert d.log_file.parent == rows[StorageKind.LOGS]
+    assert d.settings_file.parent == rows[StorageKind.CONFIG]
+
+
+@pytest.mark.parametrize(
+    ("unset", "where"),
+    [("APPDATA", "settings_file"), ("LOCALAPPDATA", "log_file")],
+)
+def test_windows_gui_files_fall_back_to_the_profile_like_the_core(
+    tmp_path: Path, unset: str, where: str
+) -> None:
+    """Without the variable both answers fall back to the same folder under
+    ``%USERPROFILE%``: the GUI never ends up somewhere the core does not look."""
+    from buttereye.core.paths import _resolve_windows, gui_dirs
+
+    env = _win_env(tmp_path)
+    del env[unset]
+    d = gui_dirs(env, macos=False, windows=True)
+    paths = _resolve_windows(env)
+    assert str(getattr(d, where)).startswith(str(tmp_path / "profile"))
+    assert d.log_file.parent == paths.logs_dir
+    assert d.settings_file.parent == paths.config_file.parent
+
+
+def test_macos_wins_when_both_platform_flags_are_set(tmp_path: Path) -> None:
+    from buttereye.core.paths import gui_dirs
+
+    d = gui_dirs(_win_env(tmp_path), macos=True, windows=True)
+    assert d.log_file == tmp_path / "home" / "Library" / "Logs" / "ButterEye" / "gui.log"
 
 
 @pytest.mark.skipif(not osapi.IS_MACOS, reason="the macOS answer is the platform default")

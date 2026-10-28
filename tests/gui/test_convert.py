@@ -43,7 +43,8 @@ def test_durations_and_names() -> None:
     assert cd.fmt_duration(120 * 60) == "about 2 h"
     assert cd.encoder_name("hevc_nvenc") == "HEVC (NVIDIA GPU)"
     assert cd.encoder_name("libsvtav1") == "AV1 (CPU, SVT-AV1)"
-    assert cd.encoder_name("prores_ks") == "prores_ks"
+    assert cd.encoder_name("prores_ks") == "ProRes 422 HQ (CPU, very large files)"
+    assert cd.encoder_name("hevc_vaapi") == "hevc_vaapi"  # unknown: its own name
 
 
 def test_targets_for_a_copy() -> None:
