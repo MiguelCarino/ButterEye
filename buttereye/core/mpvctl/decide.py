@@ -22,7 +22,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-from buttereye.core import osapi
+from buttereye.core import osapi, pixfmt
 from buttereye.core.paths import plugin_in
 from buttereye.core.types import (
     BackendId,
@@ -277,6 +277,17 @@ def source_facts(
     if fps is None or not isinstance(w, int) or not isinstance(h, int):
         return None
     display = props.get("display-fps")
+    # what mpv decoded to; hardware decoding names the surface ("cuda") there
+    # and the layout in hw-pixelformat. Recognition only: live output depth
+    # doesn't change
+    fmt = next(
+        (
+            str(f)
+            for f in (vp.get("pixelformat"), vp.get("hw-pixelformat"))
+            if f and pixfmt.known(str(f))
+        ),
+        "",
+    )
     return SourceFacts(
         fps=fps,
         width=w,
@@ -286,6 +297,8 @@ def source_facts(
         interlaced=interlaced(vp, props.get("video-frame-info")),
         path=path,
         vfr=False,
+        bits=pixfmt.depth(fmt),
+        chroma=pixfmt.chroma(fmt) if fmt else "",
     )
 
 

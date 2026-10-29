@@ -464,6 +464,8 @@ class GeneralSettings:
     compare: Literal["off", "split"] = "off"  # A/B view (Alt+c)
     even_pacing: bool = False  # mpv blending for a target the display paces unevenly
     cadence_first: bool = False  # "Match your display": even pacing before size
+    preload: bool = False  # "Start videos smooth": hold the first picture until smoothing is ready
+    preload_max_s: float = 10.0  # the longest hold, 2-30 s
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,6 +473,7 @@ class RenderDefaults:
     encoder_by_vendor: Mapping[str, str] = field(default_factory=_empty)  # type: ignore[assignment]
     container: Literal["mkv"] = "mkv"
     audio: Literal["copy"] = "copy"
+    depth: ColourDepth = "source"  # "source" | "8" | "10" | "12"
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,6 +515,8 @@ class SourceFacts:
     interlaced: bool
     path: str
     vfr: bool = False
+    bits: int = 8  # from mpv's video-params pixelformat
+    chroma: str = ""  # "420" | "422" | "444" | "other"; "" = not known
 
 
 @dataclass(frozen=True, slots=True)
@@ -817,6 +822,10 @@ class RenderProbe:
     height: int = 0
     fps: Fraction | None = None
     sizes: tuple[RenderSize, ...] = ()  # source size first, then smaller ones
+    bits: int = 8  # the source's depth
+    chroma: str = "420"
+    pix_fmt: str = ""
+    encoder_depths: Mapping[str, tuple[int, ...]] = field(default_factory=_empty)  # type: ignore[assignment]
 
 
 @dataclass(frozen=True, slots=True)
@@ -829,7 +838,8 @@ class RenderJobSpec:
     target: Target | None = None  # None = the profile's; DISPLAY renders as 2x (§7.8)
     size: tuple[int, int] | None = None  # None = the source size (§7.8)
     engine: BackendId | None = None  # None = the core picks by time
-    ten_bit: bool = False  # 10-bit output for an 8-bit source
+    ten_bit: bool = False  # older choice: "10" when depth is None
+    depth: ColourDepth | None = None  # None = 10 with ten_bit, else the settings' default
 
 
 @dataclass(frozen=True, slots=True)
@@ -844,6 +854,7 @@ class RenderJobState:
     eta_s: float | None
     est_bytes: int | None
     error: "ButterEyeError | None"
+    bits: int | None = None  # the copy's depth, once settled
 
 
 @dataclass(frozen=True, slots=True)

@@ -46,6 +46,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from buttereye.core import capabilities, filelog, osapi
@@ -146,6 +147,7 @@ class _Job:
     kept: Path | None = None
     #: stopped (SIGSTOP, or suspended on Windows) while a video plays or a benchmark runs
     paused: bool = False
+    bits: int | None = None  # the copy's depth, once settled (pipeline.output_bits)
 
 
 @dataclass(slots=True)
@@ -171,6 +173,7 @@ def _snapshot(job: _Job) -> RenderJobState:
         eta_s=job.eta_s,
         est_bytes=job.est_bytes,
         error=job.error,
+        bits=job.bits,
     )
 
 
@@ -292,10 +295,51 @@ async def _hw_working(ffmpeg: str, listed: Sequence[str]) -> frozenset[str]:
     return found
 
 
-async def _encoders(tools: _Tools, *, hdr10: bool, nvidia: bool) -> tuple[str, ...]:
+#: (ffmpeg, its mtime, encoder) → the depths it writes (``rprobe.encoder_depths``)
+_DEPTHS: dict[tuple[str, int, str], tuple[int, ...]] = {}
+
+
+async def _one_encoder_depths(ffmpeg: str, mtime: int, encoder: str) -> tuple[int, ...]:
+    key = (ffmpeg, mtime, encoder)
+    found = _DEPTHS.get(key)
+    if found is not None:
+        return found
+    res = await run((ffmpeg, "-hide_banner", "-h", f"encoder={encoder}"), timeout_s=10.0)
+    formats = rprobe.parse_pixel_formats(res.stdout) if res.ok else ()
+    depths = rprobe.encoder_depths(encoder, formats)
+    keep = bool(formats)
+    if encoder in rprobe.HW_ENCODERS and 10 in depths and encoder not in rprobe.PRORES_ENCODERS:
+        # listed is not proof: a GPU without 10-bit encoding fails here
+        test = await run(pipeline.encoder_test_argv(ffmpeg, encoder, bits=10), timeout_s=15.0)
+        err = (test.stderr or "").strip()
+        if test.timed_out or any(m in err.lower() for m in _TRANSIENT_ENCODE_ERRORS):
+            keep = False  # maybe only busy now: asked again next time
+        elif not test.ok:
+            _log.info("%s doesn't encode 10 bits here: %s", encoder, err[-300:])
+            depths = tuple(d for d in depths if d < 10) or (8,)
+    if keep:
+        _DEPTHS[key] = depths
+    return depths
+
+
+async def _encoder_depths(ffmpeg: str, encoders: Sequence[str]) -> dict[str, tuple[int, ...]]:
+    """What each of ``encoders`` writes here: its "Supported pixel formats", once
+    per ffmpeg (``rprobe.encoder_depths``), and for a hardware encoder that lists
+    10 bits a test encode at 10."""
+    try:
+        mtime = os.stat(ffmpeg).st_mtime_ns
+    except OSError:
+        mtime = 0
+    known = [e for e in encoders if e in rprobe.KNOWN_ENCODERS]
+    found = await asyncio.gather(*(_one_encoder_depths(ffmpeg, mtime, e) for e in known))
+    return dict(zip(known, found, strict=True))
+
+
+async def _encoders(tools: _Tools, *, hdr10: bool, nvidia: bool, bits: int = 8) -> tuple[str, ...]:
     """``rprobe.usable_encoders`` from this ffmpeg's list, without hardware
     encoders that fail their test (only the ones this machine would be offered:
-    NVENC with an NVIDIA GPU, VideoToolbox on a Mac; HDR10 copies use neither)."""
+    NVENC with an NVIDIA GPU, VideoToolbox on a Mac; HDR10 copies use neither).
+    ``bits``: the source's depth; above 8 the encoders that keep it come first."""
     enc = await run((tools.ffmpeg, "-hide_banner", "-encoders"), timeout_s=10.0)
     listed = parse_encoders(enc.stdout) if enc.ok else ()
     if not hdr10:
@@ -305,7 +349,10 @@ async def _encoders(tools: _Tools, *, hdr10: bool, nvidia: bool) -> tuple[str, .
         candidates = [e for e in listed if e in offered]
         broken = set(candidates) - await _hw_working(tools.ffmpeg, candidates)
         listed = tuple(e for e in listed if e not in broken)
-    return rprobe.usable_encoders(listed, nvidia=nvidia, hdr10=hdr10, apple=osapi.IS_MACOS)
+    depths = await _encoder_depths(tools.ffmpeg, listed) if bits > 8 and not hdr10 else None
+    return rprobe.usable_encoders(
+        listed, nvidia=nvidia, hdr10=hdr10, apple=osapi.IS_MACOS, bits=bits, depths=depths
+    )
 
 
 async def _ffprobe(tools: _Tools, src: Path) -> Mapping[str, Any]:
@@ -817,7 +864,9 @@ async def probe(ctx: ProviderContext, src: Path, *, profile_id: str | None = Non
     report = ctx.last_report()
     nvidia = report is None or any(g.vendor == "NVIDIA" for g in report.hardware.gpus)
     hdr10 = info is not None and rprobe.renders_as_hdr10(info)
-    encoders = await _encoders(tools, hdr10=hdr10, nvidia=nvidia)
+    bits = info.bits if info is not None else 8
+    encoders = await _encoders(tools, hdr10=hdr10, nvidia=nvidia, bits=bits)
+    depths = await _encoder_depths(tools.ffmpeg, encoders)
     refusal = refusal_for(info, decoders, _ffms2_lib().exists()) or encoder_refusal(
         encoders, hdr10=hdr10
     )
@@ -894,6 +943,10 @@ async def probe(ctx: ProviderContext, src: Path, *, profile_id: str | None = Non
         height=info.height if info is not None else 0,
         fps=info.fps if info is not None else None,
         sizes=sizes,
+        bits=bits,
+        chroma=info.chroma if info is not None else "420",
+        pix_fmt=info.pix_fmt if info is not None else "",
+        encoder_depths=MappingProxyType(depths),
     )
 
 
@@ -1083,11 +1136,20 @@ def encode_key(
     size: tuple[int, int],
     lut: Path | None,
     profile: Profile | None = None,
+    *,
+    bits: int | None = None,
+    old_bits: int | None = None,
+    prores_4444: bool = False,
 ) -> str:
     """What an encoded video track depends on, apart from the engine: the source
     file as it is now, the encoder, the rate, the size, the bit depth, the LUT and
     the profile's smoothing (model, scene-cut threshold, content, edge smoothing).
-    A kept track (failed remux) is reused only for the same key."""
+    A kept track (failed remux) is reused only for the same key.
+
+    ``bits``, the copy's depth, is in the key only when it isn't ``old_bits``,
+    what the older 10-bit option gave (``legacy_bits``): a track kept before the
+    depth choice existed still matches. ``prores_4444`` marks a ProRes 4444
+    copy, which older jobs wrote as 422 HQ."""
     st = src.stat()
     lut_id = None
     if lut is not None:
@@ -1101,6 +1163,10 @@ def encode_key(
         "ten_bit": spec.ten_bit,
         "lut": lut_id,
     }
+    if bits is not None and bits != old_bits:
+        data["bits"] = bits
+    if prores_4444:
+        data["prores"] = "4444"
     if profile is not None:  # keys a profile-less copy never had stay out of its key
         data["profile"] = [
             profile.model,
@@ -1109,6 +1175,16 @@ def encode_key(
             profile.aa,
         ]
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:32]
+
+
+def legacy_bits(info: rprobe.SourceInfo, encoder: str, ten_bit: bool) -> int:
+    """The depth a copy got before the depth choice: 10 on the 10-bit
+    encoders for the 10-bit option, a deeper than 8-bit or an HDR10 source;
+    ProRes was always 10-bit."""
+    if encoder in rprobe.PRORES_ENCODERS:
+        return 10
+    wanted = ten_bit or info.bits > 8 or rprobe.renders_as_hdr10(info)
+    return 10 if wanted and encoder in rprobe.TEN_BIT_ENCODERS else 8
 
 
 def _find_kept(
@@ -1229,8 +1305,15 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
             lut = None  # a display-referred LUT would misread PQ values
         elif lut_name is not None and lut is None:
             jlog.info("%s: colour LUT %s not found; converting without it", src.name, lut_name)
-        ten_bit = spec.ten_bit
-        key = encode_key(src, spec, target, (w, h), lut, profile)
+        depth = pipeline.resolved_depth(spec, cfg.render.depth if cfg is not None else "source")
+        enc_depths = (await _encoder_depths(tools.ffmpeg, (spec.encoder,))).get(spec.encoder)
+        bits = pipeline.output_bits(info, spec.encoder, depth, enc_depths)
+        job.bits = bits
+        key = encode_key(
+            src, spec, target, (w, h), lut, profile,
+            bits=bits, old_bits=legacy_bits(info, spec.encoder, spec.ten_bit),
+            prores_4444=pipeline.prores_4444(info, spec.encoder),
+        )  # fmt: skip
         kept = _find_kept(ctx, out, key, wanted)
         est = rprobe.estimate_bytes(
             spec.encoder, (w, h), target, info.duration_s, src.stat().st_size
@@ -1306,6 +1389,9 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
                     dither="error_diffusion",
                     mv_pel=2,
                     trt=trt_settings,
+                    # the script writes this depth itself: RIFE's float output
+                    # is not cut to 8 bits first, a 12-bit source stays 12-bit
+                    out_bits=bits,
                 )
                 ud: dict[str, Any] = json.loads(user_data(params))
                 ud["source"] = {
@@ -1320,12 +1406,13 @@ async def _run(ctx: ProviderContext, job: _Job) -> None:
                     src.name, decide.fmt_rate(info.fps), decide.fmt_rate(target),
                     decide.BACKEND_NAMES.get(engine, engine.value),
                     f" {mc.name}" if mc is not None else "", w, h, info.width, info.height,
-                    spec.encoder, " 10-bit" if ten_bit else "",
+                    spec.encoder,
+                    " " + pipeline.depth_text(bits, pipeline.pix_fmt(info, spec.encoder, bits)),
                     f" with LUT {lut.name}" if lut is not None else "", os.fspath(out),
                 )  # fmt: skip
                 await _encode(
                     ctx, job, tools, script, ud, info, video_tmp, manifest, log, t0,
-                    requests=vspipe_requests(engine), ten_bit=ten_bit, lut=lut,
+                    requests=vspipe_requests(engine), bits=bits, lut=lut,
                 )  # fmt: skip
 
             # ---- remux: every other stream of the source
@@ -1586,7 +1673,7 @@ async def _encode(
     t0: float,
     *,
     requests: int | None = None,
-    ten_bit: bool = False,
+    bits: int | None = None,
     lut: Path | None = None,
 ) -> None:
     rfd, wfd = os.pipe()
@@ -1621,7 +1708,7 @@ async def _encode(
         )  # fmt: skip
         ff_proc = await asyncio.create_subprocess_exec(
             *pipeline.encode_argv(
-                tools.ffmpeg, job.spec.encoder, info, video_tmp, ten_bit=ten_bit, lut=lut
+                tools.ffmpeg, job.spec.encoder, info, video_tmp, bits=bits, lut=lut
             ),
             stdin=rfd,
             stdout=subprocess.DEVNULL,

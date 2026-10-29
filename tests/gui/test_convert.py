@@ -255,6 +255,11 @@ def test_dialog_probes_and_enqueues_the_choices(
     dlg.size_combo.setCurrentIndex(dlg.size_combo.findData("1280x720"))
     dlg.target_combo.setCurrentIndex(dlg.target_combo.findData("fps60"))
     dlg.format_combo.setCurrentIndex(dlg.format_combo.findData("libsvtav1"))
+    # the source's depth is shown, and "same as source" is the default
+    assert "· 8-bit 4:2:0 · SDR" in dlg.message.text()
+    assert dlg.depth_combo.currentText() == "Same as source (8-bit)"
+    assert not dlg.depth_note.isVisibleTo(dlg)
+    dlg.depth_combo.setCurrentIndex(dlg.depth_combo.findData("10"))
     dlg.save_button.click()
     qtbot.waitUntil(lambda: bool(calls(win, "render_enqueue")), timeout=5000)
     spec = calls(win, "render_enqueue")[-1].args[0]
@@ -266,6 +271,8 @@ def test_dialog_probes_and_enqueues_the_choices(
         overwrite=False,
         target=Target(TargetKind.FPS, Fraction(60)),
         size=(1280, 720),
+        depth="10",
+        ten_bit=True,  # what an older core reads
     )
     # the job shows up as a row and runs to Done
     qtbot.waitUntil(lambda: bool(win.job_rows), timeout=5000)
@@ -355,3 +362,94 @@ def test_cancel_a_running_copy(make_simple: Make, qtbot: Any) -> None:
     row.cancel_button.click()
     qtbot.waitUntil(lambda: bool(calls(win, "render_cancel")), timeout=5000)
     qtbot.waitUntil(lambda: row.job.state in (OpState.CANCELLED, OpState.SUCCEEDED), timeout=10000)
+
+
+# ---------------------------------------------------------------- colour depth
+def _depth_probe(pix_bits: int, chroma: str = "420", **extra: Any) -> Any:
+    import dataclasses
+
+    from buttereye.core.testing import scenarios as sc
+
+    return dataclasses.replace(
+        sc.render_probe(Path("/videos/film.mkv")),
+        bits=pix_bits,
+        chroma=chroma,
+        encoder_depths={
+            "hevc_nvenc": (8, 10),
+            "av1_nvenc": (8, 10),
+            "libx264": (8, 10),
+            "libx265": (8, 10, 12),
+            "libsvtav1": (8, 10),
+        },  # fmt: skip
+        **extra,
+    )
+
+
+def test_depth_combo_offers_what_the_encoder_writes(qtbot: Any) -> None:
+    import dataclasses
+
+    from PySide6.QtCore import Qt
+
+    from buttereye.gui.widgets.depth_combo import DepthCombo, depth_text
+
+    combo = DepthCombo(cd.encoder_name)
+    qtbot.addWidget(combo)
+    combo.set_probe(_depth_probe(12))
+    assert [combo.itemData(i) for i in range(combo.count())] == ["source", "8", "10", "12"]
+    assert combo.currentText() == "Same as source (12-bit)"
+    combo.set_encoder("libx265")
+    assert combo.bits() == 12 and combo.note() == ""
+    combo.set_encoder("hevc_nvenc")
+    twelve = combo.findData("12")
+    assert not combo.model().item(twelve).isEnabled()  # type: ignore[attr-defined]
+    tip = combo.itemData(twelve, Qt.ItemDataRole.ToolTipRole)
+    assert tip == "HEVC (NVIDIA GPU) writes at most 10 bits."
+    assert combo.bits() == 10
+    assert combo.note() == (
+        "This copy will be 10-bit; the source is 12-bit. HEVC (CPU, x265) keeps 12 bits."
+    )
+    # a disabled choice falls back to "same as source"
+    combo.set_encoder("libx265")
+    combo.setCurrentIndex(twelve)
+    combo.set_encoder("libsvtav1")
+    assert combo.choice() == "source"
+    # x264 keeps 8 bits of a 10-bit source unless 10 is chosen
+    combo.set_probe(_depth_probe(10))
+    combo.set_encoder("libx264")
+    assert combo.bits() == 8 and "choose 10-bit to keep it" in combo.note()
+    combo.setCurrentIndex(combo.findData("10"))
+    assert combo.bits() == 10 and combo.note() == ""
+    # 12-bit is offered only when the source or an encoder has it
+    combo.set_probe(_depth_probe(8))
+    assert combo.findData("12") >= 0  # x265 writes it here
+    ten_at_most = dict.fromkeys(("hevc_nvenc", "libx264"), (8, 10))
+    plain = dataclasses.replace(_depth_probe(8), encoder_depths=ten_at_most)
+    combo.set_probe(plain, "10")
+    assert combo.findData("12") < 0 and combo.choice() == "10"  # the settings' default
+    assert depth_text(10, "444") == "10-bit 4:4:4" and depth_text(8, "other") == "8-bit"
+
+
+def test_depth_combo_hdr10_keeps_ten_bits(qtbot: Any) -> None:
+    from PySide6.QtCore import Qt
+
+    from buttereye.core.api import HdrClass
+    from buttereye.gui.widgets.depth_combo import DepthCombo
+
+    combo = DepthCombo(cd.encoder_name)
+    qtbot.addWidget(combo)
+    combo.set_probe(_depth_probe(10, hdr_class=HdrClass.HDR10))
+    combo.set_encoder("libx265")
+    eight = combo.findData("8")
+    assert not combo.model().item(eight).isEnabled()  # type: ignore[attr-defined]
+    assert combo.itemData(eight, Qt.ItemDataRole.ToolTipRole) == (
+        "HDR10 copies keep at least 10 bits."
+    )
+
+
+def test_spec_extras_fall_back_to_ten_bit() -> None:
+    import dataclasses
+
+    known = {f.name for f in dataclasses.fields(RenderJobSpec)}
+    got = cd.spec_extras(depth="12", ten_bit=True)
+    assert set(got) == {"depth", "ten_bit"} & known
+    assert got.get("ten_bit") is True  # what a core without ``depth`` reads

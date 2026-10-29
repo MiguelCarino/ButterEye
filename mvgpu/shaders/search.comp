@@ -23,7 +23,7 @@ layout(std430, binding = 3) writeonly buffer Out { ivec2 vout[]; };
 // bs: block size; pscale: 2 when the parent is the next coarser level, 1 when it
 // is the same level with larger blocks (the 4x4 refinement of the 8x8 vectors),
 // 4 for the first motion (half = 1) level under a half-vector (half = 0) parent
-layout(push_constant) uniform P { uint off; int w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; } p;
+layout(push_constant) uniform P { uint off; int w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; float gdc; } p;
 // KIDS = 4: one workgroup per parent block does its 2x2 child blocks (the 4x4
 // refinement), which share the parent's candidate list: a quarter of the groups
 layout(constant_id = 1) const int KIDS = 1;
@@ -67,7 +67,7 @@ void main() {
             int x0 = bx * p.bs, y0 = by * p.bs;
             for (int j = 0; j < p.bs; ++j)
                 for (int i = 0; i < p.bs; ++i)
-                    s += abs(px_a(x0 + i - ua.x, y0 + j - ua.y) - px_c(x0 + i + uc.x, y0 + j + uc.y));
+                    s += abs(px_a(x0 + i - ua.x, y0 + j - ua.y) - px_c(x0 + i + uc.x, y0 + j + uc.y) - p.gdc);
             s += 0.002 * float(p.bs * p.bs) / 64.0 * len;
         }
         best[q * int(WG) + int(k)] = s;

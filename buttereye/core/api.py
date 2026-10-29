@@ -67,6 +67,7 @@ from buttereye.core.types import (
     Capabilities,
     CleanResult,
     CleanTarget,
+    ColourDepth,
     ComponentLicence,
     Config,
     ConfigIssue,
@@ -77,6 +78,7 @@ from buttereye.core.types import (
     Feature,
     FilterState,
     HardwareInfo,
+    HdrClass,
     InstanceCandidate,
     JobId,
     LegalNotices,
@@ -888,6 +890,20 @@ def pacing_notice(snap: SessionSnapshot) -> Msg | None:
     return decide.uneven_pacing_notice(target, hz)
 
 
+def copy_bits(probe: RenderProbe, encoder: str, depth: ColourDepth = "source") -> int:
+    """Pure. The depth a copy of ``probe``'s video is written with by ``encoder``
+    for the choice ``depth`` (``render.probe.pick_bits``): what the convert
+    windows show and the job then does."""
+    from buttereye.core.render import probe as rprobe
+
+    hdr10 = probe.hdr_class in (HdrClass.HDR10, HdrClass.HDR10PLUS) or (
+        probe.hdr_class is HdrClass.DV and probe.refusal is None
+    )
+    return rprobe.pick_bits(
+        probe.bits, encoder, depth, probe.encoder_depths.get(encoder), hdr10=hdr10
+    )
+
+
 def gui_dirs(env: Mapping[str, str]) -> GuiDirs:
     """Pure. The GUI's own settings and log files (``paths.gui_dirs``), from
     ``env`` alone, before the core is open: ``~/Library`` on macOS."""
@@ -924,6 +940,7 @@ __all__ = [
     "validate_config",
     "explain_rules",
     "gui_dirs",
+    "copy_bits",
     "import_lut",
     "pacing_notice",
     "snap_ntsc",

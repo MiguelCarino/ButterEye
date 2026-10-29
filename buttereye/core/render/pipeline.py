@@ -19,19 +19,22 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+from buttereye.core import pixfmt
 from buttereye.core.render.probe import (
     TEN_BIT_ENCODERS,
     SourceInfo,
     chroma_sample_location,
+    pick_bits,
     renders_as_hdr10,
     svtav1_hdr_params,
     x265_hdr_params,
 )
+from buttereye.core.types import ColourDepth, RenderJobSpec
 
 _FRAME_RE = re.compile(r"Frame:\s*(\d+)/(\d+)(?:\s*\(([\d.]+)\s*fps\))?")
 
-# quality settings per encoder, SDR (§7.5); 10-bit sources stay 10-bit when the
-# encoder can do it. Software presets are one step lighter than the encoders'
+# quality settings per encoder, SDR (§7.5); the depth is ``output_bits``.
+# Software presets are one step lighter than the encoders'
 # defaults: at the doubled frame rate x265 medium kept ~9 cores and SVT-AV1 6
 # ~8 cores busy; fast / 8 are ~1.5-2x lighter for files a few % larger at the
 # same CRF.
@@ -56,6 +59,9 @@ _TEN_BIT_PIX = {"hevc_nvenc": "p010le", "av1_nvenc": "p010le", "hevc_videotoolbo
 _MAIN10 = frozenset({"hevc_nvenc", "hevc_videotoolbox"})
 #: encoders with one fixed pixel format of their own
 _FIXED_PIX = {"prores_videotoolbox": "p210le", "prores_ks": "yuv422p10le"}
+#: ProRes 4444 on the CPU (profile 4), for 4:4:4 and deeper than 10-bit sources:
+#: its 12-bit coding keeps more of them than 422 HQ
+_PRORES_4444 = ("yuv444p10le", "4")
 
 #: ffprobe ``color_space`` → the matrix name of ffmpeg's scale filter
 _SCALE_MATRIX: Mapping[str, str] = {
@@ -95,20 +101,56 @@ def vspipe_argv(
     return [*argv, os.fspath(script), "-"]
 
 
+def resolved_depth(spec: RenderJobSpec, default: ColourDepth = "source") -> ColourDepth:
+    """The spec's depth choice: ``depth``, else "10" for the older ``ten_bit``
+    option, else ``default`` (the settings' ``RenderDefaults.depth``)."""
+    if spec.depth is not None:
+        return spec.depth
+    return "10" if spec.ten_bit else default
+
+
+def output_bits(
+    src: SourceInfo,
+    encoder: str,
+    depth: ColourDepth = "source",
+    depths: Sequence[int] | None = None,
+) -> int:
+    """The depth the copy is written with (``probe.pick_bits``): the source's or
+    the chosen one, at least 10 for HDR10, as the encoder can (``depths``, from
+    its ``ffmpeg -h encoder=`` answer). 10 bits on an 8-bit source means less
+    banding in gradients after encoding, at about the same speed."""
+    return pick_bits(src.bits, encoder, depth, depths, hdr10=renders_as_hdr10(src))
+
+
 def ten_bit_output(src: SourceInfo, encoder: str, *, ten_bit: bool = False) -> bool:
-    """Whether the copy is written with 10 bits: 10-bit and HDR10 sources stay
-    10-bit, and ``ten_bit`` asks for it on 8-bit ones (less banding in gradients
-    after encoding, at about the same speed), when the encoder can."""
-    wanted = ten_bit or src.bits > 8 or renders_as_hdr10(src)
-    return wanted and encoder in TEN_BIT_ENCODERS
+    """Whether the copy is written with 10 or more bits by one of the encoders
+    the older 10-bit option was offered for (``TEN_BIT_ENCODERS``)."""
+    depth: ColourDepth = "10" if ten_bit else "source"
+    return encoder in TEN_BIT_ENCODERS and output_bits(src, encoder, depth) > 8
 
 
-def _pix_fmt(src: SourceInfo, encoder: str, ten_bit: bool) -> str:
+def prores_4444(src: SourceInfo, encoder: str) -> bool:
+    """Whether the copy is ProRes 4444 (``_PRORES_4444``), not 422 HQ."""
+    return encoder == "prores_ks" and (src.bits > 10 or src.chroma == "444")
+
+
+def pix_fmt(src: SourceInfo, encoder: str, bits: int) -> str:
+    """The ``-pix_fmt`` for a copy written with ``bits`` (``output_bits``)."""
+    if prores_4444(src, encoder):
+        return _PRORES_4444[0]
     if encoder in _FIXED_PIX:
         return _FIXED_PIX[encoder]
-    if ten_bit_output(src, encoder, ten_bit=ten_bit):
+    if bits >= 12:
+        return "yuv420p12le"
+    if bits >= 10:
         return _TEN_BIT_PIX.get(encoder, "yuv420p10le")
     return "yuv420p"
+
+
+def depth_text(bits: int, pix: str) -> str:
+    """For the log: "10-bit 4:2:0"."""
+    layout = pixfmt.chroma_text(pixfmt.chroma(pix))
+    return f"{bits}-bit {layout}".strip()
 
 
 def filter_value(text: str) -> str:
@@ -150,14 +192,18 @@ def encode_argv(
     threads: int | None = None,
     ten_bit: bool = False,
     lut: Path | None = None,
+    bits: int | None = None,
 ) -> list[str]:
     """``ffmpeg`` reading vspipe's y4m and writing the video-only track.
-    ``ten_bit``: 10 bits for an 8-bit source (``ten_bit_output``); ``lut``: a
-    .cube file applied before encoding (SDR only: ``jobs`` never passes one for
-    an HDR10 copy, whose PQ values a display-referred LUT would misread)."""
+    ``bits``: the depth to write (``output_bits``); without it, ``ten_bit``
+    asks for 10 bits on an 8-bit source (the older option). ``lut``: a .cube
+    file applied before encoding (SDR only: ``jobs`` never passes one for an
+    HDR10 copy, whose PQ values a display-referred LUT would misread)."""
     argv = [ffmpeg, "-hide_banner", "-nostats", "-loglevel", "error", "-y"]
     argv += ["-f", "yuv4mpegpipe", "-i", "-"]
-    pix = _pix_fmt(src, encoder, ten_bit)
+    if bits is None:
+        bits = output_bits(src, encoder, "10" if ten_bit else "source")
+    pix = pix_fmt(src, encoder, bits)
     if lut is not None:
         argv += ["-vf", lut_filter(src, lut, pix)]
     for key in ("color_primaries", "color_trc", "colorspace", "color_range"):
@@ -174,8 +220,11 @@ def encode_argv(
         params = svtav1_hdr_params(src.hdr)
         if params:
             argv += ["-svtav1-params", params]
+    if prores_4444(src, encoder):  # in place of profile 3 (422 HQ)
+        i = argv.index("-profile:v", argv.index(encoder))
+        argv[i + 1] = _PRORES_4444[1]
     argv += ["-pix_fmt", pix]
-    if encoder in _MAIN10 and ten_bit_output(src, encoder, ten_bit=ten_bit):
+    if encoder in _MAIN10 and bits == 10:
         argv += ["-profile:v", "main10"]
     if threads:
         argv += ["-threads", str(threads)]
@@ -183,14 +232,19 @@ def encode_argv(
     return argv
 
 
-def encoder_test_argv(ffmpeg: str, encoder: str) -> list[str]:
+def encoder_test_argv(ffmpeg: str, encoder: str, *, bits: int = 8) -> list[str]:
     """A quarter second of a small test pattern through ``encoder`` with the
-    options a render passes, to nowhere: does it encode on this machine?"""
+    options a render passes, to nowhere: does it encode on this machine, and
+    with ``bits`` (a GPU without 10-bit encoding fails at 10)?"""
+    pix = _FIXED_PIX.get(encoder, "yuv420p")
+    if bits == 10 and encoder not in _FIXED_PIX:
+        pix = _TEN_BIT_PIX.get(encoder, "yuv420p10le")
+    profile = ["-profile:v", "main10"] if encoder in _MAIN10 and bits == 10 else []
     return [
         ffmpeg, "-hide_banner", "-nostdin", "-nostats", "-loglevel", "error",
         "-f", "lavfi", "-i", "testsrc2=s=256x144:r=24:d=0.25",
         "-c:v", encoder, *_ENCODER_ARGS.get(encoder, ()),
-        "-pix_fmt", _FIXED_PIX.get(encoder, "yuv420p"), "-f", "null", "-",
+        "-pix_fmt", pix, *profile, "-f", "null", "-",
     ]  # fmt: skip
 
 
@@ -326,6 +380,10 @@ __all__ = [
     "parse_progress",
     "vspipe_argv",
     "encode_argv",
+    "resolved_depth",
+    "output_bits",
+    "pix_fmt",
+    "depth_text",
     "ten_bit_output",
     "encoder_test_argv",
     "lut_filter",

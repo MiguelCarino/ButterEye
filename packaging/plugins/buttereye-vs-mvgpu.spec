@@ -5,7 +5,7 @@
 # (mvgpu/ plus the repository's COPYING).
 
 Name:           buttereye-vs-mvgpu
-Version:        0.0.2
+Version:        0.0.3
 Release:        1%{?dist}
 Summary:        GPU block motion-vector frame interpolation for VapourSynth (Vulkan)
 License:        AGPL-3.0-or-later
@@ -62,6 +62,11 @@ if [ -n "$unexpected" ]; then echo "unexpected libraries: $unexpected"; exit 1; 
 %{_libdir}/buttereye/vapoursynth/libmvgpu.so
 
 %changelog
+* Thu Oct 29 2026 The ButterEye contributors - 0.0.3-1
+- Where the vectors fail over an area the in-between frame fades to a blend;
+  a block vector replaces the smooth one only when clearly better, so film
+  grain no longer speckles; global brightness changes are compensated in the
+  search, median, subpel and select passes.
 * Wed Oct 28 2026 The ButterEye contributors - 0.0.2-1
 - Match odd-pixel motion: the symmetric search stored the half-vector as whole
   pixels, so pans of 1, 3 or 5 px a frame blurred or fell back to the nearer

@@ -623,6 +623,33 @@ async def test_setup_engine_choice_applies_to_builtin_rules(
     assert snap.model is None
 
 
+async def test_start_videos_smooth_holds_until_the_filter_runs(
+    live_env: Live, clip: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[general] preload: mpv starts paused, the helper holds it until the session
+    has verified the filter, then playback runs (the helper unpauses: pause is
+    not on ButterEye's allowlist)."""
+    if not (PLUGIN_DIR / MVTOOLS_SO).is_file():
+        pytest.skip("buttereye-vs-mvtools not installed")
+    base = _config()
+    cfg = dataclasses.replace(
+        base, general=dataclasses.replace(base.general, preload=True, preload_max_s=6.0)
+    )
+    mod = sys.modules["buttereye.core.profiles.config"]
+    monkeypatch.setattr(mod, "load", lambda paths: sc.config_load(cfg, revision="rev-pre"))
+    env = live_env
+    await env.core.load_config()
+    sid = await env.play(clip, "mv")
+    s = env.s(sid)
+    assert s.preloading and s.preload_s == 6.0
+    snap = await env.wait(sid, lambda x: x.filter is FilterState.ACTIVE, timeout=6.0 + 4.0)
+    assert snap.backend is BackendId.MVTOOLS and not s.preloading
+    assert await s.ipc.get("pause") is False
+    t0 = await s.ipc.get("playback-time")
+    await asyncio.sleep(0.5)
+    assert await s.ipc.get("playback-time") > t0, "playing, not held"
+
+
 async def test_detached_mpv_survives_core_gc(live_env: Live, clip: Path) -> None:
     """mpv's lifetime is decided at spawn (§4.10): dropping every ButterEye object
     that referred to it must not kill it."""

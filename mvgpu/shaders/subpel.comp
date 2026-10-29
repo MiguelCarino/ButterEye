@@ -14,7 +14,7 @@ layout(std430, binding = 0) readonly buffer PyrA { float pa[]; };
 layout(std430, binding = 1) readonly buffer PyrC { float pc[]; };
 layout(std430, binding = 2) readonly buffer Vin { ivec2 vin[]; };  // motion m = 2u (search.comp)
 layout(std430, binding = 3) writeonly buffer Vout { vec2 vout[]; };
-layout(push_constant) uniform P { uint off; int w, h, bw, bh, bs, steps; } p;
+layout(push_constant) uniform P { uint off; int w, h, bw, bh, bs, steps; float gdc; } p;  // gdc: mean A - C (search.comp)
 shared float sad[9][64];
 shared vec2 su[4];
 shared bool sdone[4];
@@ -47,7 +47,7 @@ void main() {
     ivec2 o = live ? ivec2(b % p.bw, b / p.bw) * p.bs + ivec2(pix % p.bs, pix / p.bs) : ivec2(0);
     vec2 q = vec2(o);
     vec2 u0 = live ? 0.5 * vec2(vin[b]) : vec2(0.0);
-    sad[0][t] = live ? abs(bil_a(q - u0) - bil_c(q + u0)) : 0.0;
+    sad[0][t] = live ? abs(bil_a(q - u0) - bil_c(q + u0) - p.gdc) : 0.0;
     barrier();
     reduce(t, n, 1);
     float bias = 1e-4 * float(n);
@@ -61,7 +61,7 @@ void main() {
         if (!skip)
             for (int j = 0; j < 9; ++j) {
                 vec2 v = c + step * vec2(j % 3 - 1, j / 3 - 1);
-                sad[j][t] = live && j != 4 ? abs(bil_a(q - v) - bil_c(q + v)) : 0.0;
+                sad[j][t] = live && j != 4 ? abs(bil_a(q - v) - bil_c(q + v) - p.gdc) : 0.0;
             }
         barrier();
         reduce(t, n, 9);

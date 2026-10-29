@@ -20,7 +20,6 @@ from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -36,6 +35,7 @@ from PySide6.QtWidgets import (
 from buttereye.core.api import (
     ButterEyeError,
     CapState,
+    ColourDepth,
     ConfigLoad,
     ErrorCode,
     Feature,
@@ -58,6 +58,7 @@ from buttereye.gui.context import GuiContext
 from buttereye.gui.dialogs.fit import FitDialog
 from buttereye.gui.widgets.banner import Banner
 from buttereye.gui.widgets.copy_field import CopyField
+from buttereye.gui.widgets.depth_combo import DepthCombo, depth_text
 from buttereye.gui.widgets.drop_zone import DropZone
 from buttereye.gui.widgets.op_row import human_bytes
 from buttereye.gui.widgets.state_panel import StatePanel, split_headline
@@ -67,19 +68,14 @@ _log = logging.getLogger(__name__)
 
 MKVTOOLNIX_INSTALL = install_command("mkvtoolnix")
 HDR10_ENCODERS = ("libx265", "libsvtav1")
-#: SCOPE §7.5 defaults, best first, after the configured per-vendor encoders.
-#: VideoToolbox HEVC is the Mac's: the media engine leaves the CPU to the
-#: smoothing (the core offers it only on macOS, after a test encode).
-SDR_DEFAULTS = ("hevc_nvenc", "hevc_vaapi", "hevc_videotoolbox", "libsvtav1")
 #: Software encoders: at the doubled frame rate they keep most CPU cores busy
 #: (x265 ~9 cores, SVT-AV1 ~8 on the dev box; NVENC under 1).
 CPU_ENCODERS = frozenset({"libx265", "libsvtav1", "libx264"})
-#: Encoders that can write 10 bits (the core's ``render.probe.TEN_BIT_ENCODERS``)
-TEN_BIT_ENCODERS = frozenset(
-    {"hevc_nvenc", "av1_nvenc", "hevc_videotoolbox", "libx265", "libsvtav1"}
-)
-#: the job spec carries the 10-bit choice (a core from before it doesn't)
-SPEC_TEN_BIT = "ten_bit" in {f.name for f in dataclasses.fields(RenderJobSpec)}
+_SPEC_FIELDS = {f.name for f in dataclasses.fields(RenderJobSpec)}
+#: the job spec carries the depth choice (a core from before it doesn't)
+SPEC_DEPTH = "depth" in _SPEC_FIELDS
+#: the older 10-bit choice, which a core from before ``depth`` still reads
+SPEC_TEN_BIT = "ten_bit" in _SPEC_FIELDS
 
 Confirm = Callable[[QWidget, str, str], bool]
 
@@ -96,16 +92,17 @@ def default_output(src: Path) -> Path:
 
 
 def pick_encoder(probe: RenderProbe, preferred: tuple[str, ...]) -> str | None:
-    """Default encoder among the probed ones (SCOPE §7.5)."""
+    """Default encoder among the probed ones (SCOPE §7.5): a configured
+    per-vendor one, else the probe's first. The core orders them
+    (``render.probe.usable_encoders``: hardware first, the ones that keep the
+    source's depth before the others, only x265 and SVT-AV1 for HDR10), as it
+    does for the convert window and the command line."""
     if not probe.encoders:
         return None
-    if probe.hdr_class in (HdrClass.HDR10, HdrClass.HDR10PLUS, HdrClass.DV):
-        order: tuple[str, ...] = HDR10_ENCODERS
-    else:
-        order = preferred + SDR_DEFAULTS
-    for e in order:
-        if e in probe.encoders:
-            return e
+    if probe.hdr_class not in (HdrClass.HDR10, HdrClass.HDR10PLUS, HdrClass.DV):
+        for e in preferred:
+            if e in probe.encoders:
+                return e
     return probe.encoders[0]
 
 
@@ -145,6 +142,7 @@ class RenderJobDialog(FitDialog):
         self.choose_output = self._default_choose_output
         self._profiles: tuple[Profile, ...] = ()
         self._preferred: tuple[str, ...] = ()
+        self._default_depth: ColourDepth = "source"
         self._block_reason = ""
         self._output_is_default = True
 
@@ -245,16 +243,25 @@ class RenderJobDialog(FitDialog):
         self.encoder_hint.setWordWrap(True)
         self.encoder_hint.setVisible(False)
         form.addRow(self.encoder_hint)
-        self.ten_bit = QCheckBox(self.tr("&10-bit colour"), content)
-        self.ten_bit.setObjectName("tenBit")
-        self.ten_bit.setToolTip(
+        self.depth_combo = DepthCombo(parent=content)
+        self.depth_combo.setObjectName("depth")
+        self.depth_combo.setToolTip(
             self.tr(
-                "Less banding in skies and dark gradients, at about the same speed and "
-                "size. 10-bit and HDR videos always stay 10-bit."
+                "10 bits shows less banding in skies and dark gradients than 8, at about "
+                "the same speed and size."
             )
         )
-        self.ten_bit.setVisible(SPEC_TEN_BIT)
-        form.addRow(self.ten_bit)
+        d_label, _ = labelled(self.tr("Colour &depth"), self.depth_combo)
+        form.addRow(d_label, self.depth_combo)
+        self.depth_combo.setVisible(SPEC_DEPTH or SPEC_TEN_BIT)
+        d_label.setVisible(SPEC_DEPTH or SPEC_TEN_BIT)
+        self.depth_note = QLabel(content)
+        self.depth_note.setObjectName("depthNote")
+        self.depth_note.setTextFormat(Qt.TextFormat.PlainText)
+        self.depth_note.setWordWrap(True)
+        self.depth_note.setVisible(False)
+        form.addRow(self.depth_note)
+        self.depth_combo.currentIndexChanged.connect(lambda _i: self._update_depth_note())
 
         out_row = QWidget(content)
         orl = QHBoxLayout(out_row)
@@ -303,6 +310,9 @@ class RenderJobDialog(FitDialog):
 
     def _on_config(self, load: ConfigLoad) -> None:
         self._preferred = tuple(load.config.render.encoder_by_vendor.values())
+        self._default_depth = load.config.render.depth
+        if self.probe is not None and self.depth_combo.choice() == "source":
+            self.depth_combo.set_probe(self.probe, self._default_depth)
         self.set_profiles(load.config.profiles)
 
     def _on_config_error(self, err: ButterEyeError) -> None:
@@ -359,6 +369,12 @@ class RenderJobDialog(FitDialog):
         if path != self.source:
             return  # a newer source was chosen meanwhile
         self.probe = probe
+        self.source_label.setText(
+            self.tr("Source: {path} ({depth})").format(
+                path=str(path), depth=depth_text(probe.bits, probe.chroma)
+            )
+        )
+        self.depth_combo.set_probe(probe, self._default_depth)
         self._show_hdr(probe)
         self._show_refusal(probe.refusal)
         self.vfr_label.setVisible(probe.vfr)
@@ -480,7 +496,8 @@ class RenderJobDialog(FitDialog):
     def _update_encoder_hint(self) -> None:
         """A software encoder at the doubled rate keeps most CPU cores busy: say so."""
         enc = self.encoder_combo.currentData()
-        self.ten_bit.setEnabled(enc in TEN_BIT_ENCODERS)
+        self.depth_combo.set_encoder(str(enc or ""))
+        self._update_depth_note()
         if enc not in CPU_ENCODERS:
             self.encoder_hint.setVisible(False)
             self.encoder_hint.clear()
@@ -499,6 +516,11 @@ class RenderJobDialog(FitDialog):
             )
         self.encoder_hint.setText(text)
         self.encoder_hint.setVisible(True)
+
+    def _update_depth_note(self) -> None:
+        note = self.depth_combo.note() if self.depth_combo.isVisibleTo(self) else ""
+        self.depth_note.setText(note)
+        self.depth_note.setVisible(bool(note))
 
     # ------------------------------------------------------------------ validation
     def hdr10_state(self) -> CapState | None:
@@ -579,9 +601,12 @@ class RenderJobDialog(FitDialog):
             return None
         out = self.output_path()
         assert out is not None
-        extra: dict[str, bool] = {}
-        if SPEC_TEN_BIT:
-            extra["ten_bit"] = self.ten_bit.isChecked() and self.ten_bit.isEnabled()
+        extra: dict[str, object] = {}
+        depth = self.depth_combo.choice()
+        if SPEC_DEPTH:
+            extra["depth"] = depth
+        if SPEC_TEN_BIT:  # what an older core reads
+            extra["ten_bit"] = depth in ("10", "12")
         return RenderJobSpec(
             source=self.source,
             output=out,

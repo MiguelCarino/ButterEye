@@ -5,9 +5,68 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
-## 0.0.7 — 2026-10-28
+## 0.0.7 — 2026-10-29
 
-A fix for smooth copies of files with names that are not plain English letters.
+Videos can start smooth instead of dropping frames for the first seconds, smooth
+copies keep the source's colour depth, fast pans are no longer held as scene
+cuts, and the GPU motion vectors no longer break into a mosaic under strobes and
+flashes. Smooth copies of files with non-ASCII names no longer fail.
+
+### Added
+
+- **Start videos smooth** (Settings → Even motion, off by default; `preload`
+  and `preload_max_s` under `[general]`). ButterEye starts mpv paused and holds
+  the first picture until smoothing is ready, so playback starts without the
+  burst of dropped frames a filter added mid-play causes (about 4 in 10 starts
+  logged "Dropping frames" in their first seconds). Measured on 7 videos from
+  1080p to 4K (GPU motion vectors 4–6×, MVTools 2×): 18–271 dropped frames in
+  the first 5 seconds without it, 0 with it. The hold was 1.8–2.3 seconds at
+  1080p and 2.9–4.8 at 4K, and is never longer than the limit (2–30 s, default
+  10). Pressing play during the hold starts at once; seeking is not affected.
+  Only for videos ButterEye opens itself. A playlist entry is not held when
+  smoothing is off or the video was paused, nor after ButterEye disconnects
+  from the player. A longer read-ahead (`demuxer-readahead-secs`) in your own
+  mpv.conf is kept.
+
+### Improved
+
+- **Fast pans are no longer mistaken for scene cuts.** A change between two
+  frames above the scene-cut threshold now counts as a cut only when MVTools'
+  own scene detection cannot follow the motion either, or when the change is
+  very large. Before, a fast camera move held a frame instead of smoothing it:
+  13 held frames in 8 seconds of a car chase, now 1. Real cuts are still found
+  (62 of 64 caught by the threshold alone, on 33,000 frames of film). All
+  engines; on a test clip with RIFE 24.6 → 25.8 dB. Costs under 0.5 ms a frame.
+  Without MVTools the threshold decides alone, as before. This also applies
+  to a Scene-cut sensitivity you set yourself: below 0.30, lowering it now finds
+  fewer extra cuts than before, as motion MVTools can follow is not a cut;
+  0.30 or more behaves as before.
+- **GPU motion vectors (mvgpu):** where the vectors fail over an area (strobes,
+  flashes, very fast motion) the in-between frame fades to a soft blend instead
+  of holes and mosaic; film grain no longer makes in-between frames speckled
+  and pulsing; and a global change in brightness no longer throws the motion
+  search off. Flicker on a 4K HDR clip 0.53 → 0.07, worst area on a concert
+  clip 0.27 → 0.53 (block SSIM). About 5% slower on the GPU alone.
+- **MVTools** searches a little wider and retries blocks that match badly:
+  +0.05 to +0.17 dB on every clip measured, at the same speed.
+- **Smooth copies keep the source's colour depth by default.** The "10-bit
+  colour" checkbox is now a **Colour depth** choice: "Same as source" (the
+  default, also `depth` under `[render]` in config.toml), 8, 10 or 12-bit, and
+  `buttereye render --depth`. Choices the encoder can't write are greyed out
+  with the reason, and a note says when a copy will keep fewer bits than the
+  source. What each encoder writes is read from ffmpeg itself.
+  - 12-bit videos stay 12-bit with x265 (RIFE cut them to 10, even the
+    original frames). x265 is offered first for them.
+  - 10-bit on an 8-bit video now has 10 bits of RIFE's in-between frames
+    (about 165 levels in a dark gradient instead of 44).
+  - A 10-bit copy of an 8-bit or 10-bit video with H.264 is possible; "Same as
+    source" stays 8-bit with H.264, which plays on more devices, and says so.
+  - The source's depth and chroma ("10-bit 4:2:0") are shown in the convert
+    windows and on the Sessions page; the Render page shows
+    "libx265 · 10-bit".
+  - 9-, 12-, 14- and 16-bit and NV12 videos were read with the wrong depth.
+  - ProRes copies are always 10-bit, as before (8-bit is not offered for
+    them), and a ProRes track kept by an earlier job is still reused.
 
 ### Fixed
 

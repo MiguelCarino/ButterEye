@@ -175,6 +175,12 @@ private:
     // mean |A - C| (0-1 luma) where blending starts to give way to the nearer
     // frame, and where it has fully; MVGPU_OCC="lo,hi" overrides (tuning)
     float occ_lo = 0.04f, occ_hi = 0.12f;
+    // mean mismatch over an area (render.comp) where the in-between frame fades
+    // to the plain blend; per-pixel margin a block vector needs over the smooth one
+    float fail_lo = 0.02f, fail_hi = 0.06f, sel_margin = 0.01f;
+    // each slot's mean luma (0-1): the pair's global brightness difference is
+    // taken out of every match (fades, flashes, a stage lighting up)
+    std::array<float, 2> smean{};
     std::array<VkDescriptorSet, 2> ds_unpack{}, ds_down2{};
     std::array<std::array<VkDescriptorSet, LEVELS>, 2> ds_search{};  // [order][level]
     std::array<std::array<VkDescriptorSet, LEVELS>, 2> ds_median{};  // [order][level]
@@ -510,14 +516,14 @@ void Gpu::init(int device) {
     // group sizes: powers of two >= the 17*17, 5*3*3 and 5*5*5 candidates
     p_unpack = pipeline(unpack_spv, sizeof(unpack_spv), 2, 20);
     p_down2 = pipeline(down2_spv, sizeof(down2_spv), 1, 24);
-    p_search_coarse = pipeline(search_spv, sizeof(search_spv), 4, 48, 512);
-    p_search_fine = pipeline(search_spv, sizeof(search_spv), 4, 48, 64);
-    p_search_full = pipeline(search_spv, sizeof(search_spv), 4, 48, 128);
-    p_search4 = pipeline(search_spv, sizeof(search_spv), 4, 48, 128, 4);
-    p_median = pipeline(median_spv, sizeof(median_spv), 4, 40);
-    p_subpel = pipeline(subpel_spv, sizeof(subpel_spv), 4, 28);
-    p_select = pipeline(select_spv, sizeof(select_spv), 4, 32);
-    p_render = pipeline(render_spv, sizeof(render_spv), 4, 36);
+    p_search_coarse = pipeline(search_spv, sizeof(search_spv), 4, 52, 512);
+    p_search_fine = pipeline(search_spv, sizeof(search_spv), 4, 52, 64);
+    p_search_full = pipeline(search_spv, sizeof(search_spv), 4, 52, 128);
+    p_search4 = pipeline(search_spv, sizeof(search_spv), 4, 52, 128, 4);
+    p_median = pipeline(median_spv, sizeof(median_spv), 4, 44);
+    p_subpel = pipeline(subpel_spv, sizeof(subpel_spv), 4, 32);
+    p_select = pipeline(select_spv, sizeof(select_spv), 4, 40);
+    p_render = pipeline(render_spv, sizeof(render_spv), 4, 44);
     p_pack = pipeline(pack_spv, sizeof(pack_spv), 2, 20);
 
     for (int s = 0; s < 2; ++s) {
@@ -633,6 +639,16 @@ void Gpu::load(int s, const VSFrame* f, const VSAPI* api) {
         ptrdiff_t stride = api->getStride(f, i);
         size_t row = size_t(p.w) * bytes;
         for (int y = 0; y < p.h; ++y) std::memcpy(dst + p.raw_off + y * row, src + y * stride, row);
+        if (i == 0) {  // mean luma from every 4th pixel of every 4th row
+            double sum = 0;
+            size_t cnt = 0;
+            for (int y = 0; y < p.h; y += 4) {
+                const uint8_t* r = src + y * stride;
+                for (int x = 0; x < p.w; x += 4, ++cnt)
+                    sum += bytes == 1 ? r[x] : reinterpret_cast<const uint16_t*>(r)[x];
+            }
+            smean[s] = float(sum / double(cnt) / double((1u << bits) - 1u));
+        }
     }
     auto t1 = Clock::now();
     begin();
@@ -693,6 +709,7 @@ int Gpu::render(int a, float t, bool new_vectors) {
             g->ring_free.notify_one();
         }
     } release{this, r};
+    const float gdc = smean[a] - smean[1 - a];  // A - C
     auto t0 = Clock::now();
     begin();
     if (new_vectors) {
@@ -701,37 +718,37 @@ int Gpu::render(int a, float t, bool new_vectors) {
             // level 0 (full size) stores the motion m = 2u: +-1 px of u is +-2 of m, around
             // 4 x the parent's u
             bool full = l == 0;
-            struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; } pc{
+            struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; float gdc; } pc{
                 loff[l], lw[l], lh[l], bw[l], bh[l],
                 coarse ? 1 : bw[l + 1], coarse ? 1 : bh[l + 1], coarse ? COARSE_RADIUS : full ? 2 : 1,
                 coarse ? 1 : 5,
-                BLOCK, full ? 4 : 2, full ? 1 : 0};
+                BLOCK, full ? 4 : 2, full ? 1 : 0, gdc};
             push(coarse ? p_search_coarse : full ? p_search_full : p_search_fine, ds_search[a][l], &pc, sizeof(pc));
             vkCmdDispatch(cmd, bw[l], bh[l], 1);
             barrier();
-            struct { uint32_t off; int32_t w, h, bw, bh, bs, half_units, mode; float rel, abs; } mc{
+            struct { uint32_t off; int32_t w, h, bw, bh, bs, half_units, mode; float rel, abs, gdc; } mc{
                 loff[l], lw[l], lh[l], bw[l], bh[l], BLOCK, full ? 1 : 0, full && checked_median ? 1 : 0, med_rel,
-                med_abs};
+                med_abs, gdc};
             push(p_median, ds_median[a][l], &mc, sizeof(mc));
             vkCmdDispatch(cmd, (bw[l] + 15) / 16, (bh[l] + 15) / 16, 1);
             barrier();
         }
         if (fine) {  // 4x4 blocks refine +-2 (motion units) around their 8x8 block's vector (same level)
-            struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; } pc{
-                loff[0], w, h, bw4, bh4, bw[0], bh[0], 2, 5, 4, 1, 1};
+            struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; float gdc; } pc{
+                loff[0], w, h, bw4, bh4, bw[0], bh[0], 2, 5, 4, 1, 1, gdc};
             push(p_search4, ds_search4[a], &pc, sizeof(pc));
             vkCmdDispatch(cmd, bw[0], bh[0], 1);  // a group per 8x8 block does its four 4x4 blocks
             barrier();
-            struct { uint32_t off; int32_t w, h, bw, bh, bs, half_units, mode; float rel, abs; } mc{
-                loff[0], w, h, bw4, bh4, 4, 1, checked_median ? 1 : 0, med_rel, med_abs};
+            struct { uint32_t off; int32_t w, h, bw, bh, bs, half_units, mode; float rel, abs, gdc; } mc{
+                loff[0], w, h, bw4, bh4, 4, 1, checked_median ? 1 : 0, med_rel, med_abs, gdc};
             push(p_median, ds_median4[a], &mc, sizeof(mc));
             vkCmdDispatch(cmd, (bw4 + 15) / 16, (bh4 + 15) / 16, 1);
             barrier();
         }
         // the final motion as float half-vectors, +-1/4 px of u where that matches better
         int sbw = fine ? bw4 : bw[0], sbh = fine ? bh4 : bh[0];
-        struct { uint32_t off; int32_t w, h, bw, bh, bs, steps; } spc{
-            loff[0], w, h, sbw, sbh, fine ? 4 : BLOCK, subpel_steps};
+        struct { uint32_t off; int32_t w, h, bw, bh, bs, steps; float gdc; } spc{
+            loff[0], w, h, sbw, sbh, fine ? 4 : BLOCK, subpel_steps, gdc};
         push(p_subpel, fine ? ds_subpel4[a] : ds_subpel[a], &spc, sizeof(spc));
         // a group per 8x8 block or per four 4x4 blocks, in rows of up to 1024 groups
         uint32_t sg = uint32_t(sbw * sbh + (fine ? 3 : 0)) / (fine ? 4 : 1);
@@ -739,16 +756,17 @@ int Gpu::render(int a, float t, bool new_vectors) {
         barrier();
     }
     {
-        struct { int32_t w, h, bw, bh; float t, lambda; int32_t smooth, bs; } sc{
-            w, h, fine ? bw4 : bw[0], fine ? bh4 : bh[0], t, 0.05f, select_vectors ? 0 : 1, fine ? 4 : BLOCK};
+        struct { int32_t w, h, bw, bh; float t, lambda; int32_t smooth, bs; float margin, gdc; } sc{
+            w, h, fine ? bw4 : bw[0], fine ? bh4 : bh[0], t, 0.05f, select_vectors ? 0 : 1, fine ? 4 : BLOCK,
+            sel_margin, gdc};
         push(p_select, ds_select[a], &sc, sizeof(sc));
         vkCmdDispatch(cmd, (w + 15) / 16, (h + 15) / 16, 1);
         barrier();
     }
     for (int i = 0; i < 3; ++i) {
         const Plane& p = planes[i];
-        struct { uint32_t off; int32_t w, h, lw, lh, sub; float t, lo, hi; } pc{
-            p.float_off, p.w, p.h, w, h, i ? 2 : 1, t, occ_lo, occ_hi};
+        struct { uint32_t off; int32_t w, h, lw, lh, sub; float t, lo, hi, fail_lo, fail_hi; } pc{
+            p.float_off, p.w, p.h, w, h, i ? 2 : 1, t, occ_lo, occ_hi, fail_lo, fail_hi};
         push(p_render, ds_render[a], &pc, sizeof(pc));
         vkCmdDispatch(cmd, (p.w + 15) / 16, (p.h + 15) / 16, 1);
     }

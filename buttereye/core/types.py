@@ -31,6 +31,10 @@ OpId = NewType("OpId", str)
 SessionId = NewType("SessionId", str)
 JobId = NewType("JobId", str)
 CandidateId = NewType("CandidateId", str)
+#: A copy's colour depth (``RenderDefaults.depth``, ``RenderJobSpec.depth``):
+#: the source's, or a number of bits (render.probe.pick_bits)
+ColourDepth = Literal["source", "8", "10", "12"]
+COLOUR_DEPTHS: tuple[ColourDepth, ...] = ("source", "8", "10", "12")
 
 
 def _empty() -> Mapping[str, str | int | float]:
@@ -38,6 +42,10 @@ def _empty() -> Mapping[str, str | int | float]:
 
 
 def _empty_str() -> Mapping[str, str]:
+    return MappingProxyType({})
+
+
+def _empty_depths() -> Mapping[str, tuple[int, ...]]:
     return MappingProxyType({})
 
 
@@ -522,6 +530,8 @@ DEBAND_PRESETS: Mapping[str, Mapping[str, int]] = MappingProxyType(
 )
 #: the file extension of an imported 3D LUT (``GeneralSettings.lut``)
 LUT_SUFFIX = ".cube"
+#: the longest ``GeneralSettings.preload_max_s`` hold, in seconds
+PRELOAD_RANGE: tuple[float, float] = (2.0, 30.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -583,6 +593,11 @@ class GeneralSettings:
     #: "Match your display" prefers a smaller size that paces evenly over 2x at
     #: the full size that doesn't
     cadence_first: bool = False
+    #: start videos paused until smoothing has produced its first frames, so
+    #: playback starts without the drops of a filter added mid-play; held at
+    #: most ``preload_max_s`` (PRELOAD_RANGE). Only for mpv ButterEye starts
+    preload: bool = False
+    preload_max_s: float = 10.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -590,6 +605,7 @@ class RenderDefaults:
     encoder_by_vendor: Mapping[str, str] = field(default_factory=_empty_str)
     container: Literal["mkv"] = "mkv"
     audio: Literal["copy"] = "copy"
+    depth: ColourDepth = "source"  # what the convert windows start on
 
 
 @dataclass(frozen=True, slots=True)
@@ -631,6 +647,8 @@ class SourceFacts:
     interlaced: bool
     path: str
     vfr: bool = False
+    bits: int = 8  # from mpv's video-params pixelformat (pixfmt.depth)
+    chroma: str = ""  # "420" / "422" / "444" / "other"; "" = not known
 
 
 @dataclass(frozen=True, slots=True)
@@ -938,6 +956,11 @@ class RenderProbe:
     height: int = 0
     fps: Fraction | None = None
     sizes: tuple[RenderSize, ...] = ()  # source size first, then smaller ones
+    bits: int = 8  # the source's depth (pixfmt.source_bits)
+    chroma: str = "420"  # "420" / "422" / "444" / "other"
+    pix_fmt: str = ""
+    #: what each of ``encoders`` writes (render.probe.encoder_depths)
+    encoder_depths: Mapping[str, tuple[int, ...]] = field(default_factory=_empty_depths)
 
 
 @dataclass(frozen=True, slots=True)
@@ -950,7 +973,8 @@ class RenderJobSpec:
     target: Target | None = None  # None = the profile's; DISPLAY renders as 2x (§7.8)
     size: tuple[int, int] | None = None  # None = the source size (§7.8)
     engine: BackendId | None = None  # None = the core picks by time (render.probe.pick_offline)
-    ten_bit: bool = False  # 10-bit output for an 8-bit source (render.pipeline.ten_bit_output)
+    ten_bit: bool = False  # older choice: "10" when depth is None (render.pipeline.resolved_depth)
+    depth: ColourDepth | None = None  # None = 10 with ten_bit, else the settings' default
 
 
 @dataclass(frozen=True, slots=True)
@@ -965,6 +989,7 @@ class RenderJobState:
     eta_s: float | None
     est_bytes: int | None
     error: ButterEyeError | None
+    bits: int | None = None  # the copy's depth, once the job has settled it
 
 
 @dataclass(frozen=True, slots=True)
@@ -1046,12 +1071,15 @@ class CommandHint:
 from buttereye.core.errors import ButterEyeError, ErrorCode  # noqa: E402
 
 __all__ = [
+    "COLOUR_DEPTHS",
+    "ColourDepth",
     "DEBAND_GRAIN_RANGE",
     "DEBAND_PRESETS",
     "LUT_SUFFIX",
     "OSD_ITEMS",
     "PICTURE_KEYS",
     "PICTURE_RANGE",
+    "PRELOAD_RANGE",
     "THERMAL_STATES",
     "OpId",
     "SessionId",

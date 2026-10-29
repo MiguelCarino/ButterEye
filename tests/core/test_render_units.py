@@ -751,3 +751,228 @@ def test_encode_key_follows_the_profiles_smoothing(tmp_path: Path) -> None:
     ):
         assert key(p) != key(dataclasses.replace(p, **change)), change
     assert key(None) == jobs.encode_key(src, spec, Fraction(48), (1920, 1080), None)
+
+
+# ---------------------------------------------------------------- colour depth
+#: ``ffmpeg -h encoder=libx265`` on Fedora with RPM Fusion (x265 4.1, 8/10/12-bit)
+X265_MULTI = """Encoder libx265 [libx265 H.265 / HEVC]:
+    General capabilities: dr1 delay threads
+    Threading capabilities: other
+    Supported pixel formats: yuv420p yuvj420p yuv422p yuvj422p yuv444p yuvj444p gbrp \
+yuv420p10le yuv422p10le yuv444p10le gbrp10le yuv420p12le yuv422p12le yuv444p12le gbrp12le \
+gray gray10le gray12le yuva420p yuva420p10le
+libx265 AVOptions:
+  -crf               <float>      E..V....... set the x265 crf (from -1 to FLT_MAX)
+"""
+#: the same from a build linked against an 8-bit-only libx265
+X265_EIGHT = """Encoder libx265 [libx265 H.265 / HEVC]:
+    General capabilities: dr1 delay threads
+    Supported pixel formats: yuv420p yuvj420p yuv422p yuvj422p yuv444p yuvj444p gbrp gray
+"""
+NVENC = (
+    "    Supported pixel formats: yuv420p nv12 p010le yuv444p p016le nv16 p210le p216le "
+    "yuv444p10msble yuv444p16le bgr0 bgra rgb0 rgba x2rgb10le x2bgr10le gbrp gbrp10msble "
+    "gbrp16le cuda\n"
+)
+X264 = (
+    "    Supported pixel formats: yuv420p yuvj420p yuv422p yuvj422p yuv444p yuvj444p nv12 "
+    "nv16 nv21 yuv420p10le yuv422p10le yuv444p10le nv20le gray gray10le\n"
+)
+
+
+def test_encoder_depths_come_from_the_supported_pixel_formats() -> None:
+    multi = rp.parse_pixel_formats(X265_MULTI)
+    assert multi[0] == "yuv420p" and "yuv420p12le" in multi and "libx265" not in multi
+    assert rp.encoder_depths("libx265", multi) == (8, 10, 12)
+    assert rp.encoder_depths("libx265", rp.parse_pixel_formats(X265_EIGHT)) == (8,)
+    # NVENC lists p016 and 16-bit 4:4:4 but encodes 10 bits at most
+    assert rp.encoder_depths("hevc_nvenc", rp.parse_pixel_formats(NVENC)) == (8, 10)
+    assert rp.encoder_depths("libx264", rp.parse_pixel_formats(X264)) == (8, 10)
+    prores = rp.parse_pixel_formats("Supported pixel formats: yuv422p10le yuv444p10le")
+    assert rp.encoder_depths("prores_ks", prores) == (10,)
+    # VideoToolbox lists what it reads, 8-bit included, but always writes p210le
+    vt = rp.parse_pixel_formats("Supported pixel formats: videotoolbox_vld nv12 yuv420p "
+                                "uyvy422 p010le nv16 p210le")  # fmt: skip
+    assert rp.encoder_depths("prores_videotoolbox", vt) == (10,)
+    assert rp.pick_bits(8, "prores_videotoolbox", "source", (10,)) == 10
+    # nothing readable: what every build of it writes
+    assert rp.parse_pixel_formats("Unknown encoder 'libx265'.") == ()
+    assert rp.encoder_depths("libx265", ()) == (8, 10)
+    assert rp.encoder_depths("libx264", ()) == (8,)
+
+
+def _src(pix: str, **extra: Any) -> rp.SourceInfo:
+    info = rp.source_info(_ffprobe(pix_fmt=pix, **extra))
+    assert info is not None
+    return info
+
+
+DEPTHS = {"libx265": (8, 10, 12), "libx264": (8, 10), "libsvtav1": (8, 10),
+          "hevc_nvenc": (8, 10), "prores_ks": (10,)}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("pix", "encoder", "depth", "bits"),
+    [
+        # same as source: 8 stays 8, 10 stays 10, 12 stays 12 where it can
+        ("yuv420p", "libx265", "source", 8),
+        ("yuv420p10le", "libx265", "source", 10),
+        ("yuv420p12le", "libx265", "source", 12),
+        ("yuv420p12le", "hevc_nvenc", "source", 10),
+        ("yuv420p12le", "libsvtav1", "source", 10),
+        ("yuv420p10le", "hevc_nvenc", "source", 10),
+        ("yuv420p10le", "libsvtav1", "source", 10),
+        # H.264 stays 8-bit unless 10 is chosen (High 10 plays on few devices)
+        ("yuv420p10le", "libx264", "source", 8),
+        ("yuv420p10le", "libx264", "10", 10),
+        ("yuv420p", "libx264", "10", 10),
+        ("yuv420p", "libx264", "12", 10),
+        # chosen depths
+        ("yuv420p", "libx265", "10", 10),
+        ("yuv420p", "libx265", "12", 12),
+        ("yuv420p10le", "libx265", "8", 8),
+        ("yuv420p", "hevc_nvenc", "12", 10),
+        # a 9-bit source goes up to 10, a 14-bit one down to 12
+        ("yuv420p9le", "libx265", "source", 10),
+        ("yuv420p14le", "libx265", "source", 12),
+        # ProRes is 10-bit whatever is chosen
+        ("yuv420p", "prores_ks", "8", 10),
+        ("yuv420p12le", "prores_ks", "source", 10),
+    ],
+)
+def test_output_bits(pix: str, encoder: str, depth: Any, bits: int) -> None:
+    assert pipeline.output_bits(_src(pix), encoder, depth, DEPTHS[encoder]) == bits
+
+
+def test_output_bits_hdr10_never_below_10() -> None:
+    hdr = _src("yuv420p", color_transfer="smpte2084", color_primaries="bt2020")
+    assert rp.renders_as_hdr10(hdr) and hdr.bits == 8  # an 8-bit PQ file exists
+    assert pipeline.output_bits(hdr, "libx265", "source", DEPTHS["libx265"]) == 10
+    assert pipeline.output_bits(hdr, "libx265", "8", DEPTHS["libx265"]) == 10
+    assert pipeline.output_bits(hdr, "libsvtav1", "12", DEPTHS["libsvtav1"]) == 10
+
+
+def test_pix_fmt_and_profile_follow_the_depth() -> None:
+    def args(pix: str, encoder: str, bits: int) -> list[str]:
+        return pipeline.encode_argv("ffmpeg", encoder, _src(pix), Path("/o/v.mkv"), bits=bits)
+
+    def value(argv: list[str], key: str) -> str | None:
+        return argv[argv.index(key) + 1] if key in argv else None
+
+    x265 = args("yuv420p12le", "libx265", 12)
+    assert value(x265, "-pix_fmt") == "yuv420p12le" and "-profile:v" not in x265
+    assert value(args("yuv420p10le", "libx265", 10), "-pix_fmt") == "yuv420p10le"
+    assert value(args("yuv420p10le", "libx265", 8), "-pix_fmt") == "yuv420p"
+    nvenc = args("yuv420p10le", "hevc_nvenc", 10)
+    assert value(nvenc, "-pix_fmt") == "p010le" and value(nvenc, "-profile:v") == "main10"
+    nvenc8 = args("yuv420p", "hevc_nvenc", 8)
+    assert value(nvenc8, "-pix_fmt") == "yuv420p" and "-profile:v" not in nvenc8
+    assert value(args("yuv420p", "av1_nvenc", 10), "-pix_fmt") == "p010le"
+    x264 = args("yuv420p10le", "libx264", 10)
+    assert value(x264, "-pix_fmt") == "yuv420p10le"  # High 10, chosen by x264 itself
+    assert value(args("yuv420p10le", "libsvtav1", 10), "-pix_fmt") == "yuv420p10le"
+    # without ``bits``: the older 10-bit option, as before
+    old = pipeline.encode_argv("ffmpeg", "libx265", _src("yuv420p"), Path("/o/v.mkv"))
+    assert value(old, "-pix_fmt") == "yuv420p"
+    assert pipeline.depth_text(10, "p010le") == "10-bit 4:2:0"
+
+
+def test_resolved_depth_keeps_the_older_ten_bit_choice(tmp_path: Path) -> None:
+    from buttereye.core.types import RenderJobSpec
+
+    spec = RenderJobSpec(tmp_path / "a.mkv", tmp_path / "b.mkv", "simple", "libx265")
+    assert pipeline.resolved_depth(spec) == "source"
+    assert pipeline.resolved_depth(spec, "10") == "10"  # the settings' default
+    old = dataclasses.replace(spec, ten_bit=True)
+    assert pipeline.resolved_depth(old) == "10"
+    assert pipeline.resolved_depth(dataclasses.replace(old, depth="12")) == "12"
+    assert pipeline.resolved_depth(dataclasses.replace(spec, depth="8"), "10") == "8"
+
+
+def test_encoders_that_keep_the_source_depth_come_first() -> None:
+    listed = ("libx264", "libx265", "libsvtav1", "hevc_nvenc", "av1_nvenc", "prores_ks")
+    eight = rp.usable_encoders(listed, nvidia=True, depths=DEPTHS)
+    assert eight == ("hevc_nvenc", "av1_nvenc", "libx265", "libsvtav1", "libx264", "prores_ks")
+    assert rp.usable_encoders(listed, nvidia=True, bits=10, depths=DEPTHS) == eight
+    # x264 goes after the rest; it already sits low, and ProRes stays last
+    no_gpu = rp.usable_encoders(("libx264", "prores_ks", "libx265"), nvidia=False, bits=10)
+    assert no_gpu == ("libx265", "libx264", "prores_ks")
+    only = rp.usable_encoders(("libx264", "libsvtav1"), nvidia=False, bits=10, depths=DEPTHS)
+    assert only == ("libsvtav1", "libx264")
+    # 12-bit: x265 first when it writes 12 bits, else the order stays
+    twelve = rp.usable_encoders(listed, nvidia=True, bits=12, depths=DEPTHS)
+    assert twelve == ("libx265", "hevc_nvenc", "av1_nvenc", "libsvtav1", "libx264", "prores_ks")
+    ten_only = {**DEPTHS, "libx265": (8, 10)}
+    assert rp.usable_encoders(listed, nvidia=True, bits=12, depths=ten_only) == eight
+    assert rp.keeps_depth(10, "libx265") and not rp.keeps_depth(10, "libx264", DEPTHS)
+    assert rp.keeps_depth(16, "libx265", DEPTHS)  # 12 is the most a copy keeps
+    # HDR10 order is unchanged
+    assert rp.usable_encoders(listed, nvidia=True, hdr10=True, bits=10) == (
+        "libx265", "libsvtav1",
+    )  # fmt: skip
+
+
+def test_source_info_depth_and_chroma() -> None:
+    twelve = _src("yuv420p12le")  # no bits_per_raw_sample, as HEVC has none
+    assert (twelve.bits, twelve.chroma, twelve.pix_fmt) == (12, "420", "yuv420p12le")
+    hi10 = _src("yuv420p10le", bits_per_raw_sample="10", codec_name="h264")
+    assert hi10.bits == 10
+    assert _src("nv12").bits == 8
+    full = _src("yuv444p10le")
+    assert (full.bits, full.chroma) == (10, "444")
+
+
+def test_encode_key_is_unchanged_where_the_depth_is(tmp_path: Path) -> None:
+    from buttereye.core.types import RenderJobSpec
+
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"x")
+    old = RenderJobSpec(src, tmp_path / "a.smooth.mkv", "simple", "libx265")
+    key = jobs.encode_key(src, old, Fraction(48), (1920, 1080), None)
+    # a job from before the depth choice made the same 8-bit track
+    info8 = _src("yuv420p")
+    legacy = jobs.legacy_bits(info8, "libx265", False)
+    assert legacy == 8
+    new = dataclasses.replace(old, depth="source")
+    same = jobs.encode_key(src, new, Fraction(48), (1920, 1080), None, bits=8, old_bits=legacy)
+    assert same == key
+    # 10-bit chosen on an 8-bit source: the older ten_bit key
+    ten = dataclasses.replace(old, ten_bit=True)
+    ten_key = jobs.encode_key(src, ten, Fraction(48), (1920, 1080), None)
+    assert jobs.legacy_bits(info8, "libx265", True) == 10
+    chosen = dataclasses.replace(ten, depth="10")
+    assert ten_key == jobs.encode_key(
+        src, chosen, Fraction(48), (1920, 1080), None, bits=10, old_bits=10
+    )
+    # a 12-bit source used to come out 10-bit: its 12-bit copy has a key of its own
+    info12 = _src("yuv420p12le")
+    assert jobs.legacy_bits(info12, "libx265", False) == 10
+    deep = jobs.encode_key(src, new, Fraction(48), (1920, 1080), None, bits=12, old_bits=10)
+    assert deep != key
+    # x264 for a 10-bit source chosen at 10 bits is new too
+    assert jobs.legacy_bits(_src("yuv420p10le"), "libx264", False) == 8
+
+
+def test_encode_key_of_a_prores_copy_is_unchanged(tmp_path: Path) -> None:
+    from buttereye.core.types import RenderJobSpec
+
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"x")
+    for encoder in ("prores_ks", "prores_videotoolbox"):
+        old = RenderJobSpec(src, tmp_path / "a.smooth.mov", "simple", encoder)
+        key = jobs.encode_key(src, old, Fraction(48), (1920, 1080), None)
+        # ProRes copies were always 10-bit, of an 8-bit source too
+        info8 = _src("yuv420p")
+        bits = pipeline.output_bits(info8, encoder, "source", (10,))
+        assert bits == 10 and jobs.legacy_bits(info8, encoder, False) == 10
+        new = dataclasses.replace(old, depth="source")
+        assert key == jobs.encode_key(
+            src, new, Fraction(48), (1920, 1080), None, bits=bits, old_bits=10
+        )
+    # a 12-bit source now gets ProRes 4444, not the 422 HQ track it got before
+    info12 = _src("yuv420p12le")
+    assert pipeline.prores_4444(info12, "prores_ks")
+    deep = jobs.encode_key(
+        src, new, Fraction(48), (1920, 1080), None, bits=10, old_bits=10, prores_4444=True
+    )
+    assert deep != jobs.encode_key(src, new, Fraction(48), (1920, 1080), None, bits=10, old_bits=10)

@@ -899,6 +899,13 @@ def test_unknown_picture_key_is_kept_under_its_table(paths: Paths) -> None:
         ('even_pacing = "yes"', "general.even_pacing", ("even_pacing", False)),
         ("cadence_first = true", None, ("cadence_first", True)),
         ("cadence_first = 1", "general.cadence_first", ("cadence_first", False)),
+        ("preload = true", None, ("preload", True)),
+        ('preload = "on"', "general.preload", ("preload", False)),
+        ("preload_max_s = 15", None, ("preload_max_s", 15.0)),
+        ("preload_max_s = 2.5", None, ("preload_max_s", 2.5)),
+        ("preload_max_s = 1", "general.preload_max_s", ("preload_max_s", 10.0)),
+        ("preload_max_s = 31", "general.preload_max_s", ("preload_max_s", 10.0)),
+        ("preload_max_s = true", "general.preload_max_s", ("preload_max_s", 10.0)),
     ],
 )
 def test_new_general_keys(
@@ -908,6 +915,19 @@ def test_new_general_keys(
     load = config.load(paths)
     assert [i.field for i in load.issues] == ([field] if field else [])
     assert getattr(load.config.general, value[0]) == value[1]
+
+
+def test_preload_round_trips_and_stays_out_by_default(paths: Paths) -> None:
+    assert "preload" not in schema.dumps_config(defaults.default_config())
+    cfg = defaults.default_config()
+    on = dataclasses.replace(
+        cfg, general=dataclasses.replace(cfg.general, preload=True, preload_max_s=15.0)
+    )
+    config.save(paths, on, expected_revision="")
+    doc = tomllib.loads(paths.config_file.read_text())
+    assert doc["general"]["preload"] is True and doc["general"]["preload_max_s"] == 15.0
+    load = config.load(paths)
+    assert load.issues == () and load.config.general == on.general
 
 
 def test_a_lut_path_does_not_block_saving(paths: Paths) -> None:
@@ -933,3 +953,22 @@ def test_aa_reads_writes_and_overrides_a_builtin(paths: Paths) -> None:
     # back to the shipped value: the override disappears
     reset = dataclasses.replace(load.config, profiles=defaults.builtin_profiles())
     assert "profiles" not in tomllib.loads(schema.dumps_config(reset))
+
+
+def test_render_depth_round_trips_and_stays_out_by_default(paths: Paths) -> None:
+    cfg = defaults.default_config()
+    config.save(paths, cfg, expected_revision="")
+    assert "depth" not in paths.config_file.read_text()  # older files stay as they were
+    assert config.load(paths).config.render.depth == "source"
+    ten = dataclasses.replace(cfg, render=dataclasses.replace(cfg.render, depth="10"))
+    rev = config.load(paths).revision
+    config.save(paths, ten, expected_revision=rev)
+    assert 'depth = "10"' in paths.config_file.read_text()
+    assert config.load(paths).config.render.depth == "10"
+    # hand-written: a number reads too, anything else is reported and ignored
+    _write(paths, "schema_version = 1\n[render]\ndepth = 12\n")
+    assert config.load(paths).config.render.depth == "12"
+    _write(paths, 'schema_version = 1\n[render]\ndepth = "16"\n')
+    load = config.load(paths)
+    assert load.config.render.depth == "source"
+    assert [i.field for i in load.issues] == ["render.depth"]

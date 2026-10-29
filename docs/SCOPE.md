@@ -249,7 +249,7 @@ Rules every generated script follows:
   - Convert YUV → RGBS/RGBH with an explicit `matrix_in` and range taken from `user_data`. mpv exports only the non-standard `_ColorSpace` and never `_Matrix`, `_Primaries` or `_Transfer`. Never hard-code 709.
 - **Output format.**
   - Convert back to planar YUV with the same matrix and transfer. The bridge accepts only YUV in and out.
-  - Output is `YUV420P10` for 10-bit or HDR sources, and `YUV420P8` for 8-bit SDR, with no dither for 10-bit output, ordered dither for 8-bit live playback and error-diffusion dither for 8-bit offline renders. MVTools searches at `pel=1` (full-pixel) from 720p up during live playback (about 20-30 % less CPU; vectors are already fine-grained at that size) and at `pel=2` below 720p and in every offline render. These live defaults have no profile key yet. At an integer multiplier the frames that land on a source frame are taken from the source untouched; only the others go through RIFE and the float round trip.
+  - Output keeps the source's depth (8, 10 or 12 bits; at least 10 for HDR), or the copy's depth when the core passes `out_bits` (offline: what the encoder writes, so RIFE's float output is written at it once; a shallower copy than MVTools or mvgpu work at is reduced at the end of the script with the offline dither), with no dither for 10-bit output, ordered dither for 8-bit live playback and error-diffusion dither for 8-bit offline renders. MVTools searches at `pel=1` (full-pixel) from 720p up during live playback (about 20-30 % less CPU; vectors are already fine-grained at that size) and at `pel=2` below 720p and in every offline render. These live defaults have no profile key yet. At an integer multiplier the frames that land on a source frame are taken from the source untouched; only the others go through RIFE and the float round trip.
   - 4:2:2 and 4:4:4 sources keep their subsampling.
 - **Alignment (vs-mlrt only).**
   - Pad to the per-model alignment, then crop back. Never scale to align.
@@ -523,6 +523,7 @@ Published speed figures are community or vendor estimates and are used only as a
 - Optional detectors: `mv.SCDetection` (MVTools), and akarin-based expressions only when `buttereye-vs-akarin` is installed (§5.6, §9; API3, VapourSynth ≤R79).
 - vs-mlrt RIFE, RIFE-ncnn (`sc=True`) and mvgpu consume `_SceneChangeNext` and repeat the frame instead of interpolating across the cut.
 - The threshold is exposed per profile (`sc_threshold`).
+- A pair above the threshold is a cut only when `mv.SCDetection` (thSCD1 400, thSCD2 100, on the quarter-size analysis clip) cannot motion-compensate it either, or when its difference is above 0.30: fast pans reach 0.12–0.20 and were held. The relative rule does not ask MVTools. Without MVTools the threshold decides alone. This applies to a user's own threshold too: a value under 0.30 now gives fewer extra cuts than before (pairs MVTools can follow are not cuts), and 0.30 or more behaves as before.
 
 ### 5.6 Multipliers and target rate
 

@@ -62,6 +62,8 @@ def test_every_new_control_has_a_name(panel: Any) -> None:
         panel.compare,
         panel.even_pacing,
         panel.cadence_first,
+        panel.preload,
+        panel.preload_max,
         panel.power,
         panel.lut_import,
         panel.lut_clear,
@@ -132,6 +134,24 @@ def test_even_pacing_and_cadence_first_are_saved(panel: Any, qtbot: Any) -> None
     panel.cadence_first.setChecked(True)
     g = _saved_after(qtbot, panel, n).general
     assert (g.cadence_first, g.even_pacing) == (True, True)
+
+
+def test_start_videos_smooth_and_its_limit_are_saved(panel: Any, qtbot: Any) -> None:
+    assert not panel.preload.isChecked() and not panel.preload_max.isEnabled()
+    assert panel.preload_max.value() == 10 and "never more than 10" in panel.preload_note.text()
+    assert panel.preload.accessibleDescription() == panel.preload_note.text()
+    n = len(_calls(panel.bridge))
+    panel.preload.setChecked(True)
+    assert _saved_after(qtbot, panel, n).general.preload is True
+    assert panel.preload_max.isEnabled()
+    n = len(_calls(panel.bridge))
+    for v in (11, 12, 13):  # spin steps: one save once still
+        panel.preload_max.setValue(v)
+    g = _saved_after(qtbot, panel, n).general
+    assert len(_calls(panel.bridge)) == n + 1
+    assert (g.preload, g.preload_max_s) == (True, 13.0)
+    assert "never more than 13" in panel.preload_note.text()
+    assert (panel.preload_max.minimum(), panel.preload_max.maximum()) == (2, 30)
 
 
 def test_a_lut_is_imported_into_butter_eyes_folder(

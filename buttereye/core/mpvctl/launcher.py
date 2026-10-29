@@ -126,6 +126,24 @@ def write_include(path: Path) -> bool:
     return True
 
 
+#: ``[general] preload``: how far the demuxer reads ahead (capped by the hold)
+PRELOAD_READAHEAD_S = 5.0
+#: the helper releases a hold by itself this long after ButterEye's own limit,
+#: so mpv is never left paused when ButterEye is gone
+PRELOAD_GRACE_S = 2.0
+
+
+def preload_args(preload_s: float) -> tuple[str, ...]:
+    """The options that start mpv held for ``[general] preload`` (``build_argv``)."""
+    readahead = min(PRELOAD_READAHEAD_S, preload_s)
+    return (
+        "--pause",
+        f"--script-opts-append=buttereye-preload={preload_s:g}",
+        # the helper raises demuxer-readahead-secs to this, never lowers the user's
+        f"--script-opts-append=buttereye-readahead={readahead:g}",
+    )
+
+
 def build_argv(
     mpv: str,
     *,
@@ -135,11 +153,19 @@ def build_argv(
     extra: Sequence[str] = (),
     shaders: Sequence[Path] = (),
     lut: Path | None = None,
+    preload_s: float | None = None,
 ) -> list[str]:
     """The mpv command line. No ``--vf``: the filter is added over IPC (§4.2 step 2).
 
     ``lut``: an imported 3D LUT (``profiles.luts.resolve_lut``), applied by mpv
     after smoothing with ``--lut-type=auto`` (mpv reads the .cube header).
+
+    ``preload_s`` (``[general] preload``): mpv starts paused and the Lua helper
+    holds the first picture for at most this long plus ``PRELOAD_GRACE_S``
+    until ButterEye says the filter is ready (``buttereye-preload``); the
+    demuxer reads at least ``PRELOAD_READAHEAD_S`` ahead (the helper raises
+    ``demuxer-readahead-secs``, never lowers it), which kept 4K starts free of
+    drops. No ``--cache``: it would hold 150 MiB for the whole session.
 
     ``--term-status-msg=`` empties the terminal status line, which mpv would
     otherwise append to the log several times a second (~24 MB/h); warnings,
@@ -157,6 +183,7 @@ def build_argv(
         # appended, so shaders from the user's mpv.conf stay (§15.2)
         *(f"--glsl-shaders-append={os.fspath(p)}" for p in shaders),
         *((f"--lut={os.fspath(lut)}", "--lut-type=auto") if lut is not None else ()),
+        *(preload_args(preload_s) if preload_s is not None else ()),
         *extra,
         "--",
         os.fspath(file),
@@ -470,6 +497,9 @@ __all__ = [
     "LOG_MAX_BYTES",
     "MpvProcess",
     "build_argv",
+    "preload_args",
+    "PRELOAD_READAHEAD_S",
+    "PRELOAD_GRACE_S",
     "spawn_mpv",
     "terminate",
     "prune_logs",

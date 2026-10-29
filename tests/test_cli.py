@@ -185,3 +185,18 @@ def test_cli_imports_no_qt() -> None:
 def test_quiet_prints_nothing_on_success(argv: tuple[str, ...]) -> None:
     code, out, _ = run(*argv)
     assert code == 0 and out == ""
+
+
+def test_render_depth_choice(tmp_path: Path) -> None:
+    src = tmp_path / "film.mkv"
+    src.write_bytes(b"x")
+    code, out, _ = run("render", str(src), "--depth", "10", "--json")
+    spec = doc(out)["data"]["spec"]
+    assert code == 0 and spec["depth"] == "10" and spec["ten_bit"] is True
+    code, out, _ = run("render", str(src), "--overwrite", "--json")
+    spec = doc(out)["data"]["spec"]
+    assert spec["depth"] == "source" and spec["ten_bit"] is False  # the settings' default
+    code, out, _ = run("render", str(src), "--overwrite")
+    assert "-bit). Ctrl+C cancels." in out
+    code, _, _ = run("render", str(src), "--depth", "16")
+    assert code == cli.EXIT_USAGE

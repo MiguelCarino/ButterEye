@@ -12,7 +12,7 @@ layout(std430, binding = 0) readonly buffer A { float a[]; };
 layout(std430, binding = 1) readonly buffer C { float c[]; };
 layout(std430, binding = 2) readonly buffer V { vec2 vec[]; };  // subpel.comp
 layout(std430, binding = 3) writeonly buffer F { vec4 field[]; };  // (u.x, u.y, mismatch, 0)
-layout(push_constant) uniform P { int w, h, bw, bh; float t, lambda; int smooth_vec, bs; } p;
+layout(push_constant) uniform P { int w, h, bw, bh; float t, lambda; int smooth_vec, bs; float margin, gdc; } p;
 float bil(bool from_a, vec2 q) {
     q = clamp(q, vec2(0.0), vec2(p.w - 1.001, p.h - 1.001));
     ivec2 i = ivec2(q); vec2 f = q - vec2(i);
@@ -24,16 +24,18 @@ void main() {
     int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
     if (x >= p.w || y >= p.h) return;
     vec2 here = vec2(x, y);
-    if (p.smooth_vec != 0) {  // the old behaviour: vectors interpolated between blocks
-        vec2 g = (here + 0.5) / float(p.bs) - 0.5;
-        ivec2 g0 = ivec2(floor(g)); vec2 fr = g - vec2(g0);
-        vec2 u = vec2(0.0);
-        for (int j = 0; j < 2; ++j)
-            for (int i = 0; i < 2; ++i) {
-                ivec2 b = clamp(g0 + ivec2(i, j), ivec2(0), ivec2(p.bw - 1, p.bh - 1));
-                u += (i == 1 ? fr.x : 1.0 - fr.x) * (j == 1 ? fr.y : 1.0 - fr.y) * vec2(vec[b.y * p.bw + b.x]);
-            }
-        field[y * p.w + x] = vec4(u, 0.0, 0.0);
+    // the vectors interpolated between blocks (the old behaviour, and the
+    // reference the chosen vector has to beat)
+    vec2 g = (here + 0.5) / float(p.bs) - 0.5;
+    ivec2 g0 = ivec2(floor(g)); vec2 fr = g - vec2(g0);
+    vec2 smoothv = vec2(0.0);
+    for (int j = 0; j < 2; ++j)
+        for (int i = 0; i < 2; ++i) {
+            ivec2 b = clamp(g0 + ivec2(i, j), ivec2(0), ivec2(p.bw - 1, p.bh - 1));
+            smoothv += (i == 1 ? fr.x : 1.0 - fr.x) * (j == 1 ? fr.y : 1.0 - fr.y) * vec2(vec[b.y * p.bw + b.x]);
+        }
+    if (p.smooth_vec != 0) {
+        field[y * p.w + x] = vec4(smoothv, 0.0, 0.0);
         return;
     }
     ivec2 b0 = ivec2(x, y) / p.bs;
@@ -47,7 +49,7 @@ void main() {
             float e = 0.0;
             for (int k = 0; k < 5; ++k) {
                 vec2 q = here + vec2(cross5[k]);
-                e += abs(bil(true, q - 2.0 * p.t * v) - bil(false, q + 2.0 * (1.0 - p.t) * v));
+                e += abs(bil(true, q - 2.0 * p.t * v) - bil(false, q + 2.0 * (1.0 - p.t) * v) - p.gdc);
             }
             // prefer the pixel's own block and its nearest neighbours
             vec2 d = (vec2(b) * float(p.bs) + 0.5 * float(p.bs - 1) - here) / 8.0;
@@ -55,5 +57,15 @@ void main() {
             e += p.lambda * dot(d, d);
             if (e < best) { best = e; bestv = v; best_err = err; }
         }
+    // on film grain the 9 block vectors' errors differ by noise alone, and a
+    // per-pixel choice among them follows the grain: a speckled, over-sharp
+    // in-between frame that pulses against the real ones. A block vector wins
+    // only where it beats the smooth one by margin a pixel (edges, small objects).
+    float se = 0.0;
+    for (int k = 0; k < 5; ++k) {
+        vec2 q = here + vec2(cross5[k]);
+        se += abs(bil(true, q - 2.0 * p.t * smoothv) - bil(false, q + 2.0 * (1.0 - p.t) * smoothv) - p.gdc);
+    }
+    if (!(best + 5.0 * p.margin < se)) { bestv = smoothv; best_err = se / 5.0; }
     field[y * p.w + x] = vec4(bestv, best_err, 0.0);
 }

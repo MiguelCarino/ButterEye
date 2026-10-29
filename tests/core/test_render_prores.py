@@ -57,3 +57,24 @@ def test_cpu_prores_is_estimated_as_large_as_the_media_engines() -> None:
     args = ((1920, 1080), Fraction(48), 60.0, 0)
     assert rp.estimate_bytes("prores_ks", *args) == rp.estimate_bytes("prores_videotoolbox", *args)
     assert rp.estimate_bytes("prores_ks", *args) > 20 * rp.estimate_bytes("libx265", *args)
+
+
+def test_cpu_prores_4444_for_deep_and_full_chroma_sources() -> None:
+    def source(pix: str) -> rp.SourceInfo:
+        info = rp.source_info({
+            "streams": [{"index": 0, "codec_type": "video", "codec_name": "hevc",
+                         "width": 1920, "height": 1080, "pix_fmt": pix,
+                         "r_frame_rate": "24/1", "avg_frame_rate": "24/1"}],
+            "format": {"duration": "10"},
+        })  # fmt: skip
+        assert info is not None
+        return info
+
+    for pix in ("yuv420p12le", "yuv444p10le", "yuv444p"):
+        argv = pipeline.encode_argv("ffmpeg", "prores_ks", source(pix), Path("/o/v.mkv"))
+        assert argv[argv.index("-profile:v") + 1] == "4", pix  # 4444
+        assert argv[argv.index("-pix_fmt") + 1] == "yuv444p10le", pix
+        assert argv.count("-profile:v") == 1
+    plain = pipeline.encode_argv("ffmpeg", "prores_ks", source("yuv420p10le"), Path("/o/v.mkv"))
+    assert plain[plain.index("-profile:v") + 1] == "3"
+    assert pipeline.output_bits(source("yuv420p12le"), "prores_ks") == 10

@@ -14,9 +14,10 @@ Schema v1 layout (keys are the ``types.py`` field names)::
     [general]                       # backend_override, gpu, language, trt_experimental,
                                     # upscaling, deband, deband_strength, deband_grain,
                                     # full_size, osd_*, keep_logs, lut, compare,
-                                    # even_pacing, cadence_first
+                                    # even_pacing, cadence_first, preload,
+                                    # preload_max_s
     [general.picture]               # brightness, contrast, saturation, gamma, hue
-    [render]                        # container = "mkv", audio = "copy"
+    [render]                        # container = "mkv", audio = "copy", depth
     [render.encoder_by_vendor]      # vendor = "encoder"
     [[profiles]]                    # id, name, backend, model, scale, target,
                                     # sc_threshold, buffered_frames, concurrent_frames, hdr,
@@ -38,7 +39,8 @@ Schema v1 layout (keys are the ``types.py`` field names)::
 - ``None`` values are omitted (TOML has no null), as are ``trt_experimental = false``
   ``upscaling = "standard"``, ``deband = false``, ``full_size = false``,
   ``deband_strength = "light"``, ``compare = "off"``, ``even_pacing = false``,
-  ``cadence_first = false``, every ``[general.picture]``
+  ``cadence_first = false``, ``preload = false``, ``preload_max_s = 10.0``,
+  ``render.depth = "source"``, every ``[general.picture]``
   value of 0 (and the table, when all are 0), and a profile's ``content = "auto"``
   and ``aa = false`` (older configs have none of these keys, and stay
   byte-identical).
@@ -80,12 +82,15 @@ from buttereye.core.errors import ErrorCode
 from buttereye.core.profiles import defaults
 from buttereye.core.profiles.luts import valid_lut_name
 from buttereye.core.types import (
+    COLOUR_DEPTHS,
     DEBAND_GRAIN_RANGE,
     OSD_ITEMS,
     PICTURE_KEYS,
     PICTURE_RANGE,
+    PRELOAD_RANGE,
     THERMAL_STATES,
     BackendId,
+    ColourDepth,
     Config,
     ConfigIssue,
     ContentKind,
@@ -857,6 +862,16 @@ class _Reader:
             cadence_first=self.get(
                 t, "cadence_first", sec, "general.cadence_first", _bool, "true or false", False
             ),
+            preload=self.get(t, "preload", sec, "general.preload", _bool, "true or false", False),
+            preload_max_s=self.get(
+                t,
+                "preload_max_s",
+                sec,
+                "general.preload_max_s",
+                _preload_max_s,
+                "a number of seconds from {:g} to {:g}".format(*PRELOAD_RANGE),
+                10.0,
+            ),
         )
 
     def picture(self, t: Mapping[str, object] | None) -> PictureAdjust:
@@ -895,7 +910,11 @@ class _Reader:
         # v1 knows one container and one audio mode; anything else is reported.
         self.get(t, "container", sec, "render.container", _literal("mkv"), '"mkv"', "mkv")
         self.get(t, "audio", sec, "render.audio", _literal("copy"), '"copy"', "copy")
-        return RenderDefaults(encoder_by_vendor=MappingProxyType(encoders))
+        source: ColourDepth = "source"
+        depth = self.get(
+            t, "depth", sec, "render.depth", _colour_depth, '"source", "8", "10" or "12"', source
+        )
+        return RenderDefaults(encoder_by_vendor=MappingProxyType(encoders), depth=depth)
 
     def profiles(self, raw: object) -> tuple[Profile, ...]:
         builtins = list(defaults.builtin_profiles())
@@ -1108,6 +1127,12 @@ def _upscaling(v: object) -> Literal["standard", "sharper", "ravu"] | None:
     return None
 
 
+def _colour_depth(v: object) -> ColourDepth | None:
+    if isinstance(v, int) and not isinstance(v, bool):
+        v = str(v)  # depth = 10 reads as "10"
+    return next((d for d in COLOUR_DEPTHS if d == v), None)
+
+
 def _deband_strength(v: object) -> Literal["light", "strong"] | None:
     if v == "light":
         return "light"
@@ -1140,6 +1165,11 @@ def _deband_grain(v: object) -> int | None:
 def _osd_seconds(v: object) -> float | None:
     f = _float(v)
     return f if f is not None and (f == -1 or 0 <= f <= 3600) else None
+
+
+def _preload_max_s(v: object) -> float | None:
+    f = _float(v)
+    return f if f is not None and PRELOAD_RANGE[0] <= f <= PRELOAD_RANGE[1] else None
 
 
 def _osd_items(v: object) -> tuple[str, ...] | None:
@@ -1336,6 +1366,10 @@ def to_document(cfg: Config) -> dict[str, object]:
         general["even_pacing"] = True
     if g.cadence_first:
         general["cadence_first"] = True
+    if g.preload:
+        general["preload"] = True
+    if g.preload_max_s != 10.0:
+        general["preload_max_s"] = g.preload_max_s
     picture = {k: getattr(g.picture, k) for k in PICTURE_KEYS if getattr(g.picture, k) != 0}
     _merge(picture, picture_unknown)
     if picture:
@@ -1345,6 +1379,8 @@ def to_document(cfg: Config) -> dict[str, object]:
         doc["general"] = general
 
     render: dict[str, object] = {"container": cfg.render.container, "audio": cfg.render.audio}
+    if cfg.render.depth != "source":
+        render["depth"] = cfg.render.depth
     if cfg.render.encoder_by_vendor:
         render["encoder_by_vendor"] = dict(cfg.render.encoder_by_vendor)
     _merge(render, render_unknown)

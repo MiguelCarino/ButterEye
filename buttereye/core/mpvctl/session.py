@@ -219,6 +219,21 @@ CLEAN_RECOVER_S = 600.0
 PRESSURE_HEADROOM = 1.2
 #: how often the power state (and the window size, for "sharper") is read again
 POWER_CHECK_S = 5.0
+#: "Start videos smooth" ([general] preload): a held start is released once the
+#: filter's own first frames came (a playback-restart after the ``vf add``
+#: reply) at this share of the target rate. The restart alone was not enough:
+#: the one of mpv's initial seek can come after the reply and froze playback
+#: for 5 s once the hold ended on it
+PRELOAD_FPS_SHARE = 0.9
+#: once ready, wait at most this long for the demuxer's read-ahead (measured
+#: full within 0.01 s on a local disk)
+PRELOAD_READAHEAD_WAIT_S = 1.0
+#: the log line for the helper's ``preload-cancel [why]``
+PRELOAD_CANCELLED: Mapping[object, str] = {
+    None: "playback started by hand during the hold",
+    "paused": "not held, the user had paused",
+    "off": "not held, the helper stopped holding",
+}
 
 #: Used only when this build has no config provider (U2): automatic settings,
 #: not data. Every value is the documented default (§4.4, §4.9, §5.6).
@@ -547,6 +562,17 @@ class _Session:
         self.filter_removed = False
         self.want = True
         self.toggle_requested = False
+        #: "Start videos smooth": the hold limit mpv was started with (None = off,
+        #: and always for an mpv ButterEye did not start); the Lua helper holds
+        #: the pause, ButterEye only tells it when to let go
+        self.preload_s: float | None = None
+        self.preloading = False
+        self.preload_until: float | None = None  # monotonic
+        self.preload_video_checked = False
+        #: playback-restart events seen, to tell the filter's own from earlier ones,
+        #: and their count at the reply to a held start's ``vf add`` (``verify``)
+        self.restart_seq = 0
+        self.vf_restarts: int | None = None
         #: TensorRT engine this session fell back from while it is being built
         self.trt_waiting: trt.EngineKey | None = None
         #: the bundled shader this session added to mpv (§15.2), or None
@@ -774,10 +800,14 @@ class _Session:
             self.file_started_mono = time.monotonic()
             self.new_file = True
             self.refetch_props = True
+            if self.preload_s is not None:
+                self.start_preload()  # the helper holds this file too (on_preloaded)
         elif ev == "file-loaded":
             self.file_loaded_at = time.monotonic()
             self.refetch_props = True
         elif ev in ("seek", "playback-restart"):
+            if ev == "playback-restart":
+                self.restart_seq += 1
             self.detector.note_restart(time.monotonic())
         elif ev == "client-message":
             args = msg.get("args")
@@ -794,12 +824,88 @@ class _Session:
                 self.toggle_requested = True
             elif isinstance(args, list) and args[:2] == ["buttereye-request", "compare"]:
                 self.compare_requested = True
+            elif isinstance(args, list) and args[:2] == ["buttereye-request", "preload-cancel"]:
+                # the user started playback during the hold, or the helper did not
+                # hold this file: the user had paused it, or it stopped holding
+                # after missing the limit
+                if self.preloading:
+                    why = args[2] if len(args) > 2 else None
+                    text = PRELOAD_CANCELLED.get(why, PRELOAD_CANCELLED[None])
+                    self.log.info("%s: %s", self.title, text)
+                    self.end_preload(time.monotonic())
         self.wake.set()
 
     async def ack(self, what: str) -> None:
         """Tell the Lua helper ButterEye handles ``what`` (no lock taken)."""
         with contextlib.suppress(IpcClosed, MpvError, TimeoutError):
             await self.ipc.command("script-message-to", HELPER_NAME, "ack", what, timeout_s=1.0)
+
+    # ---- start videos smooth ([general] preload) ----
+    def start_preload(self) -> None:
+        """A file starts held by the helper; ButterEye's limit counts from now."""
+        if self.preload_s is None:
+            return
+        self.preloading = True
+        self.preload_until = time.monotonic() + self.preload_s
+        self.preload_video_checked = False
+
+    def end_preload(self, now: float) -> None:
+        """The hold is over: the held seconds (no drops) must not dilute the drop
+        window, and the start-up grace counts from the first moving frame."""
+        self.preloading = False
+        self.preload_until = None
+        self.detector.note_restart(now)
+        self.clean_s, self.clean_tick = 0.0, None
+        self.heavy_since = None
+        self.steady_since = None
+
+    async def release_preload(self, why: str) -> None:
+        """Let the helper start playback (it owns the pause; ButterEye never sets it)."""
+        if not self.preloading:
+            return
+        now = time.monotonic()
+        since = (self.preload_until or now) - (self.preload_s or 0.0)
+        self.end_preload(now)
+        held = max(0.0, now - since)
+        self.log.info("%s: playback starts (%s) after %.1f s", self.title, why, held)
+        if self.unresponsive or self.ipc.closed.is_set():
+            return  # the helper lets go by itself (its own time limit)
+        with contextlib.suppress(IpcClosed, MpvError, TimeoutError):
+            await self.ipc.command("script-message-to", HELPER_NAME, "preload-release",
+                                   timeout_s=1.0)  # fmt: skip
+
+    async def preload_fps_ok(self, target_fps: float) -> bool:
+        """The filter's output rate reached ``PRELOAD_FPS_SHARE`` of the target."""
+        with contextlib.suppress(MpvError, TimeoutError):
+            fps = await self.ipc.get("estimated-vf-fps", timeout_s=0.5)
+            return isinstance(fps, (int, float)) and fps >= PRELOAD_FPS_SHARE * target_fps
+        return False
+
+    async def wait_readahead(self) -> None:
+        """Ready: give the demuxer a moment to have read ahead (``launcher.preload_args``)."""
+        if self.preload_s is None:
+            return
+        want = min(launcher.PRELOAD_READAHEAD_S, self.preload_s)
+        loop = asyncio.get_running_loop()
+        end = loop.time() + PRELOAD_READAHEAD_WAIT_S
+        while loop.time() < end and not self.ipc.closed.is_set():
+            try:
+                have = await self.ipc.get("demuxer-cache-duration", timeout_s=0.5)
+            except MpvError, TimeoutError:
+                return
+            if not isinstance(have, (int, float)) or have >= want:
+                return
+            await asyncio.sleep(0.05)
+
+    async def check_preload_video(self) -> None:
+        """No video track once the file is loaded: nothing to wait for (an audio
+        file would otherwise be held until the limit)."""
+        if not self.preloading or self.file_loaded_at is None or self.preload_video_checked:
+            return
+        self.preload_video_checked = True
+        with contextlib.suppress(MpvError, TimeoutError):
+            if await self.ipc.get("current-tracks/video", timeout_s=1.0) is None:
+                await self.release_preload("no video")
 
     def _only_our_vapoursynth(self) -> bool:
         vf = self.props.get("vf")
@@ -843,6 +949,8 @@ class _Session:
             return render(Msg("ButterEye: smoothing turned off. {why}", {"why": why})).strip()
         if self.filter is FilterState.OFF:
             return render(Msg("ButterEye: smoothing off"))
+        if self.preloading:
+            return render(Msg("ButterEye: getting smooth playback ready…"))
         return render(Msg("ButterEye: starting…"))
 
     async def send_status(self, *, quiet: bool = False) -> None:
@@ -1186,6 +1294,8 @@ class _Session:
 
     async def set_off(self, state: FilterState, notice: Msg | None = None) -> None:
         await self.remove_filter()
+        # off, bypassed or no engine: nothing to wait for
+        await self.release_preload(state.value)
         self.filter = state
         if state is not FilterState.BYPASSED:
             self.bypass = None
@@ -2117,10 +2227,15 @@ class _Session:
         self.busy = True
         if backend is BackendId.RIFE_NCNN and not self.failure:
             mark_rife_session(self.ctx.paths, (self.proc.pid,))  # BE-1030 window starts
+        self.vf_restarts = None
+        if self.preloading:
+            await self.send_status()  # "getting smooth playback ready" while held
         try:
             if not self.failure:
                 try:
                     await self.ipc.command("vf", "add", vf_argument(self.script_path, params))
+                    if self.preloading:
+                        self.vf_restarts = self.restart_seq  # the filter's comes after this
                 except MpvError as exc:
                     self.failure.append(f"vf add: {exc.error}")
             ok = not self.failure and await self.verify(gen, float(tc.target))
@@ -2169,10 +2284,21 @@ class _Session:
         await self.sync_shader(cfg)  # the smoothing size is known now (P5)
         await self.sync_pacing(cfg)
         await self.check_user_render(backend)
+        if self.preloading:
+            if self.preload_until is not None and time.monotonic() >= self.preload_until:
+                await self.release_preload("time limit")
+            else:
+                await self.wait_readahead()
+                await self.release_preload("smoothing is ready")
 
     async def verify(self, gen: int, target_fps: float) -> bool:
         """The new gen is in ``vf``, no failure was logged, and (unless paused)
-        frames flow within the verify window."""
+        frames flow within the verify window.
+
+        A held start ("Start videos smooth", ``vf_restarts`` set at the ``vf add``
+        reply): success is the filter's own playback-restart and its output rate
+        (``PRELOAD_FPS_SHARE``), waited for up to the hold limit (4K once took
+        7.3 s)."""
         try:
             vf = await self.ipc.get("vf")
         except IpcClosed, MpvError, TimeoutError:
@@ -2185,6 +2311,9 @@ class _Session:
         loop = asyncio.get_running_loop()
         self.detector.filter_started(time.monotonic(), target_fps)
         deadline = loop.time() + self.opts.verify_timeout_s
+        restarts = self.vf_restarts if self.preloading else None
+        if restarts is not None and self.preload_until is not None:
+            deadline = max(loop.time() + 0.5, self.preload_until - time.monotonic() + loop.time())
         paused_since: float | None = None
         while loop.time() < deadline:
             if self.failure:
@@ -2195,6 +2324,13 @@ class _Session:
             verdict = self.detector.update(sample_from(self.props, time.monotonic()))
             if verdict.flowing:
                 return True
+            if restarts is not None:
+                if not self.preloading:
+                    restarts = None  # the user started playback: verify as usual
+                elif self.restart_seq > restarts and await self.preload_fps_ok(target_fps):
+                    return True
+                await asyncio.sleep(0.05)
+                continue
             if self.props.get("pause") is True:
                 paused_since = paused_since or loop.time()
                 if loop.time() - paused_since >= 1.0:
@@ -2242,6 +2378,7 @@ class _Session:
             self.notice = Msg("The smoothing filter failed and was removed; playback continues.")
             self.emit(Notice(self.notice, ErrorCode.VF_ROLLED_BACK, self.sid))
         self.after_failure()
+        await self.release_preload("rolled back")
 
     async def stalled(self, verdict: Verdict) -> None:
         """STALLED: roll back automatically (R12). A RIFE-ncnn or mvgpu filter is
@@ -2569,6 +2706,10 @@ class _Session:
             self.filter, self.bypass, self.notice = FilterState.PENDING, None, None
         elif self.filter is FilterState.BYPASSED:
             self.filter, self.bypass = FilterState.PENDING, None
+        if self.filter is not FilterState.PENDING:
+            # smoothing is off for this session (turned off, rolled back): no
+            # filter will come to wait for
+            await self.release_preload(self.filter.value)
 
     def _needs_fetch(self, key: str) -> bool:
         have = self.props.get(key)
@@ -2601,6 +2742,8 @@ class _Session:
 
     def check_start_deadline(self, now: float) -> None:
         """No video after ``start_deadline_s``: say so instead of "Starting…"."""
+        if self.preloading:
+            return  # held on purpose, with a limit of its own
         waiting = self.filter is FilterState.PENDING and self.active_gen is None
         nothing = self.file_loaded_at is None or not isinstance(
             self.props.get("playback-time"), (int, float)
@@ -2623,6 +2766,8 @@ class _Session:
         now = time.monotonic()
         self.check_liveness(now)
         if self.unresponsive:
+            if self.preloading:
+                await self.release_preload("mpv is not responding")
             # stale properties say nothing; only a stall of our own filter is judged
             if self.active_gen is not None:
                 verdict = self.detector.update(sample_from(self.props, now))
@@ -2681,6 +2826,9 @@ class _Session:
             await self.begin_new_file()
         if self.refetch_props:
             await self.refetch_file_props()
+        await self.check_preload_video()
+        if self.preloading and self.preload_until is not None and now >= self.preload_until:
+            await self.release_preload("time limit")
 
         if self.remove_pending and self.active_gen is None:
             await self.remove_filter(timeout_s=1.0)
@@ -2750,7 +2898,9 @@ class _Session:
             else:
                 self.display_changed_at = None
 
-        if self.active_gen is not None:
+        # while held nothing plays: no drop verdict, no engine replaced (the
+        # window starts at the release, end_preload)
+        if self.active_gen is not None and not self.preloading:
             verdict = self.detector.update(sample_from(self.props, now))
             self.drop_rate = verdict.drop_rate
             if verdict.flowing and self.filter is FilterState.PENDING:
@@ -2981,6 +3131,8 @@ async def play(
         from buttereye.core.profiles import luts
 
         lut = luts.resolve_lut(paths, general.lut)
+    # "Start videos smooth": only for an mpv ButterEye starts (never one it attaches to)
+    preload_s = general.preload_max_s if general is not None and general.preload else None
     argv = launcher.build_argv(
         opts.mpv,
         include=paths.mpv_include,
@@ -2989,6 +3141,7 @@ async def play(
         extra=opts.extra_args,
         shaders=(shader,) if shader is not None else (),
         lut=lut,
+        preload_s=preload_s,
     )
     launcher.prune_logs(paths.logs_dir, runtime)
     launcher.prepare_socket(socket)
@@ -3003,6 +3156,8 @@ async def play(
                 log_path=log_path, script_path=script, profile_request=profile_id,
             )  # fmt: skip
             session.shader = shader  # added at launch
+            session.preload_s = preload_s
+            session.start_preload()
             session.lut = str(lut) if lut is not None else None
             session.power = power
             ipc.add_handler(session.on_event)
@@ -3096,6 +3251,11 @@ async def detach(ctx: ProviderContext, sid: SessionId, policy: DetachPolicy) -> 
                 s.filter_removed = not s.remove_pending
             with contextlib.suppress(Exception):
                 await s.restore_player()  # picture, debanding, LUT, pacing
+            await s.release_preload("ButterEye disconnected")
+            if s.preload_s is not None:  # nobody is left to release later files
+                with contextlib.suppress(IpcClosed, MpvError, TimeoutError):
+                    await s.ipc.command("script-message-to", HELPER_NAME, "preload-off",
+                                        timeout_s=1.0)  # fmt: skip
             with contextlib.suppress(IpcClosed, MpvError, TimeoutError):
                 on = filter_entry(s.props.get("vf")) is not None
                 text = render(

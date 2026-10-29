@@ -199,6 +199,11 @@ class FilterParams:
     #: HDR10 pass-through (``Profile.hdr``): the output keeps at least 10 bits,
     #: whatever the decoder handed over, so PQ is never cut to 8
     hdr: bool = False
+    #: the depth the script outputs (offline copies: the encoder's,
+    #: ``render.pipeline.output_bits``). RIFE's float result is written at it
+    #: directly; a shallower one than the engine's is reduced with ``dither`` at
+    #: the end. None = the source's (live play), at least 10 with ``hdr``
+    out_bits: int | None = None
 
 
 def default_frames(backend: BackendId, *, cpu_count: int | None = None) -> tuple[int, int]:
@@ -262,6 +267,10 @@ def user_data(params: FilterParams) -> str:
         data["hdr"] = True
     if params.size is not None:
         data["size"] = [int(params.size[0]), int(params.size[1])]
+    if params.out_bits is not None:
+        data["out_bits"] = int(params.out_bits)
+        if params.dither is not None:  # the reduction at the end, every engine
+            data["dither"] = params.dither
     if params.backend is BackendId.RIFE_NCNN:
         data["model_path"] = os.fspath(params.model_path) if params.model_path else None
         data["gpu_id"] = params.gpu_id

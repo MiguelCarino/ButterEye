@@ -643,3 +643,140 @@ def test_engine_size_is_a_render_size() -> None:
     assert isinstance(s, RenderSize) and dataclasses.replace(s, est_fps=1.0).engine is (
         BackendId.MVGPU
     )
+
+
+# ---------------------------------------------------------------- colour depth
+X265_HELP = (
+    "Encoder libx265 [libx265 H.265 / HEVC]:\n"
+    "    Supported pixel formats: yuv420p yuv420p10le yuv420p12le yuv444p12le\n"
+)
+
+
+async def test_encoder_depths_are_asked_once_and_tested_on_the_gpu(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ffmpeg = tmp_path / "ffmpeg"
+    ffmpeg.write_text("")
+    calls: list[tuple[str, ...]] = []
+
+    async def run(argv: Any, **_kw: Any) -> CmdResult:
+        calls.append(tuple(argv))
+        if "-h" in argv:
+            enc = argv[-1].removeprefix("encoder=")
+            text = X265_HELP if enc == "libx265" else "Supported pixel formats: yuv420p p010le\n"
+            return CmdResult(tuple(argv), 0, text, "")
+        # the 10-bit test encode: this GPU has no 10-bit AV1
+        enc = argv[argv.index("-c:v") + 1]
+        ok = enc != "av1_nvenc"
+        return CmdResult(tuple(argv), 0 if ok else 1, "", "" if ok else "10 bit unsupported")
+
+    monkeypatch.setattr(jobs, "run", run)
+    monkeypatch.setattr(jobs, "_DEPTHS", {})
+    got = await jobs._encoder_depths(os.fspath(ffmpeg), ("libx265", "hevc_nvenc", "av1_nvenc"))
+    assert got == {"libx265": (8, 10, 12), "hevc_nvenc": (8, 10), "av1_nvenc": (8,)}
+    tests = [c for c in calls if "-c:v" in c]
+    assert [c[c.index("-c:v") + 1] for c in tests] == ["hevc_nvenc", "av1_nvenc"]
+    assert all(c[c.index("-pix_fmt") + 1] == "p010le" for c in tests)
+    n = len(calls)
+    await jobs._encoder_depths(os.fspath(ffmpeg), ("libx265", "hevc_nvenc", "av1_nvenc"))
+    assert len(calls) == n  # once per ffmpeg
+
+
+async def test_a_job_writes_the_sources_depth_and_tells_the_script(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ctx: Any = Ctx(tmp_path)
+    src = tmp_path / "film.mkv"
+    src.write_bytes(b"source")
+    out = tmp_path / "film.smooth.mkv"
+    got: dict[str, Any] = {}
+
+    def info12() -> rp.SourceInfo:
+        return dataclasses.replace(_info(), bits=12, pix_fmt="yuv420p12le")
+
+    async def source_info(_tools: Any, _src: Path) -> rp.SourceInfo:
+        return info12()
+
+    async def run(argv: Any, **_kw: Any) -> CmdResult:
+        return CmdResult(tuple(argv), 0, X265_HELP if "-h" in argv else "", "")
+
+    async def pick(*_a: Any) -> tuple[BackendId, None]:
+        return BackendId.MVTOOLS, None
+
+    async def encode(_ctx: Any, job: Any, _tools: Any, _script: Any, ud: Any, *a: Any,
+                     **k: Any) -> None:  # fmt: skip
+        got["ud"], got["bits"] = ud, k.get("bits")
+        pipeline.temp_paths(out)[0].write_bytes(b"video")
+
+    async def remux(_tools: Any, v: Path, _s: Path, p: Path, *_a: Any) -> None:
+        p.write_bytes(v.read_bytes())
+
+    monkeypatch.setattr(jobs, "_tools", _tools)
+    monkeypatch.setattr(jobs, "_source_info", source_info)
+    monkeypatch.setattr(jobs, "run", run)
+    monkeypatch.setattr(jobs, "_DEPTHS", {})
+    monkeypatch.setattr(jobs, "_ffms2_lib", lambda: src)
+    monkeypatch.setattr(jobs, "_pick", pick)
+    monkeypatch.setattr(jobs, "_encode", encode)
+    monkeypatch.setattr(jobs, "_remux", remux)
+    monkeypatch.setattr(jobs, "write_script", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "_constants", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "_gpu_index", lambda ctx: None)
+    monkeypatch.setattr(osapi, "begin_activity", lambda reason: None)
+    monkeypatch.setattr(osapi, "end_activity", lambda token: None)
+    for spec, bits in (
+        (RenderJobSpec(src, out, "simple", "libx265"), 12),  # same as source
+        (RenderJobSpec(src, out, "simple", "libx265", depth="10"), 10),
+        (RenderJobSpec(src, out, "simple", "libx265", overwrite=True, ten_bit=True), 10),
+    ):
+        out.unlink(missing_ok=True)
+        job = jobs._Job(JobId(f"j{bits}{spec.depth}"), spec, state=OpState.RUNNING)
+        jobs._reg(ctx).jobs[job.id] = job
+        await jobs._run(ctx, job)
+        assert job.state is OpState.SUCCEEDED, job.error
+        assert got["bits"] == bits and got["ud"]["out_bits"] == bits
+        assert got["ud"]["dither"] == "error_diffusion"  # the reduction, every engine
+        assert jobs._snapshot(job).bits == bits
+    # the settings' default applies to a spec without a choice
+    ctx.cfg = dataclasses.replace(ctx.cfg, render=dataclasses.replace(ctx.cfg.render, depth="8"))
+    out.unlink(missing_ok=True)
+    job = jobs._Job(JobId("dflt"), RenderJobSpec(src, out, "simple", "libx265"),
+                    state=OpState.RUNNING)  # fmt: skip
+    jobs._reg(ctx).jobs[job.id] = job
+    await jobs._run(ctx, job)
+    assert got["bits"] == 8
+
+
+async def test_the_probe_carries_the_source_depth_and_the_encoders(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ctx: Any = Ctx(tmp_path)
+    src = tmp_path / "film.mkv"
+    src.write_bytes(b"source")
+    listed = "".join(f" V....D {e:<20} x\n" for e in ("libx264", "libx265", "libsvtav1"))
+
+    async def source_info(_tools: Any, _src: Path) -> rp.SourceInfo:
+        return dataclasses.replace(_info(), bits=10, pix_fmt="yuv444p10le", chroma="444")
+
+    async def run(argv: Any, **_kw: Any) -> CmdResult:
+        if "-h" in argv:
+            enc = argv[-1].removeprefix("encoder=")
+            text = {"libx265": X265_HELP, "libx264": "Supported pixel formats: yuv420p"}.get(
+                enc, "Supported pixel formats: yuv420p yuv420p10le"
+            )
+            return CmdResult(tuple(argv), 0, text, "")
+        return CmdResult(tuple(argv), 0, " ------\n" + listed, "")
+
+    monkeypatch.setattr(jobs, "_tools", _tools)
+    monkeypatch.setattr(jobs, "_source_info", source_info)
+    monkeypatch.setattr(jobs, "run", run)
+    monkeypatch.setattr(jobs, "_DEPTHS", {})
+    monkeypatch.setattr(jobs, "_ffms2_lib", lambda: src)
+    monkeypatch.setattr(jobs, "_candidates", lambda ctx, profile: ())
+    monkeypatch.setattr(osapi, "IS_MACOS", False)
+    probe = await jobs.probe(ctx, src)
+    assert (probe.bits, probe.chroma, probe.pix_fmt) == (10, "444", "yuv444p10le")
+    assert probe.encoders == ("libx265", "libsvtav1", "libx264")  # x264 would lower it
+    assert dict(probe.encoder_depths) == {
+        "libsvtav1": (8, 10), "libx265": (8, 10, 12), "libx264": (8,),
+    }  # fmt: skip

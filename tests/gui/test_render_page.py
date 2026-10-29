@@ -15,7 +15,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWidgets import QAbstractButton
 
 from buttereye.core.api import (
@@ -32,6 +32,7 @@ from buttereye.core.api import (
     RenderPhase,
 )
 from buttereye.core.capabilities import unavailable_state
+from buttereye.core.render import probe as rp
 from buttereye.core.testing import scenarios as sc
 from buttereye.gui.dialogs import render_job
 from buttereye.gui.dialogs.render_job import RenderJobDialog, default_output
@@ -385,19 +386,27 @@ def test_encoder_combo_lists_only_probed_encoders(make_window: Any, qtbot: Any) 
     items = [dlg.encoder_combo.itemText(i) for i in range(dlg.encoder_combo.count())]
     assert tuple(items) == sc.render_probe(Path("/videos/film.mkv")).encoders
     assert dlg.encoder_combo.currentText() == "hevc_nvenc"
-    # 10-bit: offered only to a core whose spec carries it, and only for an
-    # encoder that can write it
-    assert dlg.ten_bit.isVisibleTo(dlg) is render_job.SPEC_TEN_BIT
-    assert dlg.ten_bit.isEnabled()
+    # colour depth: "same as source" by default, and only what the encoder
+    # can write is enabled
+    combo = dlg.depth_combo
+    assert combo.isVisibleTo(dlg)
+    assert combo.currentText() == "Same as source (8-bit)" and combo.choice() == "source"
+    ten = combo.findData("10")
+    assert combo.model().item(ten).isEnabled()  # type: ignore[attr-defined]
     dlg.encoder_combo.setCurrentIndex(dlg.encoder_combo.findData("libx264"))
-    assert not dlg.ten_bit.isEnabled()
+    assert not combo.model().item(ten).isEnabled()  # type: ignore[attr-defined]
+    assert "at most 8 bits" in str(combo.itemData(ten, Qt.ItemDataRole.ToolTipRole))
+    spec = dlg.spec()
+    assert spec is not None and spec.depth == "source" and not spec.ten_bit
     dlg.reject()
 
 
 def test_the_mac_media_engine_is_the_sdr_default() -> None:
+    # the core's order is the dialog's (render.probe.usable_encoders)
+    listed = ("libsvtav1", "libx265", "hevc_videotoolbox", "prores_videotoolbox")
     probe = dataclasses.replace(
         sc.render_probe(Path("/videos/film.mkv")),
-        encoders=("libsvtav1", "libx265", "hevc_videotoolbox", "prores_videotoolbox"),
+        encoders=rp.usable_encoders(listed, nvidia=False, apple=True),
     )
     assert render_job.pick_encoder(probe, ()) == "hevc_videotoolbox"
     assert render_job.pick_encoder(probe, ("libx265",)) == "libx265"  # the configured one
@@ -522,3 +531,14 @@ def test_ctrl_n_works_with_focus_in_the_sidebar(make_window: Any, qtbot: Any) ->
     qtbot.waitUntil(lambda: isinstance(page.dialog, RenderJobDialog), timeout=2000)
     assert page.dialog is not None
     page.dialog.reject()
+
+
+def test_the_encoder_cell_shows_the_depth_once_settled() -> None:
+    from buttereye.core.api import JobId, OpState, RenderJobSpec, RenderJobState
+    from buttereye.gui.pages.render import encoder_text
+
+    spec = RenderJobSpec(Path("/v/a.mkv"), Path("/v/a.smooth.mkv"), "simple", "libx265")
+    job = RenderJobState(JobId("j"), spec, OpState.QUEUED, None, None, None, None, None, None,
+                         None)  # fmt: skip
+    assert encoder_text(job) == "libx265"
+    assert encoder_text(dataclasses.replace(job, bits=10)) == "libx265 · 10-bit"

@@ -135,6 +135,10 @@ READABLE: frozenset[str] = (
             # window size and black bars: how much the picture is enlarged, for
             # the upscaling shaders' 1.8x bar (shaders.video_scale)
             "osd-dimensions",
+            # "Start videos smooth": the filter's output rate while held, and
+            # how far the demuxer has read ahead
+            "estimated-vf-fps",
+            "demuxer-cache-duration",
         }
     )
 )

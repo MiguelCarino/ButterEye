@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 The ButterEye contributors
 """template.vpy's frame analysis, in-process on synthetic clips (VapourSynth's
-own filters only, no engine plugins): the relative scene-cut rule, held
-drawings and still pairs, the hold-fill bookkeeping, the marks that make an
-engine repeat a frame, and the chroma siting of the RGB round trip."""
+own filters, and MVTools for the cut check where it is installed): the
+scene-cut rules, held drawings and still pairs, the hold-fill bookkeeping, the
+marks that make an engine repeat a frame, and the chroma siting of the RGB
+round trip."""
 
 from __future__ import annotations
 
@@ -105,6 +106,57 @@ def test_no_marks_without_scene_detection_or_still_skip() -> None:
     assert out is clip and not marked
     out, marked = NS["_prepare"](clip, {}, None)
     assert out is clip and not marked
+
+
+@pytest.mark.parametrize(
+    ("here", "around", "unexplained", "want"),
+    [
+        (0.18, 0.18, None, True),  # no MVTools: the absolute threshold alone, as before
+        (0.18, 0.18, False, False),  # a fast pan MVTools can follow: not a cut
+        (0.18, 0.18, True, True),  # nothing explains it: a cut
+        (0.31, 0.31, False, True),  # above CUT_HARD whatever MVTools says
+        (0.10, 0.01, False, True),  # the relative rule does not ask MVTools
+        (0.10, 0.03, None, False),  # under both rules
+    ],
+)
+def test_the_absolute_rule_needs_motion_compensation_to_fail(
+    here: float, around: float, unexplained: bool | None, want: bool
+) -> None:
+    back, ahead = NS["CUT_BACK"], NS["CUT_AHEAD"]
+    d = [around] * back + [here] + [around] * ahead
+    assert NS["_is_cut"](d, 0.12, unexplained) is want
+
+
+def _pan_then_cut(n: int = 24, at: int = 12) -> Any:
+    """A coarse random texture panning 12 px a frame (quarter-size change about
+    0.18, above the absolute threshold throughout), cut at ``at`` to another one
+    panning the same way: the relative rule sees no cut anywhere."""
+
+    def tex(seed: int) -> Any:
+        r = np.random.default_rng(seed).random((H // 8 + 4, (W + 12 * n) // 8 + 4))
+        return (np.kron(r, np.ones((8, 8))) * 180 + 40).astype(np.uint8)
+
+    a, b = tex(1), tex(2)
+    flat = (np.full((H // 2, W // 2), 128, np.uint8),) * 2
+    return _clip([((a if k < at else b)[:H, 12 * (k % at) : 12 * (k % at) + W], *flat)
+                  for k in range(n)])  # fmt: skip
+
+
+def test_a_fast_pan_is_not_held_but_a_cut_in_it_is() -> None:
+    try:
+        NS["_load"]("mv", "mvtools.so")
+    except vs.Error:
+        pytest.skip("MVTools is not installed")
+    clip = _pan_then_cut()
+    assert _marks(clip) == [11]
+
+
+def test_without_mvtools_the_absolute_threshold_decides_alone(monkeypatch: Any) -> None:
+    def missing(namespace: str, filename: str) -> None:
+        raise vs.Error("Failed to load " + filename)
+
+    monkeypatch.setitem(NS, "_load", missing)
+    assert _marks(_pan_then_cut()) == list(range(23))
 
 
 # ---- held drawings and still pairs ----------------------------------------------
@@ -248,6 +300,44 @@ def test_still_skip_is_off_unless_asked() -> None:
     assert _marks(clip) == []  # scene detection alone: holds are not cuts
     out, marked = NS["_prepare"](clip, {"still_skip": True}, 0, None, False)
     assert not marked  # an engine that does not offer it (TensorRT)
+
+
+def test_mvtools_retries_bad_blocks_on_the_main_vectors_only(monkeypatch: Any) -> None:
+    """Every Analyse searches with searchparam 4; badsad/badrange (the retry) only
+    on the vectors the output is made from, not on the hold-fill in-betweens."""
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _Ns:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __getattr__(self, fn: str) -> Callable[..., Any]:
+            def call(*args: Any, **kwargs: Any) -> str:
+                calls.append((f"{self.name}.{fn}", kwargs))
+                return fn
+
+            return call
+
+    class _Core:
+        mv, std = _Ns("mv"), _Ns("std")
+
+    def prepare(clip: Any, cfg: Any, threshold: Any, pairs: Any, still: bool) -> Any:
+        pairs(clip, 2)  # the hold-fill's in-betweens
+        return clip, False
+
+    monkeypatch.setitem(NS, "core", _Core())
+    monkeypatch.setitem(NS, "_load", lambda namespace, filename: None)
+    monkeypatch.setitem(NS, "_prepare", prepare)
+
+    class _Clip:
+        width, height = 1920, 1080
+
+    NS["_mvtools"](_Clip(), {}, Fraction(48))
+    analyse = [kw for name, kw in calls if name == "mv.Analyse"]
+    assert len(analyse) == 4 and all(kw["searchparam"] == 4 for kw in analyse)
+    hold, main = analyse[:2], analyse[2:]
+    assert not any("badsad" in kw or "badrange" in kw for kw in hold)
+    assert all(kw["badsad"] == 1000 and kw["badrange"] == -24 for kw in main)
 
 
 # ---- the end of the video in mpv ------------------------------------------------

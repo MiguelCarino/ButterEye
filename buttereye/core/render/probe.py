@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any, Literal
 
+from buttereye.core import pixfmt
 from buttereye.core.mpvctl import decide
-from buttereye.core.types import BackendId, HdrClass, RenderSize, StreamInfo
+from buttereye.core.types import BackendId, ColourDepth, HdrClass, RenderSize, StreamInfo
 
 #: Offline RIFE/MVTools run at about this share of the in-mpv benchmark rate
 #: (spike M0(e): 45 fps at 1080p and 36 fps for 4K → 1080p against 61 in mpv;
@@ -42,6 +43,20 @@ HW_ENCODERS = NVIDIA_ENCODERS | VIDEOTOOLBOX_ENCODERS
 TEN_BIT_ENCODERS = frozenset(
     {"hevc_nvenc", "av1_nvenc", "hevc_videotoolbox", "libx265", "libsvtav1"}
 )
+PRORES_ENCODERS = frozenset({"prores_videotoolbox", "prores_ks"})
+#: The depths each encoder writes when its ``ffmpeg -h encoder=`` answer can't
+#: be read (``encoder_depths``): what every build of it can do
+KNOWN_DEPTHS: Mapping[str, tuple[int, ...]] = {
+    "hevc_nvenc": (8, 10), "av1_nvenc": (8, 10), "hevc_videotoolbox": (8, 10),
+    "libx265": (8, 10), "libsvtav1": (8, 10), "libx264": (8,),
+    "prores_videotoolbox": (10,), "prores_ks": (10,),
+}  # fmt: skip
+#: The most bits the hardware takes, whatever ffmpeg lists: NVENC reads 16-bit
+#: frames (p016) but encodes 10 at most
+HW_MAX_BITS: Mapping[str, int] = {"hevc_nvenc": 10, "av1_nvenc": 10, "hevc_videotoolbox": 10}
+#: "Same as source" stops here: H.264 at 10 bits (High 10) plays on few
+#: devices, so it is written only when 10-bit is chosen
+SOURCE_MAX_BITS: Mapping[str, int] = {"libx264": 8}
 #: The only encoders that take HDR10 mastering data on the command line (§7.4);
 #: NVENC/VAAPI/VideoToolbox read it from frame side data, which the y4m pipe
 #: doesn't carry.
@@ -114,13 +129,15 @@ class SourceInfo:
     vfr: bool
     duration_s: float
     codec: str
-    bits: int  # 8 or 10+
+    bits: int  # bits per sample (pixfmt.source_bits)
     hdr_class: HdrClass
     color: Mapping[str, str]  # ffmpeg -color_* values (and chroma_location) ffprobe reported
     start_s: float  # video start time relative to the file (0 for most files)
     streams: tuple[StreamInfo, ...]
     chapters: int
     hdr: HdrMeta = HdrMeta()
+    pix_fmt: str = ""  # as ffprobe names it ("yuv420p10le")
+    chroma: pixfmt.Chroma = "420"
 
 
 def _rate(text: object) -> Fraction | None:
@@ -233,14 +250,6 @@ def hdr_meta(stream: Mapping[str, Any], frame: Mapping[str, Any] | None = None) 
     return HdrMeta(mastering, cll, fall, dv_profile, dv_base)
 
 
-def _bits(stream: Mapping[str, Any]) -> int:
-    raw = stream.get("bits_per_raw_sample")
-    if isinstance(raw, str) and raw.isdigit():
-        return int(raw)
-    pix = str(stream.get("pix_fmt") or "")
-    return 10 if ("10" in pix or "12" in pix or "16" in pix) else 8
-
-
 def source_info(
     data: Mapping[str, Any], frame: Mapping[str, Any] | None = None
 ) -> SourceInfo | None:
@@ -266,6 +275,7 @@ def source_info(
     if fps is None:
         return None
     fmt = data.get("format") or {}
+    pix = str(video.get("pix_fmt") or "")
     duration = _float(video.get("duration")) or _float(fmt.get("duration"))
     start = _float(video.get("start_time")) - _float(fmt.get("start_time"))
     color = {
@@ -295,13 +305,15 @@ def source_info(
         vfr=vfr,
         duration_s=duration,
         codec=str(video.get("codec_name") or ""),
-        bits=_bits(video),
+        bits=pixfmt.source_bits(pix, video.get("bits_per_raw_sample")),
         hdr_class=hdr_class(video, frame),
         color=color,
         start_s=max(0.0, start) if abs(start) > 0.0005 else 0.0,
         streams=streams,
         chapters=len(data.get("chapters") or ()),
         hdr=hdr_meta(video, frame),
+        pix_fmt=pix,
+        chroma=pixfmt.chroma(pix) if pix else "420",
     )
 
 
@@ -423,8 +435,75 @@ def parse_decoders(text: str) -> frozenset[str]:
     return frozenset(names)
 
 
+def parse_pixel_formats(text: str) -> tuple[str, ...]:
+    """The "Supported pixel formats" of ``ffmpeg -hide_banner -h encoder=X``
+    (empty when the line is missing). ffmpeg's x265 wrapper lists only the
+    depths the linked library was built for, so this is the cheap check."""
+    for line in text.splitlines():
+        head, sep, rest = line.strip().partition(":")
+        if sep and head.lower() == "supported pixel formats":
+            return tuple(rest.split())
+    return ()
+
+
+def encoder_depths(encoder: str, formats: Sequence[str]) -> tuple[int, ...]:
+    """The output depths (8, 10, 12) ``encoder`` can write from ``formats``
+    (``parse_pixel_formats``): 4:2:0 YUV ones, the only layout a copy is made
+    in. ProRes is always written 10-bit (its own 4:2:2 or 4:4:4, whatever it
+    reads): VideoToolbox lists 8-bit inputs too. Capped by ``HW_MAX_BITS``;
+    ``KNOWN_DEPTHS`` when nothing could be read."""
+    if encoder in PRORES_ENCODERS:
+        return KNOWN_DEPTHS[encoder]
+    found: set[int] = set()
+    for f in formats:
+        layout = pixfmt.chroma(f)
+        if pixfmt.known(f) and layout == "420":
+            found.add(pixfmt.depth(f))
+    cap = HW_MAX_BITS.get(encoder, 12)
+    depths = tuple(sorted(d for d in found if d in (8, 10, 12) and d <= cap))
+    return depths or KNOWN_DEPTHS.get(encoder, (8,))
+
+
+def pick_bits(
+    src_bits: int,
+    encoder: str,
+    depth: ColourDepth = "source",
+    depths: Sequence[int] | None = None,
+    *,
+    hdr10: bool = False,
+) -> int:
+    """The depth a copy is written with: the source's for ``"source"`` (up to
+    ``SOURCE_MAX_BITS``), else the one chosen; at least 10 for HDR10; then the
+    nearest the encoder writes (``depths``, else ``KNOWN_DEPTHS``), the next
+    deeper one first so a 9-bit source becomes 10, never 8."""
+    if depth == "source":
+        wanted = min(max(8, src_bits), SOURCE_MAX_BITS.get(encoder, src_bits))
+    else:
+        wanted = int(depth)
+    if hdr10:
+        wanted = max(wanted, 10)
+    can = sorted(depths or KNOWN_DEPTHS.get(encoder, (8,)))
+    deeper = [d for d in can if d >= wanted]
+    return deeper[0] if deeper else can[-1]
+
+
+def keeps_depth(
+    src_bits: int, encoder: str, depths: Mapping[str, Sequence[int]] | None = None
+) -> bool:
+    """Whether "same as source" keeps every bit of the source (up to 12, the
+    most any copy is written with)."""
+    got = pick_bits(src_bits, encoder, "source", (depths or {}).get(encoder))
+    return got >= min(src_bits, 12)
+
+
 def usable_encoders(
-    listed: Sequence[str], *, nvidia: bool, hdr10: bool = False, apple: bool = False
+    listed: Sequence[str],
+    *,
+    nvidia: bool,
+    hdr10: bool = False,
+    apple: bool = False,
+    bits: int = 8,
+    depths: Mapping[str, Sequence[int]] | None = None,
 ) -> tuple[str, ...]:
     """The encoders this ffmpeg has that ButterEye drives, default first (§7.5:
     NVENC on NVIDIA, else SVT-AV1 in software; for HDR10 only x265, then SVT-AV1).
@@ -432,7 +511,13 @@ def usable_encoders(
     CPU to the smoothing and heats a fanless machine far less than x265) and
     ProRes last (its files are about 30 times larger). ProRes on the CPU
     (``prores_ks``) is last everywhere, and on a Mac only offered when the media
-    engine's ProRes isn't."""
+    engine's ProRes isn't.
+
+    ``bits`` above 8: the encoders that keep the source's depth (``keeps_depth``
+    with ``depths``, ``encoder_depths`` per encoder) come first, in this order,
+    then the others: x264 for a 10-bit source, all but a 12-bit x265 for a
+    12-bit one. ProRes stays last. The dialogs and the command line all take
+    the first."""
     if hdr10:
         return tuple(e for e in HDR10_ENCODERS if e in listed)
     have = [e for e in KNOWN_ENCODERS if e in listed]
@@ -449,6 +534,8 @@ def usable_encoders(
             have.insert(0, "hevc_videotoolbox")
         if "prores_videotoolbox" in have and "prores_ks" in have:
             have.remove("prores_ks")
+    if bits > 8:
+        have.sort(key=lambda e: (e in PRORES_ENCODERS, not keeps_depth(bits, e, depths)))
     return tuple(have)
 
 
@@ -604,6 +691,7 @@ __all__ = [
     "KNOWN_ENCODERS",
     "HDR10_ENCODERS",
     "HW_ENCODERS",
+    "KNOWN_DEPTHS",
     "Mastering",
     "HdrMeta",
     "SourceInfo",
@@ -619,6 +707,10 @@ __all__ = [
     "svtav1_hdr_params",
     "source_info",
     "parse_decoders",
+    "parse_pixel_formats",
+    "encoder_depths",
+    "pick_bits",
+    "keeps_depth",
     "usable_encoders",
     "offline_fps",
     "render_sizes",

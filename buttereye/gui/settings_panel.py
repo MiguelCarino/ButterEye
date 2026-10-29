@@ -5,7 +5,7 @@ the picture after smoothing, the power preset, and whether per-file logs are
 kept to copy. Each change is saved at once, like the main window's choices
 (``[general] osd_seconds``, ``osd_items``, ``keep_logs``, ``upscaling``,
 ``picture``, ``lut``, ``deband*``, ``compare``, ``even_pacing``,
-``cadence_first``); a slider or a number box saves
+``cadence_first``, ``preload``, ``preload_max_s``); a slider or a number box saves
 once it has been still for ``SLIDER_SAVE_MS``, not at every step of a drag.
 
 Only what was changed here is written over the file as loaded, so a choice the
@@ -42,6 +42,7 @@ from buttereye.core.api import (
     OSD_ITEMS,
     PICTURE_KEYS,
     PICTURE_RANGE,
+    PRELOAD_RANGE,
     ButterEye,
     ButterEyeError,
     Config,
@@ -378,7 +379,51 @@ class SettingsPanel(QWidget):
         self.cadence_first.toggled.connect(lambda on: self._set(cadence_first=on))
         bl.addWidget(self.cadence_first)
         bl.addWidget(note)
+        # mpv starts paused until the filter has its first frames (mpvctl.session)
+        self.preload = QCheckBox(self.tr("Start videos smooth"), box)
+        self.preload.setObjectName("preload")
+        self.preload_note = self._note("", box)
+        self.preload.setAccessibleName(a11y.plain(self.preload.text()))
+        self.preload.toggled.connect(self._preload_changed)
+        bl.addWidget(self.preload)
+        bl.addWidget(self.preload_note)
+        p_lo, p_hi = PRELOAD_RANGE
+        self.preload_max = QSpinBox(box)
+        self.preload_max.setObjectName("preload.max")
+        self.preload_max.setRange(int(p_lo), int(p_hi))
+        self.preload_max.setSuffix(self.tr(" s"))
+        label, _ = a11y.labelled(
+            self.tr("Hold at most"),
+            self.preload_max,
+            description=self.tr("Playback starts after this even if smoothing isn't ready."),
+        )
+        row = QHBoxLayout()
+        row.addWidget(label)
+        row.addWidget(self.preload_max, 1, Qt.AlignmentFlag.AlignLeft)
+        bl.addLayout(row)
+        self.preload_max.valueChanged.connect(lambda _v: self._preload_max_changed())
+        self._preload_text()
         lay.addWidget(box)
+
+    def _preload_text(self) -> None:
+        text = self.tr(
+            "The first picture is held until smoothing is ready, usually a few "
+            "seconds and never more than {n} s, so playback starts without dropped "
+            "frames. Seeking is not affected."
+        ).format(n=self.preload_max.value())
+        self.preload_note.setText(text)
+        self.preload.setAccessibleDescription(text)
+
+    def _preload_changed(self, on: bool) -> None:
+        self.preload_max.setEnabled(on)
+        self._set(preload=on)
+
+    def _preload_max_changed(self) -> None:
+        self._preload_text()
+        if self._updating or self.load is None:
+            return
+        self._want["preload_max_s"] = float(self.preload_max.value())
+        self._save_timer.start()  # once the box has been still for a moment
 
     def _build_power(self, lay: QVBoxLayout) -> None:
         box = QGroupBox(self.tr("Battery and heat"), self)
@@ -454,6 +499,9 @@ class SettingsPanel(QWidget):
             self.compare.setChecked(g.compare == "split")
             self.even_pacing.setChecked(g.even_pacing)
             self.cadence_first.setChecked(g.cadence_first)
+            self.preload.setChecked(g.preload)
+            self.preload_max.setValue(round(g.preload_max_s))
+            self.preload_max.setEnabled(g.preload)
             choice = power_choice(load.config.rules)
             if self.power.findData(choice) < 0:
                 self._add_cool()  # rules written on a Mac: show them as they are

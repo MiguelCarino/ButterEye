@@ -100,6 +100,7 @@ from buttereye.gui.context import GuiContext
 from buttereye.gui.pages.base import GATING_REASONS, Page, PageAction
 from buttereye.gui.widgets.banner import Action, Banner
 from buttereye.gui.widgets.cli_hint import CliHint
+from buttereye.gui.widgets.depth_combo import depth_text
 from buttereye.gui.widgets.drop_zone import DropZone, FileChooser, default_chooser
 from buttereye.gui.widgets.op_row import OpRow
 from buttereye.gui.widgets.state_panel import StatePanel, split_headline
@@ -421,8 +422,10 @@ def source_text(src: SourceFacts) -> str:
     parts = [
         _t("{w}×{h}").format(w=src.width, h=src.height),
         _t("{fps} fps").format(fps=fmt_rate(src.fps)),
-        src.hdr_class.value.upper(),
     ]
+    if src.chroma:  # what mpv decoded: "10-bit 4:2:0"
+        parts.append(depth_text(src.bits, src.chroma))
+    parts.append(src.hdr_class.value.upper())
     if src.interlaced:
         parts.append(_t("interlaced"))
     if src.vfr:

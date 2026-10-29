@@ -65,6 +65,7 @@ SAMPLE = {
     "interlaced": "no",
     "path": "/v/a.mkv",
     "full": "yes",
+    "depth": "10",
 }
 
 

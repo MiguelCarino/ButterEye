@@ -32,6 +32,7 @@ from buttereye.core.types import (
     HdrClass,
     Health,
     SessionId,
+    SourceFacts,
     Target,
     TargetKind,
 )
@@ -570,3 +571,25 @@ def test_include_and_argv(tmp_path: Path) -> None:
     lua = launcher.LUA_HELPER.read_text()
     assert lua.startswith("-- SPDX-License-Identifier: AGPL-3.0-or-later\n")
     assert '"buttereye-request", "toggle"' in lua and "vf toggle @buttereye" in lua
+
+
+def test_source_facts_read_the_decoded_depth() -> None:
+    base = {"w": 1920, "h": 1080, "gamma": "bt.1886"}
+
+    def facts(**vp: object) -> SourceFacts:
+        got = decide.source_facts(
+            {"video-params": {**base, **vp}, "container-fps": 24.0}, path="/x.mkv"
+        )
+        assert got is not None
+        return got
+
+    ten = facts(pixelformat="yuv420p10")
+    assert (ten.bits, ten.chroma) == (10, "420")
+    assert (facts(pixelformat="yuv444p12").bits, facts(pixelformat="yuv444p12").chroma) == (
+        12, "444",
+    )  # fmt: skip
+    # hardware decoding without copy-back: the layout is in hw-pixelformat
+    hw = facts(pixelformat="cuda", **{"hw-pixelformat": "p010"})
+    assert (hw.bits, hw.chroma) == (10, "420")
+    unknown = facts()
+    assert (unknown.bits, unknown.chroma) == (8, "")

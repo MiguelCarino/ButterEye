@@ -4,7 +4,7 @@
 SCOPE §7.8).
 
 One small dialog per video: size (with the engine and an estimated time for
-each), target, format, 10-bit and where to save. Rows under "Saving copies"
+each), target, format, colour depth and where to save. Rows under "Saving copies"
 follow ``JobChanged``. No error codes in the window; they stay in the log and
 Details.
 """
@@ -21,7 +21,6 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -41,7 +40,10 @@ from PySide6.QtWidgets import (
 from buttereye.core.api import (
     BackendId,
     ButterEyeError,
+    ColourDepth,
+    ConfigLoad,
     ErrorCode,
+    Feature,
     JobId,
     OpState,
     RenderJobSpec,
@@ -55,6 +57,7 @@ from buttereye.core.api import (
 )
 from buttereye.gui import a11y, theme
 from buttereye.gui.bridge import CoreBridge
+from buttereye.gui.widgets.depth_combo import DepthCombo, depth_text, hdr_text
 
 SIMPLE_ID = "simple"
 COPY_SUFFIX = ".smooth.mkv"
@@ -82,10 +85,6 @@ def _t(text: str) -> str:
 
 #: Software encoders: heavy on the CPU at the doubled frame rate.
 CPU_ENCODERS = frozenset({"libx265", "libsvtav1", "libx264", "prores_ks"})
-#: Encoders that can write 10 bits (the core's ``render.probe.TEN_BIT_ENCODERS``)
-TEN_BIT_ENCODERS = frozenset(
-    {"hevc_nvenc", "av1_nvenc", "hevc_videotoolbox", "libx265", "libsvtav1"}
-)
 
 
 def encoder_name(encoder: str) -> str:
@@ -248,8 +247,9 @@ def default_output(src: Path) -> Path:
 
 def spec_extras(**fields: object) -> dict[str, object]:
     """The ``RenderJobSpec`` fields this core knows of ``fields``: the engine and
-    10-bit choices go to a core whose spec carries them, and are left out
-    (the core then chooses the same engine itself, 10-bit stays off) before."""
+    depth choices go to a core whose spec carries them, and are left out (the
+    core then chooses the same engine itself; a core without ``depth`` takes
+    ``ten_bit``) before."""
     known = {f.name for f in dataclasses.fields(RenderJobSpec)}
     return {k: v for k, v in fields.items() if k in known}
 
@@ -423,19 +423,31 @@ class ConvertDialog(QDialog):
         lbl, _ = a11y.labelled(_t("&Format"), self.format_combo)
         grid.addWidget(lbl, 2, 0)
         grid.addWidget(self.format_combo, 2, 1)
-        self.format_combo.currentIndexChanged.connect(lambda _i: self._update_ten_bit())
+        self.format_combo.currentIndexChanged.connect(lambda _i: self._update_depth())
 
-        self.ten_bit = QCheckBox(_t("&10-bit colour"), self)
-        self.ten_bit.setObjectName("convertTenBit")
-        self.ten_bit.setToolTip(
+        self.depth_combo = DepthCombo(encoder_name, self)
+        self.depth_combo.setObjectName("convertDepth")
+        self.depth_combo.setToolTip(
             _t(
-                "Less banding in skies and dark gradients, at about the same speed and "
-                "size. Videos that are 10-bit already always stay 10-bit."
+                "10 bits shows less banding in skies and dark gradients than 8, at about "
+                "the same speed and size."
             )
         )
+        self.depth_label, _ = a11y.labelled(_t("Colour &depth"), self.depth_combo)
+        grid.addWidget(self.depth_label, 3, 0)
+        grid.addWidget(self.depth_combo, 3, 1)
+        self.depth_combo.currentIndexChanged.connect(lambda _i: self._update_depth_note())
+        self.depth_note = QLabel(self)
+        self.depth_note.setObjectName("convertDepthNote")
+        self.depth_note.setTextFormat(Qt.TextFormat.PlainText)
+        self.depth_note.setWordWrap(True)
+        self.depth_note.setVisible(False)
+        grid.addWidget(self.depth_note, 4, 1)
         # only offered to a core whose job spec carries the choice
-        self.ten_bit.setVisible(bool(spec_extras(ten_bit=True)))
-        grid.addWidget(self.ten_bit, 3, 1)
+        offered = bool(spec_extras(depth="source", ten_bit=True))
+        self.depth_label.setVisible(offered)
+        self.depth_combo.setVisible(offered)
+        self._default_depth: ColourDepth = "source"
 
         out_row = QHBoxLayout()
         self.output_label = QLabel(self)
@@ -453,8 +465,8 @@ class ConvertDialog(QDialog):
         save_to = QLabel(_t("Save to"), self)
         save_to.setTextFormat(Qt.TextFormat.PlainText)
         self.output_label.setAccessibleName(_t("Save to"))
-        grid.addWidget(save_to, 4, 0)
-        grid.addLayout(out_row, 4, 1)
+        grid.addWidget(save_to, 5, 0)
+        grid.addLayout(out_row, 5, 1)
         self.form = QWidget(self)
         self.form.setLayout(grid)
         self.form.setEnabled(False)
@@ -479,12 +491,28 @@ class ConvertDialog(QDialog):
         self._show_output()
         self.resize(unit * 30, self.sizeHint().height())
 
+        caps = bridge.capabilities
+        if (
+            caps is not None
+            and caps.states.get(Feature.CONFIG) is not None
+            and caps.ok(Feature.CONFIG)
+        ):
+            bridge.call(
+                lambda core: core.load_config(), owner=self, ok=self._config, err=lambda _e: None
+            )
         bridge.call(
             lambda core: core.render_probe(self.source, profile_id=SIMPLE_ID),
             owner=self,
             ok=self._probed,
             err=self._probe_failed,
         )
+
+    def _config(self, load: ConfigLoad) -> None:
+        """The settings' depth is the default (until the user chose one)."""
+        self._default_depth = load.config.render.depth
+        if self.probe is not None and self.depth_combo.choice() == "source":
+            self.depth_combo.set_probe(self.probe, self._default_depth)
+            self._update_depth()
 
     # ---- probe
     def _probed(self, probe: RenderProbe) -> None:
@@ -499,13 +527,16 @@ class ConvertDialog(QDialog):
             a11y.announce(self.message, self.message.text())
             return
         self.message.setText(
-            _t("{w} × {h} · {fps} fps · {length}").format(
+            _t("{w} × {h} · {fps} fps · {length} · {depth} · {hdr}").format(
                 w=probe.width,
                 h=probe.height,
                 fps=_rate_text(probe.fps),
                 length=_length_text(probe.duration_s),
+                depth=depth_text(probe.bits, probe.chroma),
+                hdr=hdr_text(probe.hdr_class),
             )
         )
+        self.depth_combo.set_probe(probe, self._default_depth)
         self._fill_sizes()
         for enc in probe.encoders:
             self.format_combo.addItem(encoder_name(enc), enc)
@@ -515,7 +546,7 @@ class ConvertDialog(QDialog):
                     _t("Runs on the CPU and keeps most of its cores busy while converting."),
                     Qt.ItemDataRole.ToolTipRole,
                 )
-        self._update_ten_bit()
+        self._update_depth()
         notes = [note_text(w.id, without_code(render(w.cause))) for w in probe.warnings]
         kept = _kept_text(probe)
         if kept:
@@ -569,11 +600,17 @@ class ConvertDialog(QDialog):
     def encoder(self) -> str:
         return str(self.format_combo.currentData() or "")
 
-    def _update_ten_bit(self) -> None:
-        self.ten_bit.setEnabled(self.encoder() in TEN_BIT_ENCODERS)
+    def _update_depth(self) -> None:
+        self.depth_combo.set_encoder(self.encoder())
+        self._update_depth_note()
+
+    def _update_depth_note(self) -> None:
+        note = self.depth_combo.note() if self.depth_combo.isVisibleTo(self) else ""
+        self.depth_note.setText(note)
+        self.depth_note.setVisible(bool(note))
 
     def spec(self) -> RenderJobSpec:
-        ten_bit = self.ten_bit.isChecked() and self.ten_bit.isEnabled()
+        depth = self.depth_combo.choice()
         return RenderJobSpec(
             source=self.source,
             output=self.output,
@@ -583,7 +620,8 @@ class ConvertDialog(QDialog):
             target=self.target(),
             size=self.chosen_size(),
             engine=self.chosen_engine(),
-            ten_bit=ten_bit,
+            # an older core reads only ten_bit
+            **spec_extras(depth=depth, ten_bit=depth in ("10", "12")),  # type: ignore[arg-type]
         )
 
     def _show_output(self) -> None:

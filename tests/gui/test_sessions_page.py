@@ -33,6 +33,7 @@ from buttereye.core.api import (
     ErrorCode,
     Feature,
     FilterState,
+    HdrClass,
     Health,
     HealthChanged,
     Msg,
@@ -40,6 +41,7 @@ from buttereye.core.api import (
     Reason,
     SessionEnded,
     SessionId,
+    SourceFacts,
 )
 from buttereye.core.capabilities import unavailable_state
 from buttereye.core.testing import scenarios as sc
@@ -920,3 +922,10 @@ def test_pending_headline_shows_the_start_deadline_notice() -> None:
     assert sp.headline(pending) == ("busy", "Starting… waiting for the video window")
     stuck = dataclasses.replace(pending, notice=Msg("mpv hasn't opened the video yet."))
     assert sp.headline(stuck) == ("degraded", "mpv hasn't opened the video yet.")
+
+
+def test_source_text_shows_the_decoded_depth() -> None:
+    facts = SourceFacts(Fraction(24000, 1001), 1920, 1080, HdrClass.HDR10, 60.0, False, "/f.mkv")
+    assert sp.source_text(facts) == "1920×1080 · 23.976 fps · HDR10"  # not known yet
+    ten = dataclasses.replace(facts, bits=10, chroma="420")
+    assert sp.source_text(ten) == "1920×1080 · 23.976 fps · 10-bit 4:2:0 · HDR10"

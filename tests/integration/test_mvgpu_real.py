@@ -3,8 +3,9 @@
 """The mvgpu Vulkan plugin (spike M0(r)) on a real GPU: a textured square moving
 16 px per frame must come out shifted 8 px in the in-between frame; source frames
 pass through untouched; frame counts follow the rate; a scene-change mark repeats
-the frame. Motion of an odd number of pixels a frame (slow pans) lands between
-the pixels, and a flat bar on a flat background keeps its own motion. Runs in the
+the frame; a change in brightness between the pair does not move the square.
+Motion of an odd number of pixels a frame (slow pans) lands between the pixels,
+and a flat bar on a flat background keeps its own motion. Runs in the
 system Python (VapourSynth) against a built plugin: $MVGPU_PLUGIN, else the dev
 build in ~/.cache/buttereye-dev/mvgpu-build."""
 
@@ -126,6 +127,43 @@ print(json.dumps({"pan1": mid(texture, 1), "pan3": mid(texture, 3), "bar4": mid(
 """
 
 
+#: the moving square with every odd source frame brightened by LIFT: the in-between
+#: frame must still put the square half way, at half the brightness change
+FLASH_SCRIPT = r"""
+import json, sys
+import numpy as np
+import vapoursynth as vs
+core = vs.core
+core.std.LoadPlugin(sys.argv[1])
+W, H, STEP, SIDE, LIFT = 640, 368, 16, 96, 40.0
+rng = np.random.default_rng(7)
+tex = (rng.random((SIDE, SIDE)) * 160 + 48).astype(np.uint8).astype(np.float64)
+
+def frame_y(k, shift=0.0, lift=0.0):
+    y = np.full((H, W), 32.0)
+    x0 = int(round(100 + STEP * k + shift))
+    y[136:136 + SIDE, x0:x0 + SIDE] = tex
+    return y + lift
+
+base = core.std.BlankClip(format=vs.YUV420P8, width=W, height=H, fpsnum=24, fpsden=1,
+                          length=6, color=[32, 128, 128])
+
+def paint(n, f):
+    out = f.copy()
+    np.asarray(out[0])[:] = frame_y(n, lift=LIFT if n % 2 else 0.0).astype(np.uint8)
+    return out
+
+src = core.std.ModifyFrame(base, base, paint)
+x2 = core.mvgpu.Interpolate(src, fps_num=48, fps_den=1)
+mid = np.asarray(x2.get_frame(3)[0]).astype(np.float64)  # between source 1 (lifted) and 2
+want = frame_y(1, STEP / 2, LIFT / 2)
+blend = (frame_y(1, lift=LIFT) + frame_y(2)) / 2
+def err(a, b):
+    return float(np.mean(np.abs(a[136:136 + SIDE] - b[136:136 + SIDE])))
+print(json.dumps({"mid_err": err(mid, want), "blend_err": err(blend, want)}))
+"""
+
+
 def _meson_version() -> list[int]:
     """The plugin version mvgpu/meson.build gives the build, as VapourSynth reports it."""
     text = (Path(__file__).resolve().parents[2] / "mvgpu" / "meson.build").read_text()
@@ -172,3 +210,13 @@ def test_mvgpu_odd_pixel_motion_and_flat_edges(tmp_path: Path) -> None:
     # vector median outvoted it with the still background's vectors (error as large
     # as repeating the frame)
     assert r["bar4"]["err"] < 0.1 * r["bar4"]["repeat"], r
+
+
+@pytest.mark.skipif(not PLUGIN.is_file(), reason=f"mvgpu plugin not built ({PLUGIN})")
+@pytest.mark.skipif(shutil.which("python3") is None, reason="needs the system Python")
+def test_mvgpu_brightness_change(tmp_path: Path) -> None:
+    r = _run(tmp_path, "mvgpu_flash.py", FLASH_SCRIPT)
+    # a fade or a flash shifts the whole frame's brightness between the pair. Without
+    # taking that out of every A - C difference, the half-pixel refinement drifted
+    # the vectors (measured 1.28 vs 0.04 with it)
+    assert r["mid_err"] < 0.02 * r["blend_err"], r

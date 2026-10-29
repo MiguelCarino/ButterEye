@@ -171,6 +171,13 @@ def phase_text(phase: RenderPhase | None) -> str:
     }[phase]
 
 
+def encoder_text(job: RenderJobState) -> str:
+    """ "libx265 · 10-bit" once the job has settled the depth, else the encoder."""
+    if job.bits is None:
+        return job.spec.encoder
+    return _t("{encoder} · {n}-bit").format(encoder=job.spec.encoder, n=job.bits)
+
+
 def confirm_box(parent: QWidget, title: str, text: str, yes: str, no: str) -> bool:
     box = message_box(parent)
     box.setObjectName("renderConfirm")
@@ -560,7 +567,7 @@ class RenderPage(Page):
                 self.progress_text(job),
                 phase_text(job.phase) if job.state is OpState.RUNNING else "",
                 eta,
-                job.spec.encoder,
+                encoder_text(job),
             ]
             items = []
             for col, text in enumerate(cells):
@@ -643,6 +650,7 @@ class RenderPage(Page):
                         out=str(job.spec.output),
                         profile=job.spec.profile_id,
                         encoder=job.spec.encoder,
+                        depth=job.spec.depth or ("10" if job.spec.ten_bit else ""),
                     )
                 )
             except KeyError:

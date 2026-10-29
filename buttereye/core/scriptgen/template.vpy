@@ -134,7 +134,8 @@ def _source(cfg):
     kind = src.get('kind')
     if kind == 'blank':
         rate = _rate(src.get('fps'))
-        fmt = vs.YUV420P10 if int(src.get('bits', 8)) > 8 else vs.YUV420P8
+        bits = int(src.get('bits', 8))
+        fmt = vs.YUV420P12 if bits > 10 else (vs.YUV420P10 if bits > 8 else vs.YUV420P8)
         clip = core.std.BlankClip(format=fmt, width=int(src['width']), height=int(src['height']),
                                   fpsnum=rate.numerator, fpsden=rate.denominator,
                                   length=int(src.get('length', 48)))
@@ -172,6 +173,12 @@ def _source(cfg):
 #: as without interpolation, instead of a morph between the two poses.
 CUT_MIN, CUT_RATIO, CUT_FLOOR = 0.02, 5.0, 0.003
 CUT_BACK, CUT_AHEAD = 4, 3
+#: above the absolute threshold a pair is a cut only when MVTools' own scene
+#: detection on the quarter-size clip (CUT_MC_SAD, CUT_MC_BLOCKS) cannot
+#: motion-compensate it either, or above CUT_HARD: a fast pan reaches 0.12-0.20
+#: too, and was held (a repeated frame). Without MVTools, the threshold alone
+#: decides.
+CUT_HARD, CUT_MC_SAD, CUT_MC_BLOCKS = 0.30, 400, 100
 #: a held drawing: below DUP_ABS, or (noisy sources) below DUP_NOISY and under a
 #: DUP_RATIO-th of the change around it (two frames each side)
 DUP_ABS, DUP_NOISY, DUP_RATIO = 0.0015, 0.012, 4.0
@@ -250,10 +257,10 @@ def _ahead(clip):
 def _analyse(clip, threshold):
     # Two small clips whose frames carry the flags of the source frame: ``dups``
     # _BEDup (n+1 repeats the drawing of n) and _BEStill (n and n+1 are the same
-    # picture), ``cuts`` _BECut (a cut between n and n+1: above ``threshold`` or
-    # by the relative rule). A dups frame reads source frames n-2..n+3, a cuts
-    # frame n-CUT_BACK..n+CUT_AHEAD+1; kept apart so nothing reaches further back
-    # than it has to.
+    # picture), ``cuts`` _BECut (a cut between n and n+1: above ``threshold`` and
+    # not motion-compensated, or by the relative rule; _is_cut). A dups frame
+    # reads source frames n-2..n+3, a cuts frame n-CUT_BACK..n+CUT_AHEAD+1; kept
+    # apart so nothing reaches further back than it has to.
     w = max(16, clip.width // 4 // 2 * 2)
     h = max(16, clip.height // 4 // 2 * 2)
     small = _ahead(core.resize.Bilinear(clip, w, h, format=vs.GRAY8))
@@ -268,19 +275,42 @@ def _analyse(clip, threshold):
         out.props['_BEStill'] = int(here < STILL_MEAN and f[2].props['PlaneStatsMax'] <= STILL_MAX)
         return out
 
+    mc = _mc_cuts(small)
+    window = [_shift(stats, k) for k in range(-CUT_BACK, CUT_AHEAD + 1)]
+
     def cut(n, f):
-        d = [x.props['PlaneStatsAverage'] for x in f]
-        here = d[CUT_BACK]
-        around = max([CUT_FLOOR] + d[:CUT_BACK] + d[CUT_BACK + 1:])
+        d = [x.props['PlaneStatsAverage'] for x in f[:len(window)]]
+        unexplained = bool(f[-1].props.get('_SceneChangePrev', 0)) if mc is not None else None
         out = f[CUT_BACK].copy()
-        out.props['_BECut'] = int(here > threshold
-                                  or (here > CUT_MIN and here > CUT_RATIO * around))
+        out.props['_BECut'] = int(_is_cut(d, threshold, unexplained))
         return out
 
     dups = core.std.ModifyFrame(stats, [_shift(stats, k) for k in range(-2, 3)], dup)
-    cuts = core.std.ModifyFrame(stats, [_shift(stats, k) for k in range(-CUT_BACK, CUT_AHEAD + 1)],
-                                cut)
+    cuts = core.std.ModifyFrame(stats, window + ([mc] if mc is not None else []), cut)
     return dups, cuts
+
+
+def _is_cut(d, threshold, unexplained=None):
+    # d: the changes CUT_BACK pairs before to CUT_AHEAD after, the pair itself at
+    # CUT_BACK. ``unexplained``: MVTools could not motion-compensate the pair
+    # (None: no MVTools, the absolute threshold decides alone)
+    here = d[CUT_BACK]
+    around = max([CUT_FLOOR] + d[:CUT_BACK] + d[CUT_BACK + 1:])
+    absolute = here > threshold and (unexplained is None or unexplained or here > CUT_HARD)
+    return absolute or (here > CUT_MIN and here > CUT_RATIO * around)
+
+
+def _mc_cuts(small):
+    # Frame n carries _SceneChangePrev when MVTools finds no motion that explains
+    # source frames n -> n+1 (it reads n+1, inside CUT_AHEAD). Under 0.5 ms a
+    # frame at 4K. None without the plugin
+    try:
+        _load('mv', 'mvtools.so')
+    except vs.Error:
+        return None
+    sup = core.mv.Super(small, pel=1, hpad=8, vpad=8)
+    vec = core.mv.Analyse(sup, isb=False, blksize=8, overlap=0, delta=1)
+    return _shift(core.mv.SCDetection(small, vec, thscd1=CUT_MC_SAD, thscd2=CUT_MC_BLOCKS), 1)
 
 
 def _stills(clip, dups):
@@ -423,7 +453,11 @@ def _prepare(clip, cfg, threshold, pairs=None, still=False):
 
 
 def _output_format(clip, cfg):
-    bits = 10 if clip.format.bits_per_sample > 8 or cfg.get('hdr') else 8
+    # out_bits: the depth the copy is encoded with, so float output is written
+    # at it once. Else the source's (12 stays 12), at least 10 for HDR
+    bits = int(cfg.get('out_bits') or 0) or clip.format.bits_per_sample
+    if cfg.get('hdr') and not cfg.get('out_bits'):
+        bits = max(bits, 10)
     return core.query_video_format(vs.YUV, vs.INTEGER, bits,
                                    clip.format.subsampling_w, clip.format.subsampling_h)
 
@@ -438,17 +472,26 @@ def _dither(fmt, cfg):
     return name if name in ('none', 'ordered', 'random', 'error_diffusion') else 'ordered'
 
 
-def _passthrough(clip, interpolated, target, marked=False):
+def _depth(clip, fmt, cfg):
+    # the same picture at another depth: exact going up, dithered going down
+    return core.resize.Point(clip, format=fmt.id, dither_type=_dither(fmt, cfg or {}))
+
+
+def _passthrough(clip, interpolated, target, marked=False, cfg=None):
     # At an integer multiplier m every m-th output frame is a source frame: take
     # it from the source untouched (no YUV->RGB->YUV round trip, no dither) and
     # only the others from the engine. Evaluation is lazy, so the engine's output
     # frames at source positions are never requested. ``marked``: the slots after
     # a frame with _SceneChangeNext (a cut or a still pair) repeat that source
     # frame too, which is what the engine would give, minus the round trip.
-    # Same format and length, or no change.
+    # Same format (a depth apart is converted) and length, or no change.
     ratio = target / Fraction(clip.fps_num, clip.fps_den) if clip.fps_num else None
     if ratio is None or ratio.denominator != 1 or ratio.numerator < 2:
         return interpolated
+    a, b = clip.format, interpolated.format
+    if a.id != b.id and (a.color_family, a.sample_type, a.subsampling_w, a.subsampling_h) == (
+            b.color_family, b.sample_type, b.subsampling_w, b.subsampling_h):
+        clip = _depth(clip, b, cfg)
     if clip.format.id != interpolated.format.id:
         return interpolated
     m = ratio.numerator
@@ -493,7 +536,7 @@ def _rife(clip, cfg, props, target):
                          fps_den=target.denominator, sc=marked, **opts)
     fmt = _output_format(clip, cfg)
     out = _to_yuv(rgb, fmt, matrix, rng, loc, cfg)
-    return _passthrough(clip, out, target, marked)
+    return _passthrough(clip, out, target, marked, cfg)
 
 
 def _fp16_model(network_path, target_network_path, fp16=False, bf16=False,
@@ -646,7 +689,7 @@ def _rife_trt(clip, cfg, props, target):
                       video_player=True, _implementation=2)
     fmt = _output_format(clip, cfg)
     out = _to_yuv(rgb, fmt, matrix, rng, loc, cfg)
-    return _passthrough(clip, out, target, marked)
+    return _passthrough(clip, out, target, marked, cfg)
 
 
 def _mvtools(clip, cfg, target):
@@ -659,13 +702,20 @@ def _mvtools(clip, cfg, target):
     if pel not in (1, 2, 4):
         pel = 1 if clip.width > 1920 or clip.height > 1080 else 2
 
-    def vectors(c):
+    def vectors(c, retry=True):
         sup = core.mv.Super(c, pel=pel)
-        return (sup, core.mv.Analyse(sup, isb=True, blksize=16, overlap=4),
-                core.mv.Analyse(sup, isb=False, blksize=16, overlap=4))
+        # a wider search (searchparam 4, not 2), and a wider retry for blocks
+        # that match badly (badsad): +0.05-0.17 dB on every clip measured, at
+        # the same cost. Not for a held drawing's in-betweens: on flat shading
+        # the retry finds false matches (motion steps 0.01 -> 0.16 uneven)
+        search = dict(blksize=16, overlap=4, searchparam=4)
+        if retry:
+            search.update(badsad=1000, badrange=-24)
+        return (sup, core.mv.Analyse(sup, isb=True, **search),
+                core.mv.Analyse(sup, isb=False, **search))
 
     def pairs(pair_clip, steps):
-        sup, bv, fv = vectors(pair_clip)
+        sup, bv, fv = vectors(pair_clip, retry=False)
         return {j: core.std.SelectEvery(core.mv.FlowInter(pair_clip, sup, bv, fv,
                                                           time=100.0 * j / steps), 2, 0)
                 for j in range(1, steps)}
@@ -831,6 +881,13 @@ def build():
     if cfg.get('compare') == 'split':
         out = _compare(plain, out, target, cfg)
     out = core.std.AssumeFPS(out, fpsnum=target.numerator, fpsden=target.denominator)
+    bits = int(cfg.get('out_bits') or 0)
+    if bits and out.format.sample_type == vs.INTEGER and out.format.bits_per_sample != bits:
+        # MVTools and mvgpu work at the source's depth: a copy encoded shallower
+        # is reduced here with the chosen dither, not by the encoder's scaler
+        out = _depth(out, core.query_video_format(out.format.color_family, vs.INTEGER, bits,
+                                                  out.format.subsampling_w,
+                                                  out.format.subsampling_h), cfg)
     # MVTools reads frames 0 and 1 while the graph is built, before mpv can serve
     # any: mpv hands over black ones, and every filter between the source and
     # MVTools (the analysis, hold fill, Super) would keep what it made of them,

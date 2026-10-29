@@ -10,7 +10,7 @@ layout(std430, binding = 0) readonly buffer A { float a[]; };
 layout(std430, binding = 1) readonly buffer C { float c[]; };
 layout(std430, binding = 2) readonly buffer F { vec4 field[]; };  // per luma pixel (select.comp)
 layout(std430, binding = 3) writeonly buffer Out { float o[]; };
-layout(push_constant) uniform P { uint off; int w, h, lw, lh, sub; float t, lo, hi; } p;
+layout(push_constant) uniform P { uint off; int w, h, lw, lh, sub; float t, lo, hi, fail_lo, fail_hi; } p;
 // Catmull-Rom (cubic, exact at whole pixels): bilinear sampling at the
 // in-between positions sub-pixel vectors land on softens fine detail and lines,
 // and a soft in-between frame between two sharp source frames flickers
@@ -64,5 +64,17 @@ void main() {
     float div = field[l.y * p.lw + min(l.x + R, p.lw - 1)].x - field[l.y * p.lw + max(l.x - R, 0)].x
               + field[min(l.y + R, p.lh - 1) * p.lw + l.x].y - field[max(l.y - R, 0) * p.lw + l.x].y;
     float one = div < -0.25 ? sa : div > 0.25 ? sc : (p.t <= 0.5 ? sa : sc);
-    o[p.off + uint(y * p.w + x)] = mix(blend, one, smoothstep(p.lo, p.hi, mismatch));
+    float res = mix(blend, one, smoothstep(p.lo, p.hi, mismatch));
+    // where the vectors fail over an area (strobes, flashes, motion past the
+    // search: the mean mismatch of a 5x5 grid of luma pixels 4 apart), the
+    // per-pixel choice between A and C turns into holes and mosaic: fade to the
+    // plain blend of the two frames there, a soft ghost (what MVTools shows)
+    float area = 0.0;
+    for (int j = -2; j <= 2; ++j)
+        for (int i = -2; i <= 2; ++i) {
+            ivec2 q = clamp(l + 4 * ivec2(i, j), ivec2(0), ivec2(p.lw - 1, p.lh - 1));
+            area += field[q.y * p.lw + q.x].z;
+        }
+    float plain = (1.0 - p.t) * tap(true, x, y) + p.t * tap(false, x, y);
+    o[p.off + uint(y * p.w + x)] = mix(res, plain, smoothstep(p.fail_lo, p.fail_hi, area / 25.0));
 }

@@ -30,13 +30,14 @@ from typing import Any, TextIO
 
 import buttereye
 from buttereye.core import licences, osapi
-from buttereye.core.api import ButterEye
+from buttereye.core.api import ButterEye, copy_bits
 from buttereye.core.capabilities import unavailable_text
 from buttereye.core.errors import ButterEyeError, ErrorCode, OperationCancelled
 from buttereye.core.events import HealthChanged, JobChanged, Notice, SessionChanged, SessionEnded
 from buttereye.core.i18n import render
 from buttereye.core.profiles import rules
 from buttereye.core.types import (
+    COLOUR_DEPTHS,
     BenchRequest,
     CleanTarget,
     DetachPolicy,
@@ -311,7 +312,9 @@ async def cmd_render(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
         )
     if not probe.encoders:
         raise ButterEyeError(ErrorCode.ENCODER_FAILED, Msg("No usable video encoder was found."))
+    # the core orders them: the first keeps the source's depth when one can
     encoder = ns.encoder or probe.encoders[0]
+    depth = ns.depth or load.config.render.depth
     output = (
         Path(ns.output).expanduser().absolute()
         if ns.output
@@ -325,12 +328,17 @@ async def cmd_render(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
         overwrite=bool(ns.overwrite),
         target=ns.target,
         size=ns.size,
+        depth=depth,
+        ten_bit=depth in ("10", "12"),
     )
+    bits = copy_bits(probe, encoder, depth)
     events = core.subscribe()
     job = await core.render_enqueue(spec)
     for w in probe.warnings:
         out.line(out.badge(w.severity.value, render(w.title)))
-    out.line(f"Saving a smooth copy: {output} ({encoder}). Ctrl+C cancels.")
+    out.line(f"Saving a smooth copy: {output} ({encoder}, {bits}-bit). Ctrl+C cancels.")
+    if depth == "source" and bits < min(probe.bits, 12):
+        out.line(f"The source is {probe.bits}-bit; {encoder} writes this copy with {bits} bits.")
     try:
         async for ev in events:
             if not (isinstance(ev, JobChanged) and ev.job.id == job):
@@ -540,6 +548,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--encoder")
     r.add_argument("--size", type=parse_size, help="WxH, smaller than the source")
     r.add_argument("--target", type=parse_target, help='"2x" or a frame rate such as 60')
+    r.add_argument(
+        "--depth", choices=COLOUR_DEPTHS, default=None,
+        help='colour depth: "source" (the default setting) or 8, 10, 12 bits',
+    )  # fmt: skip
     r.add_argument("--overwrite", action="store_true")
     b = sub.add_parser("bench", parents=[common], help="measure the engines")
     b.add_argument("--width", type=int, default=1920)

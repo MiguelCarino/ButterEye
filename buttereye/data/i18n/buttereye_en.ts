@@ -1046,11 +1046,6 @@
     <name>ConvertDialog</name>
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
-        <source>&amp;10-bit colour</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/convert_dialog.py"/>
         <source>&amp;Format</source>
         <translation type="unfinished"></translation>
     </message>
@@ -1072,6 +1067,11 @@
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
         <source>&amp;Target</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>10 bits shows less banding in skies and dark gradients than 8, at about the same speed and size.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -1117,6 +1117,11 @@
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
         <source>Change where to save</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/convert_dialog.py"/>
+        <source>Colour &amp;depth</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -1212,11 +1217,6 @@
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
         <source>Kept as they are: {things}.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/convert_dialog.py"/>
-        <source>Less banding in skies and dark gradients, at about the same speed and size. Videos that are 10-bit already always stay 10-bit.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -1386,7 +1386,7 @@
     </message>
     <message>
         <location filename="buttereye/gui/convert_dialog.py"/>
-        <source>{w} × {h} · {fps} fps · {length}</source>
+        <source>{w} × {h} · {fps} fps · {length} · {depth} · {hdr}</source>
         <translation type="unfinished"></translation>
     </message>
 </context>
@@ -1405,6 +1405,84 @@
     <message>
         <location filename="buttereye/gui/widgets/copy_field.py"/>
         <source>Copy: {name}</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>DepthCombo</name>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>Dolby Vision</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>HDR10</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>HDR10 copies keep at least 10 bits.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>HDR10+</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>HLG</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>SDR</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>Same as source</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>Same as source ({n}-bit)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>This copy will be {n}-bit; the source is {m}-bit.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>This copy will be {n}-bit; the source is {m}-bit. H.264 at {m} bits plays on fewer devices; choose {m}-bit to keep it anyway.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>{encoder} always writes {n} bits.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>{encoder} keeps {m} bits.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>{encoder} writes at most {n} bits.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>{n}-bit</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/widgets/depth_combo.py"/>
+        <source>{n}-bit {chroma}</source>
         <translation type="unfinished"></translation>
     </message>
 </context>
@@ -2977,11 +3055,6 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/dialogs/render_job.py"/>
-        <source>&amp;10-bit colour</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/dialogs/render_job.py"/>
         <source>&amp;Add to queue</source>
         <translation type="unfinished"></translation>
     </message>
@@ -3008,6 +3081,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <message>
         <location filename="buttereye/gui/dialogs/render_job.py"/>
         <source>&amp;Replace</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/render_job.py"/>
+        <source>10 bits shows less banding in skies and dark gradients than 8, at about the same speed and size.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -3058,6 +3136,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <message>
         <location filename="buttereye/gui/dialogs/render_job.py"/>
         <source>Choose output file</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/render_job.py"/>
+        <source>Colour &amp;depth</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -3132,11 +3215,6 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/dialogs/render_job.py"/>
-        <source>Less banding in skies and dark gradients, at about the same speed and size. 10-bit and HDR videos always stay 10-bit.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/dialogs/render_job.py"/>
         <source>Matroska (.mkv) only.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -3188,6 +3266,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <message>
         <location filename="buttereye/gui/dialogs/render_job.py"/>
         <source>Source: {path}</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/dialogs/render_job.py"/>
+        <source>Source: {path} ({depth})</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -3556,6 +3639,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <message>
         <location filename="buttereye/gui/pages/render.py"/>
         <source>unknown</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/render.py"/>
+        <source>{encoder} · {n}-bit</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -4559,6 +4647,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <name>SettingsPanel</name>
     <message>
         <location filename="buttereye/gui/settings_panel.py"/>
+        <source> s</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
         <source>1 second</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4659,6 +4752,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Hold at most</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
         <source>Hue</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4739,6 +4837,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Playback starts after this even if smoothing isn't ready.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
         <source>Power</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4784,12 +4887,22 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Start videos smooth</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
         <source>Strong</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="buttereye/gui/settings_panel.py"/>
         <source>The Battery profile smooths with GPU motion vectors at 2×, which uses far less power than RIFE. It applies to videos opened after the change.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>The first picture is held until smoothing is ready, usually a few seconds and never more than {n} s, so playback starts without dropped frames. Seeking is not affected.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

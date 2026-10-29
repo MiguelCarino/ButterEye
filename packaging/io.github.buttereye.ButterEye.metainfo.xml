@@ -32,10 +32,10 @@
     <binary>buttereye-gui</binary>
   </provides>
   <releases>
-    <release version="0.0.7" date="2026-10-28" type="stable">
+    <release version="0.0.7" date="2026-10-29" type="stable">
       <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.7</url>
       <description>
-        <p>Smooth copies of files with characters such as accents, Japanese, "⧸" or "｜" in their name no longer fail at the end.</p>
+        <p>Videos can start smooth: a new setting holds the first picture until smoothing is ready, so playback starts without dropped frames. Smooth copies keep the source's colour depth by default, with a new Colour depth choice. Fast camera pans are no longer mistaken for scene cuts, and the GPU motion vectors fade to a soft blend instead of a mosaic under strobes and flashes. Smooth copies of files with characters such as accents, Japanese, "⧸" or "｜" in their name no longer fail at the end.</p>
       </description>
     </release>
     <release version="0.0.6" date="2026-10-28" type="stable">

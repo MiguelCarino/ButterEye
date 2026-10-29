@@ -256,10 +256,15 @@ def test_template_passes_source_frames_through_at_integer_multipliers() -> None:
         return int(clip.get_frame(n)[0][0, 0])  # type: ignore[attr-defined]
 
     assert [luma(out, n) for n in range(8)] == [200, 16] * 4
-    # not an integer multiplier, another format or another length: unchanged
+    # not an integer multiplier, another layout or another length: unchanged
     assert passthrough(src, interp, Fraction(60)) is interp  # type: ignore[operator]
-    ten = core.std.BlankClip(interp, format=vs.YUV420P10)
-    assert passthrough(src, ten, Fraction(48)) is ten  # type: ignore[operator]
+    full = core.std.BlankClip(interp, format=vs.YUV444P8)
+    assert passthrough(src, full, Fraction(48)) is full  # type: ignore[operator]
+    # another depth: the source frames are converted to it, exactly going up
+    ten = core.std.BlankClip(interp, format=vs.YUV420P10, color=[64, 512, 512])
+    deep = passthrough(src, ten, Fraction(48))  # type: ignore[operator]
+    assert deep.format.id == vs.YUV420P10
+    assert [luma(deep, n) for n in range(4)] == [800, 64] * 2
     longer = core.std.BlankClip(interp, length=9)  # more than the source covers
     assert passthrough(src, longer, Fraction(48)) is longer  # type: ignore[operator]
 

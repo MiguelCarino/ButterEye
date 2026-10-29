@@ -105,7 +105,7 @@ _TABLE: tuple[tuple[str, str, Literal["in_scope", "proposed"]], ...] = (
     ("orphans.remove", "buttereye detach --orphans", "in_scope"),
     (
         "render",
-        "buttereye render {src} -o {out} --profile {profile} --encoder {encoder}",
+        "buttereye render {src} -o {out} --profile {profile} --encoder {encoder} [--depth {depth}]",
         "in_scope",
     ),
     ("bench", "buttereye bench [--file {file}] [--full]", "in_scope"),

@@ -6,7 +6,7 @@
 # would have ignored meson.options and failed for want of -Dplugindir anyway - so
 # the Fedora package (packaging/plugins/buttereye-vs-mvgpu.spec, unversioned
 # BuildRequires: meson) is already building with 1.1 or newer.
-project('mvgpu', 'cpp', version: '0.0.2', license: 'AGPL-3.0-or-later',
+project('mvgpu', 'cpp', version: '0.0.3', license: 'AGPL-3.0-or-later',
         meson_version: '>=1.1',
         default_options: ['cpp_std=c++17', 'buildtype=release', 'warning_level=2'])
 

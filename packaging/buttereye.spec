@@ -46,7 +46,7 @@ Requires:       redhat-display-fonts
 Requires:       buttereye-vs-mvtools
 Recommends:     buttereye-vs-rife-ncnn >= 9.33-3
 # the live engine where RIFE can't keep up (4K at high rates)
-Recommends:     buttereye-vs-mvgpu >= 0.0.2
+Recommends:     buttereye-vs-mvgpu >= 0.0.3
 Recommends:     buttereye-rife-ncnn-models
 Recommends:     mkvtoolnix
 Recommends:     ffms2
@@ -111,8 +111,9 @@ EOF
 %{_datadir}/icons/hicolor/scalable/apps/%{app_id}.svg
 
 %changelog
-* Wed Oct 28 2026 The ButterEye contributors - 0.0.7-1
-- 0.0.7 (see CHANGELOG.md): smooth copies of files with non-ASCII names
+* Thu Oct 29 2026 The ButterEye contributors - 0.0.7-1
+- 0.0.7 (see CHANGELOG.md): start videos smooth, colour depth kept, fewer
+  false scene cuts, smooth copies of files with non-ASCII names
 * Wed Oct 28 2026 The ButterEye contributors - 0.0.6-1
 - 0.0.6 (see CHANGELOG.md): MacBook Air fixes, picture controls, faster
   smooth copies on the Mac's media engine
