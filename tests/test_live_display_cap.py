@@ -206,3 +206,23 @@ def test_a_display_target_on_the_m2_panel_shares_frames_with_the_source() -> Non
     tc = decide.choose_target(FIFTY, 60.0024, TargetKind.DISPLAY)
     assert tc.target == 60
     assert decide.interp_rate(FIFTY, Fraction(60)) == 50
+
+
+def test_a_double_the_screen_cannot_pace_takes_the_even_rate_a_measured_cap_covers() -> None:
+    """23.976 at 2x on 60 Hz is 1.25 refreshes a frame (1-1-1-2). With the
+    capacity measured, every frame gets one refresh instead."""
+    ntsc = Fraction(24000, 1001)
+    # 24 -> 60 infers as many frames as 24 -> 48 x 2: a cap of 2x 48 covers it
+    assert decide.choose_target(ntsc, 60.0, TargetKind.X2, sustainable_fps=200.0).target == 60
+    # the cap covers 2x only: 2x stays
+    assert decide.choose_target(ntsc, 60.0, TargetKind.X2, sustainable_fps=50.0).target == ntsc * 2
+    # nothing measured: nothing says the engine can do more than it was asked
+    assert decide.choose_target(ntsc, 60.0, TargetKind.X2).target == ntsc * 2
+    # 144 Hz shows 47.952 for three refreshes each: already even
+    assert (
+        decide.choose_target(ntsc, 144.0, TargetKind.X2, sustainable_fps=200.0).target == ntsc * 2
+    )
+    # 30 fps on 144 Hz: 60 is 2.4 refreshes, 72 is two
+    assert (
+        decide.choose_target(Fraction(30), 144.0, TargetKind.X2, sustainable_fps=400.0).target == 72
+    )

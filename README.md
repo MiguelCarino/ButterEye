@@ -303,6 +303,14 @@ uses it (4–5× the Vulkan engine on the same GPU) unless you turn it off; ther
 switch to flip. At 4K, when it falls just short, it estimates motion at half resolution
 (spike M0(q)) before it would smooth a smaller picture.
 
+**DRBA for 2D animation** (TensorRT, experimental, optional): `contrib/build-drba.sh` sets
+up the DistilDRBA models. They treat animation differently from RIFE: what moves on every
+frame (pans, zooms) is smoothed, and a character drawn on twos or threes keeps the pace it
+was drawn at, with no bending between poses. That is a look, not more smoothness (RIFE with
+held drawings re-timed moves the character evenly), so nothing takes it on its own: a
+profile asks for it with `backend = "rife-trt"` and `model = "drba-v1"` (or
+`"drba-v2_lite"`).
+
 **On-screen info**: when smoothing starts or changes, mpv shows one small line for a second
 (rates, CPU or GPU and the method). Details → Settings sets how long (or off, or always)
 and what it shows, and whether ButterEye keeps logs you can copy (Copy log, More logs).

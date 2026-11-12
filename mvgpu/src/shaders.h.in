@@ -7,6 +7,8 @@
 #include "search.h"
 #include "median.h"
 #include "subpel.h"
+#include "uni.h"
+#include "proj.h"
 #include "select.h"
 #include "render.h"
 #include "pack.h"

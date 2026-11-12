@@ -137,9 +137,13 @@ def test_even_pacing_and_cadence_first_are_saved(panel: Any, qtbot: Any) -> None
 
 
 def test_start_videos_smooth_and_its_limit_are_saved(panel: Any, qtbot: Any) -> None:
-    assert not panel.preload.isChecked() and not panel.preload_max.isEnabled()
+    assert panel.preload.isChecked() and panel.preload_max.isEnabled()  # on as shipped
     assert panel.preload_max.value() == 10 and "never more than 10" in panel.preload_note.text()
     assert panel.preload.accessibleDescription() == panel.preload_note.text()
+    n = len(_calls(panel.bridge))
+    panel.preload.setChecked(False)
+    assert _saved_after(qtbot, panel, n).general.preload is False
+    assert not panel.preload_max.isEnabled()
     n = len(_calls(panel.bridge))
     panel.preload.setChecked(True)
     assert _saved_after(qtbot, panel, n).general.preload is True

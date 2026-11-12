@@ -47,6 +47,12 @@ class Thresholds:
     drop_window_s: float = 10.0
     drop_ratio: float = 0.01  # > 1 % of output frames dropped over the window
     drop_min_span_s: float = 5.0  # need this much history before judging drops
+    #: Drops are not judged until frames have flowed this long after each filter
+    #: start. mpv drops a burst while a filter that adds frames comes up (measured
+    #: on an RTX 4090, RIFE TensorRT at 1080p with 8x headroom: 16 frames in the
+    #: first 8 s, then none in 70 s), and a reload made in answer to that burst
+    #: only causes the next one.
+    drop_settle_s: float = 8.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +105,7 @@ class HealthDetector:
         self.active = False
         self.flowing = False
         self._start = 0.0
+        self._settle_from = 0.0  # the last filter start, seek or reinit
         self._grace_until = 0.0
         self._last_pt: float | None = None
         self._last_progress = 0.0
@@ -112,6 +119,7 @@ class HealthDetector:
         self.active = True
         self.flowing = False
         self._start = t
+        self._settle_from = t
         self._grace_until = t + self.th.init_grace_s
         self._last_pt = None
         self._last_progress = t
@@ -134,6 +142,7 @@ class HealthDetector:
         self._last_pt = None
         self._lag_since = None
         self._drops.clear()
+        self._settle_from = t
 
     def _ok(self, drop_rate: float | None) -> Verdict:
         return Verdict(Health.OK, None, None, (), self.flowing, drop_rate)
@@ -185,7 +194,10 @@ class HealthDetector:
             else:
                 self._lag_since = None
 
-        # 3. drops over the window
+        # 3. drops over the window, once the start-up burst is over
+        if s.t - self._settle_from < th.drop_settle_s:
+            self._drops.clear()
+            return self._ok(None)
         self._drops.append((s.t, s.frame_drops))
         while self._drops and s.t - self._drops[0][0] > th.drop_window_s:
             self._drops.popleft()

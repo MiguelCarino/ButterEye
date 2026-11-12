@@ -581,9 +581,7 @@ def _hold_fill(engine: BackendId, profile: Profile | None) -> bool:
 
     On unless the profile is set to live action: a copy has no real-time limit,
     so Automatic can afford the extra work, and the per-frame detection never
-    fires on live action anyway. TensorRT has no hold fill."""
-    if engine is BackendId.RIFE_TRT:
-        return False
+    fires on live action anyway."""
     return profile is None or profile.content is not ContentKind.LIVE
 
 
@@ -640,7 +638,8 @@ def _trt(ctx: ProviderContext, profile: Profile | None) -> tuple[trt.TrtInstall,
         return None
     avail = trt.available_models(inst)
     wanted = profile.model if profile is not None else None
-    for name in (wanted, trt.DEFAULT_MODEL, *sorted(avail)):
+    general = sorted(n for n in avail if not trt.is_drba(n))  # DRBA only when asked for
+    for name in (wanted, trt.DEFAULT_MODEL, *general):
         if name in avail:
             return inst, name
     return None

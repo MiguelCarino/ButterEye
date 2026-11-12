@@ -596,7 +596,7 @@ class GeneralSettings:
     #: start videos paused until smoothing has produced its first frames, so
     #: playback starts without the drops of a filter added mid-play; held at
     #: most ``preload_max_s`` (PRELOAD_RANGE). Only for mpv ButterEye starts
-    preload: bool = False
+    preload: bool = True
     preload_max_s: float = 10.0
 
 

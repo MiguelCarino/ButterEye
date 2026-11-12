@@ -39,7 +39,7 @@ Schema v1 layout (keys are the ``types.py`` field names)::
 - ``None`` values are omitted (TOML has no null), as are ``trt_experimental = false``
   ``upscaling = "standard"``, ``deband = false``, ``full_size = false``,
   ``deband_strength = "light"``, ``compare = "off"``, ``even_pacing = false``,
-  ``cadence_first = false``, ``preload = false``, ``preload_max_s = 10.0``,
+  ``cadence_first = false``, ``preload = true``, ``preload_max_s = 10.0``,
   ``render.depth = "source"``, every ``[general.picture]``
   value of 0 (and the table, when all are 0), and a profile's ``content = "auto"``
   and ``aa = false`` (older configs have none of these keys, and stay
@@ -862,7 +862,7 @@ class _Reader:
             cadence_first=self.get(
                 t, "cadence_first", sec, "general.cadence_first", _bool, "true or false", False
             ),
-            preload=self.get(t, "preload", sec, "general.preload", _bool, "true or false", False),
+            preload=self.get(t, "preload", sec, "general.preload", _bool, "true or false", True),
             preload_max_s=self.get(
                 t,
                 "preload_max_s",
@@ -1366,8 +1366,8 @@ def to_document(cfg: Config) -> dict[str, object]:
         general["even_pacing"] = True
     if g.cadence_first:
         general["cadence_first"] = True
-    if g.preload:
-        general["preload"] = True
+    if not g.preload:
+        general["preload"] = False
     if g.preload_max_s != 10.0:
         general["preload_max_s"] = g.preload_max_s
     picture = {k: getattr(g.picture, k) for k in PICTURE_KEYS if getattr(g.picture, k) != 0}

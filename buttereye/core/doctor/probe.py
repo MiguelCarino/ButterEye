@@ -115,6 +115,9 @@ BREW_VSSCRIPT_GLOBS = (
 #: mpv's own words when the dlopen above failed (it says this and carries on
 #: without the filter, exiting 0, so the probe's only trace is this line)
 _MPV_VSSCRIPT_FAILED = "Failed to load VapourSynth VSScript library"
+#: VSScript loaded, but its configuration has no line for the path it was loaded
+#: from (R79 and later; ``osapi.register_system_vsscript`` writes them)
+_VSSCRIPT_UNCONFIGURED = "Python executable and library path couldn't be determined"
 
 ActiveCopy = Literal["buttereye", "distro", "user-vstrt", "none"]
 
@@ -226,6 +229,8 @@ async def run_probe(
         ],
         "pythonpath": list(vsmlrt_paths(paths)),
         "modules": modules,
+        # imported for real: found on disk is not the same as usable (probe.vpy)
+        "import": [m for m in modules if m != "vsmlrt"],
     }
     vf = (
         "vapoursynth=file="
@@ -574,6 +579,26 @@ def probe_findings(
         cmd_text = f"{outcome.cmd.stderr}\n{outcome.cmd.stdout}" if outcome.cmd else ""
         if osapi.IS_MACOS and vsscript_load_failed(cmd_text):
             return [_vsscript_finding(outcome)]
+        if _VSSCRIPT_UNCONFIGURED in cmd_text:
+            config = osapi.vsscript_config(os.environ)
+            return [
+                _f(
+                    "probe.run",
+                    Severity.BLOCKING,
+                    M("VapourSynth can't find its Python"),
+                    code=ErrorCode.PROBE_FAILED,
+                    cause=M(
+                        "VapourSynth looks itself up in {config} to learn which Python to "
+                        "start, and has no line there for the file mpv loaded. Some "
+                        "distribution packages name that file differently from what "
+                        "`vapoursynth config` writes. ButterEye adds the lines when it "
+                        "starts; it could not write them here.",
+                        {"config": str(config) if config else VSSCRIPT_CONFIG_TEXT},
+                    ),
+                    fix=M("Make sure that file can be written, then start ButterEye again."),
+                    evidence=outcome.cmd.tail() if outcome.cmd else (),
+                )
+            ]
         return [
             _f(
                 "probe.run",

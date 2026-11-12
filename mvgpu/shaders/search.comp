@@ -20,10 +20,13 @@ layout(std430, binding = 0) readonly buffer PyrA { float pa[]; };
 layout(std430, binding = 1) readonly buffer PyrC { float pc[]; };
 layout(std430, binding = 2) readonly buffer Parent { ivec2 parent[]; };
 layout(std430, binding = 3) writeonly buffer Out { ivec2 vout[]; };
+// this level's vectors of the pair of frames before (the buffer the median of
+// this pass will write): read only when p.temporal says they are that
+layout(std430, binding = 4) readonly buffer Prev { ivec2 prev[]; };
 // bs: block size; pscale: 2 when the parent is the next coarser level, 1 when it
 // is the same level with larger blocks (the 4x4 refinement of the 8x8 vectors),
 // 4 for the first motion (half = 1) level under a half-vector (half = 0) parent
-layout(push_constant) uniform P { uint off; int w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; float gdc; } p;
+layout(push_constant) uniform P { uint off; int w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; float gdc, act; int temporal; float tpen; } p;
 // KIDS = 4: one workgroup per parent block does its 2x2 child blocks (the 4x4
 // refinement), which share the parent's candidate list: a quarter of the groups
 layout(constant_id = 1) const int KIDS = 1;
@@ -31,7 +34,17 @@ shared float best[WG * KIDS];
 shared ivec2 bestv[WG * KIDS];
 float px_a(int x, int y) { x = clamp(x, 0, p.w - 1); y = clamp(y, 0, p.h - 1); return pa[p.off + uint(y * p.w + x)]; }
 float px_c(int x, int y) { x = clamp(x, 0, p.w - 1); y = clamp(y, 0, p.h - 1); return pc[p.off + uint(y * p.w + x)]; }
-ivec2 predictor(int px, int py, int pi) {
+ivec2 predictor(int px, int py, int pi, int px2, int py2) {
+    // the last one is no motion at all: a level whose picture is too small to
+    // show the detail (text, a fence: aliased or gone at 1/8 size) hands down a
+    // vector that the +-1 steps of the finer levels can never bring back, and
+    // most of a picture is still or nearly so
+    if (pi == 5) return ivec2(0);
+    // and what this block's vector was a frame ago (pi 6, when there is one):
+    // motion mostly goes on, so it is a good guess, and the same guess every
+    // frame keeps an area with little to match on from settling on a different
+    // vector each time (seen as shimmer)
+    if (pi >= 6) return prev[clamp(py2, 0, p.bh - 1) * p.bw + clamp(px2, 0, p.bw - 1)];
     const ivec2 nb[5] = ivec2[5](ivec2(0, 0), ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
     int qx = clamp(px + nb[pi].x, 0, p.pw - 1), qy = clamp(py + nb[pi].y, 0, p.ph - 1);
     return p.pscale * parent[qy * p.pw + qx];
@@ -41,6 +54,9 @@ void main() {
     // the parent block whose vectors (and its neighbours') seed the candidates
     int px = KIDS == 4 ? gx : gx / 2, py = KIDS == 4 ? gy : gy / 2;
     uint k = gl_LocalInvocationID.x;
+    // the block whose own earlier vector is tried: this block, or with KIDS = 4
+    // the first of the four (they share the candidates)
+    int tx = KIDS == 4 ? 2 * gx : gx, ty = KIDS == 4 ? 2 * gy : gy;
     int win = 2 * p.radius + 1, per = win * win;
     bool live = int(k) < p.npred * per;
     ivec2 u = ivec2(0);
@@ -48,10 +64,10 @@ void main() {
         int pi = int(k) / per, r = int(k) % per;
         ivec2 base = ivec2(0);
         if (p.npred > 1) {
-            base = predictor(px, py, pi);
+            base = predictor(px, py, pi, tx, ty);
             // neighbours often share a vector: search each distinct one once
             for (int q = 0; q < pi; ++q)
-                if (predictor(px, py, q) == base) live = false;
+                if (predictor(px, py, q, tx, ty) == base) live = false;
         }
         u = base + ivec2(r % win - p.radius, r / win - p.radius);
     }
@@ -65,10 +81,31 @@ void main() {
         if (live && bx < p.bw && by < p.bh) {
             s = 0.0;
             int x0 = bx * p.bs, y0 = by * p.bs;
+            float sa = 0.0, sc = 0.0, saa = 0.0, scc = 0.0;
             for (int j = 0; j < p.bs; ++j)
-                for (int i = 0; i < p.bs; ++i)
-                    s += abs(px_a(x0 + i - ua.x, y0 + j - ua.y) - px_c(x0 + i + uc.x, y0 + j + uc.y) - p.gdc);
-            s += 0.002 * float(p.bs * p.bs) / 64.0 * len;
+                for (int i = 0; i < p.bs; ++i) {
+                    float va = px_a(x0 + i - ua.x, y0 + j - ua.y), vc = px_c(x0 + i + uc.x, y0 + j + uc.y);
+                    s += abs(va - vc - p.gdc);
+                    sa += va; saa += va * va; sc += vc; scc += vc * vc;
+                }
+            float n = float(p.bs * p.bs);
+            s += 0.002 * n / 64.0 * len;
+            if (p.temporal != 0) {
+                // a small cost for leaving the earlier vector, capped: where the
+                // picture decides, it decides; where it does not, the vector stays
+                ivec2 dv = abs(u - prev[by * p.bw + bx]);
+                s += p.tpen * n * min(float(dv.x + dv.y) * (p.half_units != 0 ? 0.5 : 1.0), 2.0);
+            }
+            // What a match is worth depends on what matched. Two flat patches
+            // agree under any vector, so a vector that jumps over a line of text
+            // or a thin object, landing on plain background in both frames,
+            // scores as well as the right one (better, when the right one is
+            // half a pixel off at this level) and the content vanishes from
+            // the in-between frame. Two patches with detail that agree are
+            // evidence that this content is here: the match is credited with
+            // the smaller of the two patches' deviation.
+            float da = sqrt(max(saa / n - (sa / n) * (sa / n), 0.0)), dc = sqrt(max(scc / n - (sc / n) * (sc / n), 0.0));
+            s -= p.act * n * min(da, dc);
         }
         best[q * int(WG) + int(k)] = s;
         bestv[q * int(WG) + int(k)] = u;

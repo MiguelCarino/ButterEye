@@ -412,6 +412,11 @@ def choose_target(
     When no refresh/k ≥ 2× fits the cap, both take plain 2× if it fits below the
     display rate, then the highest refresh/k that fits (50 fps on 60 Hz → 60).
 
+    ``X2`` whose doubled rate the display can't pace evenly (``uneven_pacing``)
+    takes the lowest refresh/k at or above it that a measured cap covers
+    (``_even_from``: 23.976 at 2x on 60 Hz → 60); with no cap, or none that
+    fits, plain 2x.
+
     ``X2`` and ``FPS`` never go above a known display rate (``over_display``):
     there the highest refresh/k above the source that fits is used instead
     (50 fps at 2× on 60 Hz → 60; 60 fps on 60 Hz → ``ALREADY_AT_RATE``), since
@@ -432,6 +437,12 @@ def choose_target(
             t = fixed
         if over_display(t, display_hz):
             return _within_display(src, display_hz, fits)
+        # only on a measured cap: without one nothing says the engine has the
+        # extra capacity, and "smooth anyway" must not ask for more than 2x
+        if kind is TargetKind.X2 and cap is not None and uneven_pacing(t, display_hz):
+            even = _even_from(src, t, display_hz, fits)
+            if even is not None:
+                return TargetChoice(even, None)
         if not fits(t):
             return TargetChoice(None, BypassReason.NO_REALTIME)
         return TargetChoice(t, None)
@@ -468,6 +479,30 @@ def choose_target(
         if t < doubling and fits(t):
             return TargetChoice(t, None)
     return TargetChoice(None, BypassReason.NO_REALTIME if rates else BypassReason.ALREADY_AT_RATE)
+
+
+def _even_from(
+    src: Fraction, t: Fraction, display_hz: float | None, fits: Callable[[Fraction], bool]
+) -> Fraction | None:
+    """The lowest refresh/k at or above ``t`` that ``fits`` and is within the
+    multiplier cap, or None.
+
+    For a 2x the display can't pace (``uneven_pacing``): 23.976 → 47.952 on a
+    60 Hz panel shows 1-1-1-2 refreshes a frame, a 12 Hz judder, or blended
+    frames with "even pacing" - both read as artifacts of the smoothing. 60 fps
+    (2.5x) on that panel shows every frame for one refresh. It costs more
+    in-between frames (4 of 5 output frames, not 1 of 2), so only when the
+    engine's cap covers it; otherwise 2x stays."""
+    display = display_rate(display_hz)
+    if display is None:
+        return None
+    k = int(display / t)
+    while k >= 1:
+        rate = display / k
+        if rate >= t and rate / src <= MAX_MULTIPLIER and fits(rate):
+            return rate
+        k -= 1
+    return None
 
 
 def _within_display(

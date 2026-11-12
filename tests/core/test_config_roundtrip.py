@@ -899,8 +899,8 @@ def test_unknown_picture_key_is_kept_under_its_table(paths: Paths) -> None:
         ('even_pacing = "yes"', "general.even_pacing", ("even_pacing", False)),
         ("cadence_first = true", None, ("cadence_first", True)),
         ("cadence_first = 1", "general.cadence_first", ("cadence_first", False)),
-        ("preload = true", None, ("preload", True)),
-        ('preload = "on"', "general.preload", ("preload", False)),
+        ("preload = false", None, ("preload", False)),
+        ('preload = "on"', "general.preload", ("preload", True)),
         ("preload_max_s = 15", None, ("preload_max_s", 15.0)),
         ("preload_max_s = 2.5", None, ("preload_max_s", 2.5)),
         ("preload_max_s = 1", "general.preload_max_s", ("preload_max_s", 10.0)),
@@ -920,12 +920,13 @@ def test_new_general_keys(
 def test_preload_round_trips_and_stays_out_by_default(paths: Paths) -> None:
     assert "preload" not in schema.dumps_config(defaults.default_config())
     cfg = defaults.default_config()
+    assert cfg.general.preload is True  # on unless turned off: only "off" is written
     on = dataclasses.replace(
-        cfg, general=dataclasses.replace(cfg.general, preload=True, preload_max_s=15.0)
+        cfg, general=dataclasses.replace(cfg.general, preload=False, preload_max_s=15.0)
     )
     config.save(paths, on, expected_revision="")
     doc = tomllib.loads(paths.config_file.read_text())
-    assert doc["general"]["preload"] is True and doc["general"]["preload_max_s"] == 15.0
+    assert doc["general"]["preload"] is False and doc["general"]["preload_max_s"] == 15.0
     load = config.load(paths)
     assert load.issues == () and load.config.general == on.general
 

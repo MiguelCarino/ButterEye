@@ -11,7 +11,8 @@ layout(local_size_x = 16, local_size_y = 16) in;
 layout(std430, binding = 0) readonly buffer A { float a[]; };
 layout(std430, binding = 1) readonly buffer C { float c[]; };
 layout(std430, binding = 2) readonly buffer V { vec2 vec[]; };  // subpel.comp
-layout(std430, binding = 3) writeonly buffer F { vec4 field[]; };  // (u.x, u.y, mismatch, 0)
+layout(std430, binding = 3) writeonly buffer F { vec4 field[]; };  // (u.x, u.y, mismatch, side)
+layout(std430, binding = 4) readonly buffer S { float vside[]; };  // proj.comp
 layout(push_constant) uniform P { int w, h, bw, bh; float t, lambda; int smooth_vec, bs; float margin, gdc; } p;
 float bil(bool from_a, vec2 q) {
     q = clamp(q, vec2(0.0), vec2(p.w - 1.001, p.h - 1.001));
@@ -34,11 +35,12 @@ void main() {
             ivec2 b = clamp(g0 + ivec2(i, j), ivec2(0), ivec2(p.bw - 1, p.bh - 1));
             smoothv += (i == 1 ? fr.x : 1.0 - fr.x) * (j == 1 ? fr.y : 1.0 - fr.y) * vec2(vec[b.y * p.bw + b.x]);
         }
+    ivec2 b0 = min(ivec2(x, y) / p.bs, ivec2(p.bw - 1, p.bh - 1));
+    float side = vside[b0.y * p.bw + b0.x];
     if (p.smooth_vec != 0) {
-        field[y * p.w + x] = vec4(smoothv, 0.0, 0.0);
+        field[y * p.w + x] = vec4(smoothv, 0.0, side);
         return;
     }
-    ivec2 b0 = ivec2(x, y) / p.bs;
     const ivec2 cross5[5] = ivec2[5](ivec2(0, 0), ivec2(-2, 0), ivec2(2, 0), ivec2(0, -2), ivec2(0, 2));
     float best = 3.4e38, best_err = 0.0;
     vec2 bestv = vec2(0.0);
@@ -67,5 +69,6 @@ void main() {
         se += abs(bil(true, q - 2.0 * p.t * smoothv) - bil(false, q + 2.0 * (1.0 - p.t) * smoothv) - p.gdc);
     }
     if (!(best + 5.0 * p.margin < se)) { bestv = smoothv; best_err = se / 5.0; }
-    field[y * p.w + x] = vec4(bestv, best_err, 0.0);
+    // a known side explains the mismatch: it is not a failure of the vectors
+    field[y * p.w + x] = vec4(bestv, side != 0.0 ? 0.0 : best_err, side);
 }

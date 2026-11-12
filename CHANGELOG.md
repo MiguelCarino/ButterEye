@@ -5,6 +5,81 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
+## Unreleased
+
+Smoothing works again on Fedora 45, text and thin lines no longer vanish with
+GPU motion vectors, and a burst of dropped frames at the start of a video no
+longer makes ButterEye shrink the picture or change engine.
+
+### Fixed
+
+- **Fedora 45: nothing was smoothed.** VapourSynth R79 could not find its
+  Python ("Python executable and library path couldn't be determined"), in
+  mpv and in `vspipe`: the distribution names VapourSynth's script library
+  `libvsscript.so.0`, and VapourSynth's own configuration has no line for that
+  name. ButterEye now adds the lines when it starts (the same file and format
+  `vapoursynth config` writes), and the doctor says so when it can't.
+- **TensorRT after a distribution upgrade.** The packages engines are
+  converted with (onnx, numpy) were found but could not be loaded by the new
+  Python, so every engine build failed while the doctor said "onnx found". The
+  doctor now loads them for real and gives the command that installs them again.
+- **Dropped frames at the start no longer count against the engine.** mpv
+  drops a burst of frames while a filter that adds frames comes up (measured
+  with 8× headroom: 16 frames in the first 8 seconds, then none in 70). Drops
+  are judged only after 8 seconds of smoothing, so that burst no longer leads
+  to a smaller picture, another engine and the next burst.
+
+### Improved
+
+- **GPU motion vectors (mvgpu):** rolling credits and subtitles on a plain
+  background, thin lines and small flat shapes no longer vanish or smear in
+  in-between frames. A match between two patches is now worth what matched
+  (two flat patches agree under any vector), and every level of the search also
+  tries "no motion", which a coarser level that cannot see the detail used to
+  rule out for good. On the new ground-truth test (worst areas, 1.0 = the real
+  frame): credits −0.30 → 1.00, thin lines 0.24 → 0.94,
+  all scenes 0.41 → 0.66. On 169 moments of real 50 and 60 fps footage (two
+  filmed concerts, game footage, trailers) the build before these changes was
+  not measured; with them 0.150, and 0.179 once two older safeguards were set
+  to act only on large disagreements: the fade to a plain blend and the
+  one-frame choice at mismatches drew small, hard, wrong patches on filmed
+  pictures. MVTools scores 0.194 there and RIFE v4.26 0.312: where RIFE keeps
+  up, it is still the better picture. A small object crossing a detailed background was
+  missing from in-between frames, with a faint copy at each end of its path:
+  what the in-between vectors leave unexplained is now searched for from each
+  source frame and carried to where it is in between (drawn, not yet whole:
+  −0.09 → 0.46). About 30 % slower on the GPU alone in all (1080p 1128 → 831
+  fps, 4K 292 → 204).
+- **2D animation on TensorRT is re-timed too.** Drawings held for two or three
+  frames were filled in on every engine except TensorRT, so with TensorRT set
+  up, animation either played "still, still, jump" or was sent to RIFE-ncnn at
+  about a third of the speed. TensorRT now fills them with a second instance
+  of the same engine (1080p on an RTX 4090: 179 → 170 fps, about 0.9 GB more
+  video memory), and Automatic no longer puts RIFE-ncnn ahead of it for
+  animation, live or in smooth copies.
+- **"2×" on a screen that can't show it evenly** (23.976 → 47.952 on 60 Hz is
+  1.25 refreshes a frame) now takes the nearest rate the screen paces evenly
+  (60) when the speed test says the engine has room; otherwise 2× as before.
+- **Start videos smooth is on by default** (Settings → Even motion;
+  `preload = false` under `[general]` turns it off).
+- The log says which side dropped frames point at: frames that reached the
+  output late (the filter or the decoder) or refreshes the display side missed.
+
+### Added
+
+- **DRBA models for 2D animation on TensorRT** (experimental, optional).
+  `contrib/build-drba.sh` downloads DistilDRBA (MIT), exports it to ONNX and
+  installs it; playback runs it through the TensorRT engine already there, with
+  no PyTorch. It smooths what moves on every frame (pans, zooms) and leaves a
+  character drawn on twos or threes at the pace it was drawn at. A profile asks
+  for it with `backend = "rife-trt"` and `model = "drba-v1"` or
+  `"drba-v2_lite"`; Automatic never takes it. 1080p on an RTX 4090: 196 fps
+  against RIFE v4.26's 213.
+- `tools/perf/truth.py`: a ground-truth test for in-between frames (worst areas and flicker). Scenes
+  drawn at twice the source rate, each isolating one thing that breaks
+  interpolation, and real footage by its own middle frames; every engine is
+  scored on its worst areas. Results of the first run: `docs/spikes/m0t.md`.
+
 ## 0.0.7 — 2026-10-29
 
 Videos can start smooth instead of dropping frames for the first seconds, smooth

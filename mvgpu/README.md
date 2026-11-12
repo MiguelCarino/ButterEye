@@ -24,6 +24,19 @@ smooth = core.mvgpu.Interpolate(clip, fps_num=120, fps_den=1[, device=0])
   replaces a block's own only where it matches about as well, so the one column of blocks
   that sees a flat object's edge or a thin line keeps its vector instead of being outvoted
   by the flat background around it.
+- A match is worth what matched: two flat patches agree under any vector, so a match is
+  credited with the detail in the two patches (the smaller standard deviation). Without it a
+  thin object passing over a plain background lost to "nothing here" and vanished. Every
+  finer level also refines around no motion, beside the parent block's vector and its four
+  neighbours': a coarse level that cannot see rows of text used to hand down a vector the
+  finer levels could not bring back, and credits were erased in patches
+  (`docs/spikes/m0t.md`).
+- What those vectors leave unexplained in a source frame (a small object over a detailed
+  background, which the symmetric search cannot see: the background matches itself where
+  the object passes) is searched for from that frame over ±64 px (`uni.comp`) and carried
+  to its in-between position (`proj.comp`), when the other frame's search agrees. The place
+  it left, or has not reached, takes the frame that shows the background there.
+  `MVGPU_UNI=0` turns this off.
 - Per in-between frame: **per-pixel vector selection** — among the 3×3 neighbouring
   blocks' vectors, the one under which the two warped frames agree best (bilinear blending
   of block vectors mixed a moving object's vector with the background's and ghosted both);
@@ -36,8 +49,11 @@ smooth = core.mvgpu.Interpolate(clip, fps_num=120, fps_den=1[, device=0])
 - `MVGPU_PROFILE=1` prints the mean CPU/GPU time per upload and per render.
 - For comparisons: `MVGPU_SELECT=0` (bilinear block vectors), `MVGPU_FINE=0` (no 4×4
   level), `MVGPU_SUBPEL=0` (no ½ px refinement), `MVGPU_MEDIAN=0` (plain component median at
-  full size too), `MVGPU_OCC=lo,hi` (the mismatch ramp, default `0.04,0.12`; `9,10` turns it
-  off).
+  full size too), `MVGPU_OCC=lo,hi` (the mismatch ramp, default `0.12,0.36`; `9,10` turns it
+  off), `MVGPU_ACT=x` (the credit for detail, default `0.5`; `0` turns it off),
+  `MVGPU_FAIL=lo,hi` (the area mismatch where a frame fades to the plain blend, default
+  `0.05,0.15`), `MVGPU_TEMPORAL=-1` (no candidate from the pair before). `tools/perf/truth.py --mvgpu build/libmvgpu.so` scores a build against
+  drawn in-between frames.
 
 ## Build
 

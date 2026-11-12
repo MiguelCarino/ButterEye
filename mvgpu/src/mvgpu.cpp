@@ -37,6 +37,9 @@ namespace {
 constexpr int BLOCK = 8;
 constexpr int LEVELS = 4;
 constexpr int COARSE_RADIUS = 8;
+// candidates a finer level refines around: the parent block's vector, its 4
+// neighbours' and no motion (search.comp)
+constexpr int NPRED = 6;
 
 // VK_KHR_portability_enumeration reached the Vulkan headers in 1.3.212; a build
 // host with older vulkan-headers must still compile, and the name and the bit are
@@ -111,7 +114,7 @@ public:
     void load(int slot, const VSFrame* f, const VSAPI* api);
     // vectors for the pair (slot a, slot c), then render at t into dst
     // render the pair (slot a, slot 1-a) at t into a ring buffer; returns its index
-    int render(int a, float t, bool new_vectors);
+    int render(int a, float t, bool new_vectors, bool follows = false);
     // copy ring buffer r into dst and give the buffer back (no GPU lock needed)
     void deliver(int r, VSFrame* dst, const VSAPI* api);
     std::string name;
@@ -154,6 +157,20 @@ private:
     std::array<Buffer, LEVELS> vraw, vec;
     Buffer vraw4, vec4;  // 4x4 refinement at full size
     Buffer vsub;         // the final half-vectors as floats, refined to 1/4 px (subpel.comp)
+    // vectors searched from each source frame for the blocks the in-between
+    // vectors leave unexplained (uni.comp), and vsub with them carried to the
+    // in-between frame (proj.comp): what select.comp reads
+    Buffer ufwd, ubwd, vsub2, vside;
+    std::array<VkDescriptorSet, 2> ds_uni_f{}, ds_uni_b{}, ds_proj{};
+    // MVGPU_UNI=0: without them (for comparisons). The window is +-uni_radius px
+    // of motion; a block is searched when the frames differ there by uni_flag a
+    // pixel under the in-between vector, and found when a place matches within
+    // uni_abs a pixel and uni_rel of that difference; MVGPU_UNI_T="flag,abs,rel"
+    bool uni = !(std::getenv("MVGPU_UNI") && std::string(std::getenv("MVGPU_UNI")) == "0");
+    int uni_radius = 64;
+    float uni_flag = 0.04f, uni_abs = 0.02f, uni_rel = 0.4f;
+    // how far (px) from a found block's half-way centre an in-between block takes its vector
+    float uni_land = std::getenv("MVGPU_UNI_LAND") ? float(std::atof(std::getenv("MVGPU_UNI_LAND"))) : 4.0f;
     int bw4 = 0, bh4 = 0;
     // MVGPU_FINE=0: vectors per 8x8 block only (for comparisons)
     bool fine = !(std::getenv("MVGPU_FINE") && std::string(std::getenv("MVGPU_FINE")) == "0");
@@ -166,18 +183,30 @@ private:
     // about as well: SAD within med_rel of the block's own plus med_abs a pixel
     bool checked_median = !(std::getenv("MVGPU_MEDIAN") && std::string(std::getenv("MVGPU_MEDIAN")) == "0");
     float med_rel = 0.5f, med_abs = 0.008f;
+    // The vectors of the pair before are tried as a candidate (0, as shipped:
+    // a little better on real footage, docs/spikes/m0t.md). A cost for leaving
+    // them, a pixel of the block for each pixel of difference up to 2
+    // (MVGPU_TEMPORAL=0.002), lost quality; negative turns them off
+    float tpen = std::getenv("MVGPU_TEMPORAL") ? float(std::atof(std::getenv("MVGPU_TEMPORAL"))) : 0.0f;
+    // the credit a match gets for the detail in what matched (search.comp), as a
+    // share of the patches' deviation; MVGPU_ACT overrides (tuning, 0 = off)
+    float act = std::getenv("MVGPU_ACT") ? float(std::atof(std::getenv("MVGPU_ACT"))) : 0.5f;
 
-    Pipe p_unpack, p_down2, p_search_coarse, p_search_fine, p_search_full, p_search4, p_median, p_subpel, p_select,
-        p_render, p_pack;
+    Pipe p_unpack, p_down2, p_search_coarse, p_search_fine, p_search_full, p_search4, p_median, p_subpel, p_uni,
+        p_proj, p_select, p_render, p_pack;
     std::array<VkDescriptorSet, 2> ds_select{};
     // MVGPU_SELECT=0: the old bilinear block vectors (for comparisons)
     bool select_vectors = !(std::getenv("MVGPU_SELECT") && std::string(std::getenv("MVGPU_SELECT")) == "0");
     // mean |A - C| (0-1 luma) where blending starts to give way to the nearer
-    // frame, and where it has fully; MVGPU_OCC="lo,hi" overrides (tuning)
-    float occ_lo = 0.04f, occ_hi = 0.12f;
+    // frame, and where it has fully; MVGPU_OCC="lo,hi" overrides (tuning).
+    // Three times what they were (0.04, 0.12), and the fade below 2.5 times
+    // (0.02, 0.06): on 169 moments of real 50/60 fps footage both did more
+    // harm than good at the old values (worst areas 0.150 -> 0.180 with them
+    // out of the way), and nothing on the drawn scenes needed them
+    float occ_lo = 0.12f, occ_hi = 0.36f;
     // mean mismatch over an area (render.comp) where the in-between frame fades
     // to the plain blend; per-pixel margin a block vector needs over the smooth one
-    float fail_lo = 0.02f, fail_hi = 0.06f, sel_margin = 0.01f;
+    float fail_lo = 0.05f, fail_hi = 0.15f, sel_margin = 0.01f;
     // each slot's mean luma (0-1): the pair's global brightness difference is
     // taken out of every match (fades, flashes, a stage lighting up)
     std::array<float, 2> smean{};
@@ -373,6 +402,9 @@ void Gpu::ensure_ok() const {
 void Gpu::init(int device) {
     bytes = bits > 8 ? 2 : 1;
     if (const char* occ = std::getenv("MVGPU_OCC")) std::sscanf(occ, "%f,%f", &occ_lo, &occ_hi);
+    if (const char* sm = std::getenv("MVGPU_SELM")) sel_margin = float(std::atof(sm));
+    if (const char* fail = std::getenv("MVGPU_FAIL")) std::sscanf(fail, "%f,%f", &fail_lo, &fail_hi);
+    if (const char* ut = std::getenv("MVGPU_UNI_T")) std::sscanf(ut, "%f,%f,%f", &uni_flag, &uni_abs, &uni_rel);
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "mvgpu";
     app.apiVersion = VK_API_VERSION_1_1;
@@ -505,6 +537,10 @@ void Gpu::init(int device) {
     vraw4 = make(VkDeviceSize(bw4) * bh4 * 8, SB, DEV);
     vec4 = make(VkDeviceSize(bw4) * bh4 * 8, SB, DEV);
     vsub = make(VkDeviceSize(std::max(bw4 * bh4, bw[0] * bh[0])) * 8, SB, DEV);
+    vsub2 = make(VkDeviceSize(std::max(bw4 * bh4, bw[0] * bh[0])) * 8, SB, DEV);
+    vside = make(VkDeviceSize(std::max(bw4 * bh4, bw[0] * bh[0])) * 4, SB, DEV);
+    ufwd = make(VkDeviceSize(bw[0]) * bh[0] * 16, SB, DEV);
+    ubwd = make(VkDeviceSize(bw[0]) * bh[0] * 16, SB, DEV);
 
     VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 256};
     VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -516,13 +552,15 @@ void Gpu::init(int device) {
     // group sizes: powers of two >= the 17*17, 5*3*3 and 5*5*5 candidates
     p_unpack = pipeline(unpack_spv, sizeof(unpack_spv), 2, 20);
     p_down2 = pipeline(down2_spv, sizeof(down2_spv), 1, 24);
-    p_search_coarse = pipeline(search_spv, sizeof(search_spv), 4, 52, 512);
-    p_search_fine = pipeline(search_spv, sizeof(search_spv), 4, 52, 64);
-    p_search_full = pipeline(search_spv, sizeof(search_spv), 4, 52, 128);
-    p_search4 = pipeline(search_spv, sizeof(search_spv), 4, 52, 128, 4);
+    p_search_coarse = pipeline(search_spv, sizeof(search_spv), 5, 64, 512);
+    p_search_fine = pipeline(search_spv, sizeof(search_spv), 5, 64, 64);
+    p_search_full = pipeline(search_spv, sizeof(search_spv), 5, 64, 256);
+    p_search4 = pipeline(search_spv, sizeof(search_spv), 5, 64, 256, 4);
     p_median = pipeline(median_spv, sizeof(median_spv), 4, 44);
     p_subpel = pipeline(subpel_spv, sizeof(subpel_spv), 4, 32);
-    p_select = pipeline(select_spv, sizeof(select_spv), 4, 40);
+    p_uni = pipeline(uni_spv, sizeof(uni_spv), 4, 56);
+    p_proj = pipeline(proj_spv, sizeof(proj_spv), 7, 52);
+    p_select = pipeline(select_spv, sizeof(select_spv), 5, 40);
     p_render = pipeline(render_spv, sizeof(render_spv), 4, 44);
     p_pack = pipeline(pack_spv, sizeof(pack_spv), 2, 20);
 
@@ -531,13 +569,16 @@ void Gpu::init(int device) {
         ds_down2[s] = set(p_down2, {&pyr[s]});
         ds_subpel[s] = set(p_subpel, {&pyr[s], &pyr[1 - s], &vec[0], &vsub});
         ds_subpel4[s] = set(p_subpel, {&pyr[s], &pyr[1 - s], &vec4, &vsub});
-        ds_select[s] = set(p_select, {&slot[s], &slot[1 - s], &vsub, &field});
-        ds_search4[s] = set(p_search4, {&pyr[s], &pyr[1 - s], &vec[0], &vraw4});
+        ds_select[s] = set(p_select, {&slot[s], &slot[1 - s], &vsub2, &field, &vside});
+        ds_uni_f[s] = set(p_uni, {&pyr[s], &pyr[1 - s], &vsub, &ufwd});
+        ds_uni_b[s] = set(p_uni, {&pyr[s], &pyr[1 - s], &vsub, &ubwd});
+        ds_proj[s] = set(p_proj, {&pyr[s], &pyr[1 - s], &vsub, &ufwd, &ubwd, &vsub2, &vside});
+        ds_search4[s] = set(p_search4, {&pyr[s], &pyr[1 - s], &vec[0], &vraw4, &vec4});
         ds_render[s] = set(p_render, {&slot[s], &slot[1 - s], &field, &out});
         for (int l = 0; l < LEVELS; ++l) {
             const Pipe& sp = l == LEVELS - 1 ? p_search_coarse : l == 0 ? p_search_full : p_search_fine;
             const Buffer& parent = l == LEVELS - 1 ? vec[l] : vec[l + 1];
-            ds_search[s][l] = set(sp, {&pyr[s], &pyr[1 - s], &parent, &vraw[l]});
+            ds_search[s][l] = set(sp, {&pyr[s], &pyr[1 - s], &parent, &vraw[l], &vec[l]});
         }
     }
     for (int s = 0; s < 2; ++s) {
@@ -558,7 +599,7 @@ void Gpu::destroy() {
     }
     vkDeviceWaitIdle(dev);
     for (Pipe* p : {&p_unpack, &p_down2, &p_search_coarse, &p_search_fine, &p_search_full, &p_search4, &p_median,
-                    &p_subpel, &p_select, &p_render, &p_pack}) {
+                    &p_subpel, &p_uni, &p_proj, &p_select, &p_render, &p_pack}) {
         vkDestroyPipeline(dev, p->pipe, nullptr);
         vkDestroyPipelineLayout(dev, p->layout, nullptr);
         vkDestroyDescriptorSetLayout(dev, p->dsl, nullptr);
@@ -573,6 +614,10 @@ void Gpu::destroy() {
     free(vraw4);
     free(vec4);
     free(vsub);
+    free(vsub2);
+    free(vside);
+    free(ufwd);
+    free(ubwd);
     vkDestroyFence(dev, fence, nullptr);
     vkDestroyCommandPool(dev, pool, nullptr);
     vkDestroyDevice(dev, nullptr);
@@ -681,7 +726,10 @@ void Gpu::load(int s, const VSFrame* f, const VSAPI* api) {
     ++n_load;
 }
 
-int Gpu::render(int a, float t, bool new_vectors) {
+int Gpu::render(int a, float t, bool new_vectors, bool follows) {
+    // the vector buffers still hold the pair before this one: its vectors are tried
+    const bool temporal = follows && tpen >= 0.0f;
+
     ensure_ok();
     // a free readback buffer (callers hold the GPU lock; deliver() frees them)
     int r = -1;
@@ -718,11 +766,11 @@ int Gpu::render(int a, float t, bool new_vectors) {
             // level 0 (full size) stores the motion m = 2u: +-1 px of u is +-2 of m, around
             // 4 x the parent's u
             bool full = l == 0;
-            struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; float gdc; } pc{
+            struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; float gdc, act; int32_t temporal; float tpen; } pc{
                 loff[l], lw[l], lh[l], bw[l], bh[l],
                 coarse ? 1 : bw[l + 1], coarse ? 1 : bh[l + 1], coarse ? COARSE_RADIUS : full ? 2 : 1,
-                coarse ? 1 : 5,
-                BLOCK, full ? 4 : 2, full ? 1 : 0, gdc};
+                coarse ? 1 : NPRED + (temporal ? 1 : 0),
+                BLOCK, full ? 4 : 2, full ? 1 : 0, gdc, act, temporal ? 1 : 0, tpen};
             push(coarse ? p_search_coarse : full ? p_search_full : p_search_fine, ds_search[a][l], &pc, sizeof(pc));
             vkCmdDispatch(cmd, bw[l], bh[l], 1);
             barrier();
@@ -734,8 +782,8 @@ int Gpu::render(int a, float t, bool new_vectors) {
             barrier();
         }
         if (fine) {  // 4x4 blocks refine +-2 (motion units) around their 8x8 block's vector (same level)
-            struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; float gdc; } pc{
-                loff[0], w, h, bw4, bh4, bw[0], bh[0], 2, 5, 4, 1, 1, gdc};
+            struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; float gdc, act; int32_t temporal; float tpen; } pc{
+                loff[0], w, h, bw4, bh4, bw[0], bh[0], 2, NPRED + (temporal ? 1 : 0), 4, 1, 1, gdc, act, temporal ? 1 : 0, tpen};
             push(p_search4, ds_search4[a], &pc, sizeof(pc));
             vkCmdDispatch(cmd, bw[0], bh[0], 1);  // a group per 8x8 block does its four 4x4 blocks
             barrier();
@@ -753,6 +801,23 @@ int Gpu::render(int a, float t, bool new_vectors) {
         // a group per 8x8 block or per four 4x4 blocks, in rows of up to 1024 groups
         uint32_t sg = uint32_t(sbw * sbh + (fine ? 3 : 0)) / (fine ? 4 : 1);
         vkCmdDispatch(cmd, std::min(sg, 1024u), (sg + 1023) / 1024, 1);
+        barrier();
+        // what those vectors leave unexplained in each source frame is searched for
+        // from that frame, and carried to the in-between frame
+        int sbs = fine ? 4 : BLOCK;
+        if (uni) {
+            for (int dir = 0; dir < 2; ++dir) {
+                struct { uint32_t off; int32_t w, h, bw, bh, sbw, sbh, sbs, radius, dir; float gdc, flag, abs_thr, rel; } uc{
+                    loff[0], w, h, bw[0], bh[0], sbw, sbh, sbs, uni_radius, dir, gdc, uni_flag, uni_abs, uni_rel};
+                push(p_uni, dir ? ds_uni_b[a] : ds_uni_f[a], &uc, sizeof(uc));
+                vkCmdDispatch(cmd, bw[0], bh[0], 1);
+            }
+            barrier();
+        }
+        struct { uint32_t off; int32_t w, h, sbw, sbh, sbs, bw, bh, reach, enable; float gdc, abs_thr, land; } jc{
+            loff[0], w, h, sbw, sbh, sbs, bw[0], bh[0], uni_radius / 16 + 1, uni ? 1 : 0, gdc, uni_abs * 1.5f, uni_land};
+        push(p_proj, ds_proj[a], &jc, sizeof(jc));
+        vkCmdDispatch(cmd, (sbw + 15) / 16, (sbh + 15) / 16, 1);
         barrier();
     }
     {
@@ -879,7 +944,7 @@ const VSFrame* VS_CC getFrame(int n, int ar, void* inst, void**, VSFrameContext*
             if (d->slot_frame[sa] != i) { d->gpu->load(sa, fa, api); d->slot_frame[sa] = i; }
             if (d->slot_frame[sc] != i + 1) { d->gpu->load(sc, fc, api); d->slot_frame[sc] = i + 1; }
             bool fresh = d->pair != i;
-            r = d->gpu->render(sa, float(double(fn) / double(fd)), fresh);
+            r = d->gpu->render(sa, float(double(fn) / double(fd)), fresh, d->pair == i - 1);
             d->pair = i;
         }
         d->gpu->deliver(r, dst, api);  // outside the GPU lock: copies overlap

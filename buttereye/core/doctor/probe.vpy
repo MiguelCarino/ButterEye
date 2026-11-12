@@ -65,6 +65,17 @@ for _mod in _cfg.get("modules", []):
     except Exception:  # noqa: BLE001
         _result["modules"][_mod] = False
 
+# Found is not usable: a module installed for another Python version is found
+# and then fails on its compiled parts (numpy under onnx, after a distribution
+# upgrade). The ones named here are imported for real, and what they say is kept.
+_result["module_errors"] = {}
+for _mod in _cfg.get("import", []):
+    if _result["modules"].get(_mod):
+        try:
+            importlib.import_module(_mod)
+        except Exception as _exc:  # noqa: BLE001 - the probe reports every failure
+            _result["module_errors"][_mod] = "%s: %s" % (type(_exc).__name__, _exc)
+
 _tmp = _out + ".tmp"
 _fd = os.open(_tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(_fd, "w", encoding="utf-8") as _fh:

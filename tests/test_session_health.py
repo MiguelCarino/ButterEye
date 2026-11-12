@@ -132,14 +132,17 @@ def test_drops_over_one_percent() -> None:
     d = HealthDetector(TH)
     d.filter_started(0.0, 60.0)
     # 60 fps target, 3 drops per second = 5 %
-    v = _feed(d, [_s(0.5 * i, 0.5 * i, drops=int(1.5 * i)) for i in range(1, 22)])
+    # the burst while the filter comes up is not judged (drop_settle_s)
+    early = _feed(d, [_s(0.5 * i, 0.5 * i, drops=int(1.5 * i)) for i in range(1, 16)])
+    assert early.health is Health.OK and early.drop_rate is None
+    v = _feed(d, [_s(0.5 * i, 0.5 * i, drops=int(1.5 * i)) for i in range(16, 38)])
     assert v.health is Health.DROPPING and v.drop_rate is not None
     assert 0.04 < v.drop_rate < 0.06
     assert v.reason is not None and v.reason.params["percent"] == pytest.approx(5.0, abs=0.6)
     # 0.5 % is fine
     d2 = HealthDetector(TH)
     d2.filter_started(0.0, 60.0)
-    v2 = _feed(d2, [_s(0.5 * i, 0.5 * i, drops=int(0.15 * i)) for i in range(1, 22)])
+    v2 = _feed(d2, [_s(0.5 * i, 0.5 * i, drops=int(0.15 * i)) for i in range(1, 38)])
     assert v2.health is Health.OK and v2.drop_rate is not None and v2.drop_rate < 0.01
 
 

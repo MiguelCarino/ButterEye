@@ -406,7 +406,7 @@ def test_engine_for() -> None:
         (BackendId.MVTOOLS, ContentKind.AUTO, True),
         (BackendId.MVGPU, ContentKind.AUTO, True),
         (BackendId.RIFE_NCNN, ContentKind.LIVE, False),
-        (BackendId.RIFE_TRT, ContentKind.ANIMATION, False),  # TensorRT has none
+        (BackendId.RIFE_TRT, ContentKind.ANIMATION, True),
     ],
 )
 def test_hold_fill_for_a_copy(engine: BackendId, content: ContentKind, on: bool) -> None:
@@ -422,13 +422,12 @@ def test_hold_fill_for_a_copy(engine: BackendId, content: ContentKind, on: bool)
 @pytest.mark.parametrize(
     ("backend", "content", "engine"),
     [
-        # TensorRT has no hold fill: 2D animation on Automatic takes RIFE-ncnn
-        ("auto", ContentKind.ANIMATION, BackendId.RIFE_NCNN),
+        ("auto", ContentKind.ANIMATION, BackendId.RIFE_TRT),  # hold fill on every engine
         ("auto", ContentKind.AUTO, BackendId.RIFE_TRT),  # time is the cost offline
         (BackendId.RIFE_TRT, ContentKind.ANIMATION, BackendId.RIFE_TRT),  # pinned
     ],
 )
-def test_animation_copy_prefers_an_engine_with_hold_fill(
+def test_animation_copy_takes_tensorrt_too(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, backend: Any, content: ContentKind,
     engine: BackendId,
 ) -> None:  # fmt: skip
@@ -451,14 +450,12 @@ def test_animation_copy_prefers_an_engine_with_hold_fill(
     assert got is engine
     trt_model = got is BackendId.RIFE_TRT
     assert mc is not None and mc.name == ("rife-trt-model" if trt_model else "rife-v4.26")
-    assert jobs._hold_fill(got, p) is (got is not BackendId.RIFE_TRT)
-    # no RIFE-ncnn model: the usual order; 2D animation never takes TensorRT
-    # (no hold fill), MVTools re-times held drawings
+    assert jobs._hold_fill(got, p) is (content is not ContentKind.LIVE)
+    # no RIFE-ncnn model: TensorRT all the same
     none = decide.ModelChoice(None, None, None)
     monkeypatch.setattr(decide, "find_model", lambda *a, **k: none)
     if backend == "auto":
-        want = BackendId.MVTOOLS if content is ContentKind.ANIMATION else BackendId.RIFE_TRT
-        assert jobs._engine(ctx, p)[0] is want  # type: ignore[arg-type]
+        assert jobs._engine(ctx, p)[0] is BackendId.RIFE_TRT  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("macos", [False, True])

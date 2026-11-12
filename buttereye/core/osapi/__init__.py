@@ -881,11 +881,19 @@ def register_vsscript(
     )
     if line is None:
         return False
+    return _write_vsscript_lines(config, [line])
+
+
+def _write_vsscript_lines(config: Path, lines: Sequence[str]) -> bool:
+    """``lines`` merged into VSScript's configuration (``merge_vsscript_config``),
+    written atomically and only when something changes."""
     try:
         text = config.read_text(encoding="utf-8")
     except FileNotFoundError:
         text = ""
-    new = merge_vsscript_config(text, line, exists=os.path.isfile)
+    new = text
+    for line in lines:
+        new = merge_vsscript_config(new, line, exists=os.path.isfile)
     if new == text:
         return True
     config.parent.mkdir(parents=True, exist_ok=True)
@@ -896,6 +904,90 @@ def register_vsscript(
     finally:
         tmp.unlink(missing_ok=True)
     return True
+
+
+#: where the dynamic linker reports a library it found by name (mpv loads
+#: VSScript by its soname): the first is what glibc says on Fedora ("/lib64" is
+#: its first default directory), the second the same folder by its real name
+_LINKER_DIRS = ("/lib64", "/usr/lib64", "/lib", "/usr/lib")
+
+
+def system_vsscript_lines(
+    package: Path, python: Path, libpython: Path, *, linker_dirs: Sequence[str] = _LINKER_DIRS
+) -> list[str]:
+    """The lines VSScript needs to find the distribution's Python, for every
+    path a distribution's VSScript can be loaded from.
+
+    VapourSynth R79 and later keep VSScript inside the Python package and look
+    their own path up in the configuration (``vsscript_entry``); ``vapoursynth
+    config`` writes that entry for ``<package>/libvsscript.so``. Fedora 45 ships
+    the file as ``libvsscript.so.0`` with ``/usr/lib64/libvsscript.so.0`` linking
+    to it, so the entry never matches: ``vspipe`` loads
+    ``<package>/libvsscript.so.0`` and mpv, by soname, ``/lib64/libvsscript.so.0``,
+    and both fail with "Python executable and library path couldn't be
+    determined". One line each for the files in the package and for the links
+    to them a linker directory has. Empty when the package has no VSScript
+    (R72 and older: nothing to configure)."""
+    try:
+        mtime = int(python.stat().st_mtime)
+        files = sorted(p for p in package.glob("libvsscript.so*") if p.is_file())
+    except OSError:
+        return []
+    paths: list[Path] = list(files)
+    real = {os.path.realpath(p) for p in files}
+    for folder in linker_dirs:
+        for f in files:
+            link = Path(folder) / f.name
+            if link not in paths and os.path.realpath(link) in real and link.exists():
+                paths.append(link)
+    out: list[str] = []
+    for path in paths:
+        line = vsscript_entry(path, python, libpython, mtime)
+        if line is not None and line not in out:
+            out.append(line)
+    return out
+
+
+def _system_python() -> tuple[Path, Path, Path] | None:
+    """(VapourSynth's package folder, the interpreter, its libpython) for the
+    Python that runs ButterEye, or None when it has no VapourSynth or no shared
+    libpython. Nothing is imported: the package is only looked up."""
+    import sysconfig
+
+    # looked for by hand: an import-system lookup of ``vapoursynth`` is as far
+    # as the GUI process may never go (F17), and nothing more is needed here
+    package = next(
+        (
+            Path(d) / "vapoursynth"
+            for d in sys.path
+            if d and (Path(d) / "vapoursynth" / "__init__.py").is_file()
+        ),
+        None,
+    )
+    if package is None:
+        return None
+    libdir, name = sysconfig.get_config_var("LIBDIR"), sysconfig.get_config_var("INSTSONAME")
+    if not libdir or not name:
+        return None
+    libpython = Path(libdir) / name
+    # a virtual environment's interpreter is a link to the one that has the library
+    python = Path(getattr(sys, "_base_executable", "") or sys.executable)
+    if not libpython.is_file() or not python.is_file():
+        return None
+    return package, python, libpython
+
+
+def register_system_vsscript(env: Mapping[str, str]) -> bool:
+    """Linux, the distribution's VapourSynth: make sure VSScript's configuration
+    has a line for each path it is loaded from (``system_vsscript_lines``).
+    True when there was nothing to do or the lines are there now. The same file
+    and the same rules as ``register_vsscript``: only these lines are replaced."""
+    config = vsscript_config(env)
+    found = _system_python()
+    if config is None or found is None:
+        return False
+    lines = system_vsscript_lines(*found)
+    return _write_vsscript_lines(config, lines) if lines else True
 
 
 def use_bundled_runtime() -> None:
@@ -920,8 +1012,9 @@ def use_bundled_runtime() -> None:
     find for itself (``point_at_vsscript``). A no-op when VapourSynth is not
     installed.
 
-    Nothing on Linux otherwise: it uses the distribution's, and mpv finds
-    VSScript by name.
+    Linux otherwise: the distribution's VapourSynth, which mpv finds by name;
+    where VSScript needs a configuration line to find Python (R79 and later),
+    the lines for the paths it is loaded from (``register_system_vsscript``).
     """
     if not IS_WINDOWS:
         # Windows is decided first and macOS inside the non-Windows branch, so
@@ -943,6 +1036,9 @@ def use_bundled_runtime() -> None:
             point_at_appimage(os.environ, LINUX_APP)
             with contextlib.suppress(OSError):
                 register_vsscript(os.environ, LINUX_APP, appimage_runtime(LINUX_APP))
+        else:
+            with contextlib.suppress(OSError):
+                register_system_vsscript(os.environ)
         return
     os.environ[NO_CWD_SEARCH] = "1"
     python_dir, vs_dir = runtime_dirs()
@@ -1719,7 +1815,9 @@ __all__ = [
     "point_at_runtime",
     "point_at_vsscript",
     "prepare_endpoint",
+    "register_system_vsscript",
     "register_vsscript",
+    "system_vsscript_lines",
     "replace",
     "runtime_dirs",
     "search_windows_path",

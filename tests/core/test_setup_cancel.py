@@ -165,6 +165,9 @@ def only_logs(xdg: Any) -> bool:
     # the parents, minus the first component: that one is a directory snapshot()
     # walks and so never lists ("state" on Linux, "home" on macOS)
     allowed = {logs.as_posix()} | {d.as_posix() for d in logs.parents if len(d.parts) > 1}
+    # VapourSynth's own configuration, which opening the core completes where the
+    # distribution's VSScript needs it (osapi.register_system_vsscript): not setup's
+    allowed |= {"config/vapoursynth", "config/vapoursynth/vapoursynth.toml"}
     return all(p in allowed or p.startswith(f"{logs.as_posix()}/") for p in snapshot(xdg))
 
 

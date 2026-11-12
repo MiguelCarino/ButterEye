@@ -245,7 +245,9 @@ async def test_session_4k_uses_mvgpu_at_full_size_before_a_smaller_picture(
     _load(s, fps=24.0, w=3840, h=2160)
     await s.apply(raise_on_fail=False)
     snap = s.snapshot()
-    assert snap.backend is BackendId.MVGPU and snap.target_fps == 48
+    # 2x of 24 is 48, which a 60 Hz screen can't pace evenly: the measured cap
+    # covers 60, so every frame gets one refresh (decide._even_from)
+    assert snap.backend is BackendId.MVGPU and snap.target_fps == 60
     assert snap.smooth_size is None and snap.flow_scale == 1.0 and snap.notice is None
     (ud,) = _filters(s)
     assert ud["backend"] == "mvgpu" and "size" not in ud
@@ -444,7 +446,13 @@ def test_template_mvgpu_marks_scene_cuts_and_passes_the_device() -> None:
             return _Mvgpu if name == "mvgpu" else getattr(vs.core, name)
 
     ns["core"] = _Core()
-    ns["_load"] = lambda namespace, filename: seen.setdefault("loaded", (namespace, filename))
+
+    def _load(namespace: str, filename: str) -> None:
+        if namespace == "mv" and not hasattr(vs.core, "mv"):
+            raise vs.Error("no MVTools here")  # as LoadPlugin says; cuts then go by threshold
+        seen.setdefault("loaded", (namespace, filename))
+
+    ns["_load"] = _load
     src = vs.core.std.BlankClip(format=vs.YUV422P10, width=64, height=32, length=4)
     ns["_mvgpu"](src, {"sc_threshold": 0.12, "gpu_id": 1}, Fraction(48))
     assert seen["loaded"] == ("mvgpu", "libmvgpu.so")  # as passed; the stub _load renames nothing

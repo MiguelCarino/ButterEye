@@ -59,6 +59,14 @@ def test_find_install_reads_the_user_tree(tmp_path: Path, trt_libs: None) -> Non
     assert inst.trt_version == "11.3.0"
     assert inst.python_dirs == (paths.data_dir / "python",)  # type: ignore[attr-defined]
     assert trt.available_models(inst) == {M26}
+    # a DRBA model exported by contrib/build-drba.sh: its own folder
+    drba = inst.models_dir / "drba" / "drba_v1.onnx"
+    drba.parent.mkdir(parents=True)
+    drba.write_bytes(b"onnx")
+    assert trt.available_models(inst) == {M26, "drba-v1"}
+    assert trt.onnx_file(inst, "drba-v1") == drba and trt.is_drba("drba-v1")
+    assert not trt.is_drba(M26) and not trt.is_drba(None)
+    assert trt.onnx_file(inst, M26) == inst.models_dir / "rife_v2" / "rife_v4.26.onnx"
 
 
 @pytest.mark.parametrize(
@@ -157,7 +165,7 @@ def test_template_branch_keeps_the_m0l_fixes() -> None:
     assert "_implementation=2" in body
     assert "vsmlrt.convert_model = _fp16_model" in body
     assert "sys.dont_write_bytecode = True" in body
-    assert "node_block_list=casts" in text
+    assert "node_block_list=keep" in text and "n.op_type == 'Cast'" in text
     assert "not built yet" in body  # fails fast inside mpv
     assert "elif backend == 'rife-trt':" in text
 

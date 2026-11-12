@@ -33,6 +33,7 @@ import logging
 import math
 import time
 import uuid
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -297,10 +298,11 @@ TRT_IDENTITY = "mpvctl.trt_identity"  # Vulkan UUID -> (nvidia UUID, driver) | N
 #: objects), MVTools. The target decides among them (``decide.pick_engine``).
 LIVE_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVGPU, BackendId.MVTOOLS)
 #: The same for a 2D animation profile: MVTools before mvgpu, which loses large
-#: flat shapes and has to find twice the step on drawings held on twos.
-#: TensorRT has no hold fill: RIFE-ncnn goes before it when RIFE-ncnn keeps up
-#: with hold fill's extra work (``Session.apply``)
+#: flat shapes and has to find twice the step on drawings held on twos
 ANIMATION_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVTOOLS, BackendId.MVGPU)
+#: A DRBA model's speed against RIFE v4.26 on the same TensorRT (1080p, RTX
+#: 4090, vspipe: 196 against 213 fps; taken lower, it is one measurement)
+DRBA_SPEED = 0.85
 #: Hold fill re-times drawings held up to this many frames (``FilterParams.hold_max``)
 HOLD_MAX = 3
 
@@ -638,6 +640,9 @@ class _Session:
         self.health_code: ErrorCode | None = None
         self.gen = 0
         self.drop_rate: float | None = None
+        #: (time, frame-drop-count, mistimed-frame-count, vo-delayed-frame-count)
+        #: over the health detector's window, for ``drop_breakdown``
+        self._counters: deque[tuple[float, int, int, int]] = deque()
         self.step_down_to: str | None = None
         self.notice: Msg | None = None
         self.ended = False
@@ -1040,6 +1045,10 @@ class _Session:
         video_px = facts.width * facts.height
         if video_px <= 0:
             return None
+        # a DRBA model is not in the speed test: the default model's rate on
+        # the same engine, less what DRBA measured slower (DRBA_SPEED)
+        drba = backend is BackendId.RIFE_TRT and trt.is_drba(model)
+        measured_as = trt.DEFAULT_MODEL if drba else model
         devices = self.vulkan_devices()
         # (-distance in log pixel count, measured at (s, -inf = undated), scaled fps)
         found: list[tuple[float, float, float]] = []
@@ -1054,7 +1063,7 @@ class _Session:
             when = getattr(result, "when", None)
             stamp = when.timestamp() if isinstance(when, datetime) else -math.inf
             for m in getattr(result, "measurements", ()):
-                if m.backend is not backend or (model is not None and m.model != model):
+                if m.backend is not backend or (model is not None and m.model != measured_as):
                     continue
                 if m.gpu_faults or not measured_in_mpv(m) or not m.mpv_fps > 0:
                     continue
@@ -1071,7 +1080,7 @@ class _Session:
                 found.append((round(-abs(math.log(ratio)), 6), stamp, scaled))
         if not found:
             return None
-        rate = max(found)[2] / LIVE_HEADROOM
+        rate = max(found)[2] / LIVE_HEADROOM * (DRBA_SPEED if drba else 1.0)
         if flow_scale != 1.0:
             rate *= decide.HALF_FLOW_GAIN
         if self.power.constrained:
@@ -1118,6 +1127,41 @@ class _Session:
         built_at: dict[str, float] = self.ctx.state(TRT_BUILT_AT, dict)
         ended = built_at.get("t")
         return ended is not None and time.monotonic() - ended < HEAVY_HOLD_S
+
+    def note_counters(self, now: float) -> None:
+        """Keep mpv's three timing counters over the drop window."""
+
+        def n(key: str) -> int:
+            v = self.props.get(key)
+            return v if isinstance(v, int) and not isinstance(v, bool) else 0
+
+        self._counters.append(
+            (now, n("frame-drop-count"), n("mistimed-frame-count"), n("vo-delayed-frame-count"))
+        )
+        while self._counters and now - self._counters[0][0] > self.detector.th.drop_window_s:
+            self._counters.popleft()
+
+    def drop_breakdown(self) -> str:
+        """Which side the dropped frames of the last window point at, for the log.
+
+        With ``video-sync=display-resample`` mpv counts a frame as dropped when it
+        gives it no refresh at all, which it does once the video is a refresh and
+        20 ms behind the audio: frames that reached the output late (the filter,
+        or the decoder feeding it). ``vo-delayed-frame-count`` rises instead when
+        the output itself missed a refresh (the renderer, the scaler, the
+        compositor, another program using the GPU)."""
+        if len(self._counters) < 2:
+            return "dropped frames: no counters yet"
+        (t0, d0, m0, v0), (t1, d1, m1, v1) = self._counters[0], self._counters[-1]
+        drops, mistimed, delayed = max(0, d1 - d0), max(0, m1 - m0), max(0, v1 - v0)
+        if delayed * 2 >= max(1, drops):
+            side = "the display side missed refreshes (renderer, scaler or compositor)"
+        else:
+            side = "frames reached the output late (the filter or the decoder)"
+        return (
+            f"in {t1 - t0:.0f} s: {drops} dropped, {mistimed} mistimed, "
+            f"{delayed} delayed at the output: {side}"
+        )
 
     async def live_fallback(self, drop_rate: float, *, learn: bool = True) -> None:
         """Automatic's engine keeps dropping heavily: record that it is slower here
@@ -1304,6 +1348,7 @@ class _Session:
         self.notice = notice
         self.step_down_to = None
         self.drop_rate = None
+        self._counters.clear()
         self.run_size, self.run_flow, self.run_block = None, 1.0, False
         self.run_fill = False
 
@@ -1385,9 +1430,10 @@ class _Session:
         (``live_fallback``): held drawings then judder as before, which beats
         dropping frames, and the engine's estimate is not lowered for its sake.
         Without a benchmark a 2D animation profile has it (the user asked) and
-        Automatic does not. TensorRT has no hold fill."""
-        if backend is BackendId.RIFE_TRT:
-            return False, "TensorRT does not support it"
+        Automatic does not. A DRBA model never has it: it reads held drawings
+        itself and keeps them at their own pace."""
+        if backend is BackendId.RIFE_TRT and trt.is_drba(model):
+            return False, "the DRBA model keeps drawings as drawn"
         if profile.content is ContentKind.LIVE:
             return False, "the profile is set to live action"
         if self.fill_dropped:
@@ -1426,7 +1472,10 @@ class _Session:
         if inst is None:
             return None, None
         avail = trt.available_models(inst)
-        for name in (profile.model, trt.DEFAULT_MODEL, *sorted(avail)):
+        # a DRBA model (2D animation, drawings kept as drawn) only when the
+        # profile names it: it is a look, not a stand-in for a missing model
+        general = sorted(n for n in avail if not trt.is_drba(n))
+        for name in (profile.model, trt.DEFAULT_MODEL, *general):
             if name in avail:
                 return inst, name
         return inst, None
@@ -1930,6 +1979,7 @@ class _Session:
                 pick.target.bypass is BypassReason.NO_REALTIME
                 and BackendId.RIFE_TRT in cands
                 and facts.width * facts.height >= decide.HALF_FLOW_MIN_PIXELS
+                and not trt.is_drba(trt_model)
             ):
                 # TensorRT with half-resolution flow (M0(q)) before a smaller picture
                 half = [
@@ -2021,27 +2071,6 @@ class _Session:
                             return bp, None, False, [decide.blockfps_notice()], True
             return pick, size, forced_used, extra, False
 
-        if (
-            animation
-            and wanted is None
-            and not self.fill_dropped
-            and BackendId.RIFE_TRT in order
-            and BackendId.RIFE_NCNN in order
-        ):
-            # TensorRT has no hold fill: RIFE-ncnn first when it doubles the
-            # rate at full size with room for hold fill's extra work
-            (ncnn,) = await engine_options(facts, [BackendId.RIFE_NCNN])
-            rife = choose([ncnn], forced=False)
-            t = rife.target.target
-            if (
-                rife.backend is BackendId.RIFE_NCNN
-                and rife.target.bypass is None
-                and t is not None
-                and t >= facts.fps * 2 * decide.AUTO_DOUBLING_TOLERANCE
-                and decide.hold_fill_fits(facts.fps, t, ncnn.sustainable_fps)
-            ):
-                order.remove(BackendId.RIFE_NCNN)
-                order.insert(order.index(BackendId.RIFE_TRT), BackendId.RIFE_NCNN)
         self.flow_scale = 1.0
         pick, size, forced_used, extra, mv_block = await decide_with(order)
         trt_key: trt.EngineKey | None = None
@@ -2695,6 +2724,7 @@ class _Session:
         self.bypass_display = None
         self.step_down_to = None
         self.drop_rate = None
+        self._counters.clear()
         self.heavy_since = None
         self.steady_since = None
         self.video_limits = set()
@@ -2903,6 +2933,7 @@ class _Session:
         if self.active_gen is not None and not self.preloading:
             verdict = self.detector.update(sample_from(self.props, now))
             self.drop_rate = verdict.drop_rate
+            self.note_counters(now)
             if verdict.flowing and self.filter is FilterState.PENDING:
                 self.filter = FilterState.ACTIVE
             rate = verdict.drop_rate if verdict.health is Health.DROPPING else None
@@ -2935,6 +2966,7 @@ class _Session:
             elif verdict.health is Health.DROPPING:
                 if self.health is not Health.DROPPING:
                     self.health, self.health_code = Health.DROPPING, None
+                    self.log.info("%s: %s", self.title, self.drop_breakdown())
                     self.step_down_to = await self.step_down_choice()
                     self.emit(
                         HealthChanged(self.sid, Health.DROPPING, None,

@@ -595,9 +595,9 @@ def estimate_bytes(
 #: instead of RIFE at a smaller one (the file would stay small: nothing scales
 #: it back up)
 OFFLINE_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVGPU, BackendId.MVTOOLS)
-#: 2D animation on Automatic: RIFE-ncnn, then MVTools, then mvgpu, as live play
-#: ranks it; never TensorRT, which has no hold fill
-ANIMATION_RANKING = (BackendId.RIFE_NCNN, BackendId.MVTOOLS, BackendId.MVGPU)
+#: 2D animation on Automatic: RIFE, then MVTools, then mvgpu, as live play
+#: ranks it
+ANIMATION_RANKING = (BackendId.RIFE_TRT, BackendId.RIFE_NCNN, BackendId.MVTOOLS, BackendId.MVGPU)
 #: An engine is taken for its picture while its copy takes at most this many
 #: times the video's length; otherwise the fastest one. The convert window uses
 #: the same number (``DEFAULT_SIZE_FACTOR``) to choose the size it starts on

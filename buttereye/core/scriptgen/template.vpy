@@ -550,10 +550,40 @@ def _fp16_model(network_path, target_network_path, fp16=False, bf16=False,
     if bf16 or not fp16:
         raise vs.Error('ButterEye: only fp16 TensorRT engines are supported')
     model = onnx.load(network_path)
-    casts = [n.name for n in model.graph.node if n.op_type == 'Cast']
+    keep = [n.name for n in model.graph.node if n.op_type == 'Cast']
+    if _FP16.get('grid'):
+        keep += _grid_nodes(model)
     model = convert_float_to_float16(model, keep_io_types=output_format != 1,
-                                     node_block_list=casts)
+                                     node_block_list=keep)
     onnx.save(model, target_network_path)
+
+
+#: 'grid': keep the arithmetic of sampling positions in full precision (DRBA)
+_FP16 = {}
+
+
+def _grid_nodes(model):
+    # GridSample and the nodes that work out where it reads, back to the
+    # network's own layers. A half float holds 11 bits: a position in a frame
+    # 1920 wide lands up to a pixel off, and the picture comes out torn
+    # (measured against PyTorch at fp32: worst pixel 26 levels off, 12 with
+    # these nodes kept; what is left is the flow itself at half precision)
+    stop = {'Conv', 'ConvTranspose', 'DepthToSpace', 'Resize', 'Sigmoid', 'LeakyRelu',
+            'GridSample', 'Pad', 'Shape'}
+    by_output = {o: n for n in model.graph.node for o in n.output}
+    names, todo, seen = [], [], set()
+    for n in model.graph.node:
+        if n.op_type == 'GridSample':
+            names.append(n.name)
+            todo.append(n.input[1])
+    while todo:
+        n = by_output.get(todo.pop())
+        if n is None or n.name in seen or n.op_type in stop:
+            continue
+        seen.add(n.name)
+        names.append(n.name)
+        todo.extend(n.input)
+    return names
 
 
 # RIFE IFNet flow blocks (v4.x, vs-mlrt v2 export): down-resize factors and
@@ -642,6 +672,68 @@ def _flow_models(trt):
     return folder
 
 
+def _drba(rgb, src, multi, marked, half, infer):
+    # DistilDRBA (contrib/drba_export.py): a network for 2D animation that
+    # reads three frames - the one before, the one the output is nearest to
+    # and the one after - and a time, 1.0 at the middle frame, 0.5 halfway
+    # back, 1.5 halfway on. What moves on every frame (pans, zooms) comes out
+    # smooth; a drawing held on twos or threes keeps its own pace instead of
+    # being bent between poses. Output frame n is at source time n / multi:
+    # the middle frame m is the nearest source frame, the time 1 + n / multi - m.
+    # ``src`` carries _SceneChangeNext when ``marked``: the network never sees
+    # a frame from another shot, and the slots across a cut repeat a frame.
+    num, den = multi.numerator, multi.denominator
+    last = rgb.num_frames - 1
+    length = min(int(rgb.num_frames * multi), 2 ** 31 - 1)
+    before, after = _shift(rgb, -1), _shift(rgb, 1)
+    if marked:
+        def same_shot(other, flags):
+            return core.std.FrameEval(
+                rgb, lambda n, f: rgb if f.props.get('_SceneChangeNext') else other,
+                prop_src=flags)
+        before, after = same_shot(before, _shift(src, -1)), same_shot(after, src)
+
+    def nearest(n):
+        return (2 * n * den + num) // (2 * num)
+
+    def middle(n):
+        return min(nearest(n), last)
+
+    def at(clip):
+        blank = core.std.BlankClip(clip, length=length, keep=True)
+        return core.std.FrameEval(blank, lambda n: clip[middle(n)])
+
+    times = {}
+    gray = core.std.BlankClip(rgb, format=vs.GRAYH if half else vs.GRAYS, length=length, keep=True)
+
+    def time(n):
+        t = 1 + Fraction(n * den, num) - middle(n)
+        if t not in times:
+            times[t] = core.std.BlankClip(gray, color=float(t), keep=True)
+        return times[t]
+
+    mid = at(rgb)
+    out = infer([at(before), mid, at(after), core.std.FrameEval(gray, time)])
+    # the source frame where the output falls on one, and at a cut the frame
+    # of the shot the output's time is in (the flags of the frame to its left)
+    left = at(_shift(rgb, -1))
+    cut_before = at(_shift(src, -1)) if marked else None
+
+    def pick(n, f=None):
+        m = nearest(n)
+        if n * den == m * num or m > last:  # on a source frame, or past the last
+            return mid
+        if n * den > m * num:  # after the middle frame: a cut right after it
+            return mid if f is not None and f[0].props.get('_SceneChangeNext') else out
+        return left if f is not None and f[1].props.get('_SceneChangeNext') else out
+
+    if marked:
+        res = core.std.FrameEval(out, pick, prop_src=[at(src), cut_before])
+    else:
+        res = core.std.FrameEval(out, pick)
+    return core.std.AssumeFPS(res, fpsnum=src.fps_num * num, fpsden=src.fps_den * den)
+
+
 def _rife_trt(clip, cfg, props, target):
     # vs-mlrt's vstrt (SCOPE §5.2). Engines are built out of process before
     # playback; inside mpv a missing engine fails fast instead of freezing the
@@ -670,20 +762,55 @@ def _rife_trt(clip, cfg, props, target):
             sys.path.insert(0, extra)
     import vsmlrt
 
+    drba = str(trt['model']).startswith('drba')
     vsmlrt.trtexec_path = trt['trtexec']
-    vsmlrt.models_path = _flow_models(trt)
+    vsmlrt.models_path = trt['models_dir'] if drba else _flow_models(trt)
     vsmlrt.convert_model = _fp16_model
     matrix = _matrix(cfg, clip, props)
     rng = _range(cfg, props)
     loc = _chromaloc(cfg, props)
-    # cuts only: vsmlrt reads _SceneChangeNext; no hold fill, no still skip here
-    clip, marked = _prepare(clip, cfg, cfg.get('sc_threshold'))
     half = bool(trt.get('half_io'))
-    rgb = _to_rgb(clip, vs.RGBH if half else vs.RGBS, matrix, rng, loc)
-    backend = vsmlrt.Backend.TRT(fp16=bool(trt.get('fp16')), num_streams=int(trt.get('streams') or 2),
-                                 output_format=1 if half else 0, engine_folder=engine_dir,
-                                 device_id=int(cfg.get('gpu_id') or 0))
+    streams = int(trt.get('streams') or 2)
+
+    def backend(n):
+        return vsmlrt.Backend.TRT(fp16=bool(trt.get('fp16')), num_streams=n,
+                                  output_format=1 if half else 0, engine_folder=engine_dir,
+                                  device_id=int(cfg.get('gpu_id') or 0))
+
+    def pairs(pair_clip, steps):
+        # Hold fill, as RIFE-ncnn does it (_rife): a second instance of the same
+        # engine at fixed steps of 1/steps between the pairs. One instance for
+        # every step (the time is an input of the model), on half the streams.
+        k = steps - 1
+        a = _to_rgb(core.std.SelectEvery(pair_clip, 2, 0), vs.RGBH if half else vs.RGBS,
+                    matrix, rng, loc)
+        b = _to_rgb(core.std.SelectEvery(pair_clip, 2, 1), vs.RGBH if half else vs.RGBS,
+                    matrix, rng, loc)
+        times = core.std.Interleave([
+            core.std.BlankClip(a, format=vs.GRAYH if half else vs.GRAYS, color=j / steps, length=1)
+            for j in range(1, steps)]).std.Loop(a.num_frames)
+        rgb = vsmlrt.RIFEMerge(core.std.Interleave([a] * k), core.std.Interleave([b] * k), times,
+                               model=vsmlrt.RIFEModel[trt['model']],
+                               backend=backend(max(1, streams // 2)), _implementation=2)
+        out = _to_yuv(rgb, pair_clip.format, matrix, rng, loc, cfg)
+        return {j: core.std.SelectEvery(out, k, j - 1) for j in range(1, steps)}
+
     multi = target / Fraction(clip.fps_num, clip.fps_den)
+    if drba:
+        # cuts only: DRBA reads held drawings itself and keeps them as drawn
+        clip, marked = _prepare(clip, cfg, cfg.get('sc_threshold'))
+        rgb = _to_rgb(clip, vs.RGBH if half else vs.RGBS, matrix, rng, loc)
+        onnx_path = os.path.join(trt['models_dir'], 'drba', trt['onnx'] + '.onnx')
+        _FP16['grid'] = True
+        rgb = _drba(rgb, clip, multi, marked, half,
+                    lambda clips: vsmlrt.inference(clips, onnx_path, backend=backend(streams)))
+        fmt = _output_format(clip, cfg)
+        out = _to_yuv(rgb, fmt, matrix, rng, loc, cfg)
+        return _passthrough(clip, out, target, marked, cfg)
+    # cuts and hold fill: vsmlrt reads _SceneChangeNext; no still skip here
+    clip, marked = _prepare(clip, cfg, cfg.get('sc_threshold'), pairs)
+    rgb = _to_rgb(clip, vs.RGBH if half else vs.RGBS, matrix, rng, loc)
+    backend = backend(streams)
     rgb = vsmlrt.RIFE(rgb, multi=int(multi) if multi.denominator == 1 else multi,
                       model=vsmlrt.RIFEModel[trt['model']], backend=backend,
                       video_player=True, _implementation=2)

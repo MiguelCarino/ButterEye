@@ -367,4 +367,4 @@ async def test_seeks_and_unheld_sessions_never_hold(tmp_path: Path) -> None:
 
 def test_defaults() -> None:
     g = GeneralSettings()
-    assert g.preload is False and g.preload_max_s == 10.0
+    assert g.preload is True and g.preload_max_s == 10.0

@@ -18,6 +18,8 @@ from typing import Any
 
 import pytest
 
+from buttereye.core import paths as paths_mod
+from buttereye.core.backends import trt
 from buttereye.core.scriptgen import generator as g
 
 np = pytest.importorskip("numpy")
@@ -54,6 +56,8 @@ def frame(k):
         planes = draw(60 + 5 * k)
         planes[0] = tex[:, 3 * k:3 * k + W] + rng.normal(0, 2, (H, W))
         return planes
+    if KIND == 'mixed':  # the backdrop pans on every frame, the disc is drawn on threes
+        return draw(60 + 12 * (k // 3), bg=4.0 * k)
     if KIND == 'cut':  # one backdrop, two shots
         return draw(60 + 3 * k) if k < 15 else draw(260 - 3 * k, bg=9)
     hold = {'ones': 1, 'twos': 2, 'threes': 3}[KIND]
@@ -99,6 +103,9 @@ def _render(scripts: tuple[Path, Path], backend: str, kind: str, **cfg: Any) -> 
         if not MODEL.is_dir():
             pytest.skip("RIFE models not installed")
         data.update(model_path=os.fspath(MODEL), gpu_thread=4)
+    if backend == "rife-trt":
+        data.update(trt=_trt(script.parent, cfg.pop("model", trt.DEFAULT_MODEL)))
+    frames = cfg.pop("frames", 2 * N)
     data.update(cfg)
     res = subprocess.run(
         ["vspipe", "-c", "y4m", "-a", "user_data=" + json.dumps(data), "-a", f"KIND={kind}",
@@ -114,8 +121,24 @@ def _render(scripts: tuple[Path, Path], backend: str, kind: str, **cfg: Any) -> 
         pos = raw.index(b"\n", pos) + 1
         out.append(np.frombuffer(raw, np.uint8, size, pos))
         pos += size
-    assert len(out) == 2 * N
+    assert len(out) == frames
     return out
+
+
+def _trt(folder: Path, model: str = trt.DEFAULT_MODEL) -> dict[str, Any]:
+    """The user's TensorRT setup with an engine folder of this test's own: the
+    script builds the small engine there on first use (about half a minute)."""
+    paths = paths_mod.resolve()
+    if trt.problems(paths):
+        pytest.skip("TensorRT is not set up")
+    inst = trt.find_install(paths)
+    assert inst is not None
+    if model not in trt.available_models(inst):
+        pytest.skip(f"{model} is not installed")
+    key = trt.EngineKey("test", "test", inst.vstrt_version, inst.trt_version, model, W, H)
+    engines = folder / ("engines-" + model)
+    engines.mkdir(exist_ok=True)
+    return trt.script_settings(inst, key, engines, streams=2, build=True)
 
 
 def _step_cv(frames: list[Any]) -> float:
@@ -134,6 +157,7 @@ ENGINES = [
     pytest.param("mvtools", id="mvtools"),
     pytest.param("rife-ncnn", id="rife-ncnn", marks=pytest.mark.gpu),
     pytest.param("mvgpu", id="mvgpu", marks=pytest.mark.gpu),
+    pytest.param("rife-trt", id="rife-trt", marks=pytest.mark.gpu),
 ]
 
 
@@ -178,3 +202,60 @@ def test_still_skip_is_invisible(scripts: tuple[Path, Path], backend: str) -> No
     for a, b in zip(off, on, strict=True):
         err = float(np.mean((a.astype(np.float64) - b) ** 2))
         assert err == 0 or 10 * np.log10(255**2 / err) > 45
+
+
+# ---- DRBA (contrib/build-drba.sh): a model for 2D animation on TensorRT
+DRBA = [pytest.param("drba-v1", id="v1"), pytest.param("drba-v2_lite", id="v2_lite")]
+
+
+def _disc_steps(frames: list[Any]) -> Any:
+    xs = []
+    for f in frames:
+        v = f[W * H * 5 // 4 :].reshape(H // 2, W // 2)
+        xs.append(2 * float(np.nonzero(v > 180)[1].mean()))
+    return np.diff(xs)[: len(frames) - 8]
+
+
+def _backdrop_steps(frames: list[Any]) -> Any:
+    """The backdrop's stripes (32 px apart) from their phase in rows the disc
+    never reaches."""
+    wave = np.exp(-2j * np.pi * np.arange(W) / 32)
+    phase = []
+    for f in frames:
+        row = f[: W * H].reshape(H, W)[126:130].mean(0).astype(np.float64)
+        phase.append(np.angle(np.sum((row - row.mean()) * wave)))
+    return (np.diff(np.unwrap(phase)) * 32 / (2 * np.pi))[: len(frames) - 8]
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("model", DRBA)
+def test_drba_smooths_the_backdrop_and_keeps_the_drawing(
+    scripts: tuple[Path, Path], model: str
+) -> None:
+    out = _render(scripts, "rife-trt", "mixed", model=model)
+    # the backdrop, 4 px a source frame: about 2 px on every output frame
+    backdrop = _backdrop_steps(out)
+    assert abs(float(backdrop.mean()) - 2.0) < 0.1 and float(backdrop.std()) < 1.2
+    # the disc, 12 px every third frame: still for four output frames in six,
+    # as it was drawn (RIFE spreads the step over two output frames)
+    disc = np.abs(_disc_steps(out))
+    assert float(np.mean(disc < 0.5)) > 0.6
+    assert abs(float(disc.sum()) / len(disc) - 2.0) < 0.3  # and it arrives
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("model", DRBA)
+def test_drba_at_a_cut_and_at_two_and_a_half_times(scripts: tuple[Path, Path], model: str) -> None:
+    out = _render(scripts, "rife-trt", "cut", model=model)
+    assert np.array_equal(out[29], out[28])  # the slot across the cut repeats frame 14
+    assert not np.array_equal(out[27], out[26])
+    # every second source frame is an output frame at 2.5x, and stays the source's
+    plain = _render(scripts, "rife-trt", "mixed", model=model)
+    out = _render(scripts, "rife-trt", "mixed", model=model, target_fps=[60, 1],
+                  frames=N * 5 // 2)  # fmt: skip
+    assert len(out) == 90
+    for k in (2, 8, 20):  # source frame k is output frame 2.5 k
+        err = float(np.mean((out[k * 5 // 2].astype(np.float64) - plain[2 * k]) ** 2))
+        assert err < 2.0, (k, err)
+    backdrop = _backdrop_steps(out)
+    assert abs(float(backdrop.mean()) - 1.6) < 0.1

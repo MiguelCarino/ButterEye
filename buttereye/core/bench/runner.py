@@ -290,6 +290,7 @@ def trt_candidates(ctx: ProviderContext) -> tuple[Candidate, ...]:
             inst,
         )
         for name in trt.available_models(inst)
+        if not trt.is_drba(name)  # a look for 2D animation, not a candidate to recommend
     ]
     return tuple(sorted(out, key=_quality_key))
 

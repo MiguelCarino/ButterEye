@@ -70,6 +70,10 @@ MODELS: dict[str, tuple[str, str]] = {
     "rife-v4.22_lite_ensembleFalse": ("v4_22_lite", "rife_v4.22_lite"),
     "rife-v4.22_ensembleFalse": ("v4_22", "rife_v4.22"),
     "rife-v4.18_ensembleFalse": ("v4_18", "rife_v4.18"),
+    # DistilDRBA (2D animation), exported by contrib/build-drba.sh: no vsmlrt
+    # member, the script runs the ONNX file itself (``drba/<stem>.onnx``)
+    "drba-v1": ("drba_v1", "drba_v1"),
+    "drba-v2_lite": ("drba_v2_lite", "drba_v2_lite"),
 }
 DEFAULT_MODEL = "rife-v4.26_ensembleFalse"
 
@@ -188,13 +192,23 @@ def model_entry(name: str | None) -> tuple[str, str] | None:
     return MODELS.get(name or DEFAULT_MODEL)
 
 
+def is_drba(name: str | None) -> bool:
+    """A DistilDRBA model: for 2D animation, three frames in, drawings kept as
+    drawn (no hold fill, no reduced-flow engines)."""
+    return bool(name) and str(name).startswith("drba-")
+
+
+def onnx_file(install: TrtInstall, name: str) -> Path | None:
+    entry = MODELS.get(name)
+    if entry is None:
+        return None
+    return install.models_dir / ("drba" if is_drba(name) else "rife_v2") / f"{entry[1]}.onnx"
+
+
 def available_models(install: TrtInstall) -> frozenset[str]:
     """ButterEye model names with an ONNX file present."""
-    return frozenset(
-        name
-        for name, (_, stem) in MODELS.items()
-        if (install.models_dir / "rife_v2" / f"{stem}.onnx").is_file()
-    )
+    found = ((name, onnx_file(install, name)) for name in MODELS)
+    return frozenset(name for name, path in found if path is not None and path.is_file())
 
 
 def streams_for(width: int, height: int) -> int:
@@ -386,9 +400,11 @@ __all__ = [
     "build_user_data",
     "engine_dir",
     "find_install",
+    "is_drba",
     "is_ready",
     "model_entry",
     "nvidia_identity",
+    "onnx_file",
     "problems",
     "python_dirs",
     "script_settings",

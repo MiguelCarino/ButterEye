@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from buttereye.core.backends import trt
 from buttereye.core.mpvctl import decide
 from buttereye.core.mpvctl import session as live
 from buttereye.core.types import (
@@ -49,7 +50,7 @@ from tests.test_live_decisions import (
 )
 from tests.test_live_decisions import bench_history as _bench_history_fixture
 from tests.test_live_decisions import no_xid as _no_xid_fixture
-from tests.test_live_trt import TrtFake, _ncnn_m, _opted, _ready, _trt_m
+from tests.test_live_trt import GPU, M26, TrtFake, _ncnn_m, _opted, _ready, _trt_m
 from tests.test_live_trt import fake_trt as _fake_trt_fixture
 
 bench_history = _bench_history_fixture
@@ -200,31 +201,32 @@ async def test_drops_with_fill_turn_it_off_and_teach_nothing(
     assert _engine(s2) is BackendId.RIFE_NCNN
 
 
-async def test_animation_puts_rife_ncnn_before_tensorrt_when_it_has_room(
+async def test_animation_takes_tensorrt_with_hold_fill(
     tmp_path: Path, bench_history: list[BenchResult], no_xid: Any, fake_trt: TrtFake
 ) -> None:
     anime = _profile(ContentKind.ANIMATION)
-    # 1080p: RIFE-ncnn at 120 covers 1.67 × 48 with hold fill; TensorRT has none
+    # 1080p: TensorRT at 260 covers 1.67 × 48 with hold fill
     bench_history.append(_result(_trt_m(260.0), _ncnn_m(120.0)))
     ctx = FakeCtx(_paths(tmp_path), _opted(anime))
     s = _session(ctx, tmp_path)
     _ready(ctx, s)
     _load(s, fps=23.976)
     await s.apply(raise_on_fail=False)
-    assert _engine(s) is BackendId.RIFE_NCNN
+    assert _engine(s) is BackendId.RIFE_TRT
     assert _filters(s)[-1][0]["hold_fill"] is True
-    # live action keeps TensorRT first
+    # live action: the same engine, never filled
     ctx2 = FakeCtx(_paths(tmp_path), _opted(_profile(ContentKind.LIVE)))
     s2 = _session(ctx2, tmp_path)
     _load(s2, fps=23.976)
     await s2.apply(raise_on_fail=False)
     assert _engine(s2) is BackendId.RIFE_TRT
+    assert _filters(s2)[-1][0]["hold_fill"] is False
 
 
-async def test_animation_keeps_tensorrt_when_rife_ncnn_has_no_room(
+async def test_tensorrt_without_room_does_not_fill(
     tmp_path: Path, bench_history: list[BenchResult], no_xid: Any, fake_trt: TrtFake
 ) -> None:
-    bench_history.append(_result(_trt_m(260.0), _ncnn_m(65.0)))  # 65 < 1.67 × 48
+    bench_history.append(_result(_trt_m(65.0), _ncnn_m(40.0)))  # 65 < 1.67 × 48
     ctx = FakeCtx(_paths(tmp_path), _opted(_profile(ContentKind.ANIMATION)))
     s = _session(ctx, tmp_path)
     _ready(ctx, s)
@@ -278,14 +280,16 @@ async def test_automatic_without_a_benchmark_does_not_fill(
     assert data["sc_threshold"] == pytest.approx(0.12)
 
 
-async def test_tensorrt_never_fills(tmp_path: Path, bench_history: list[BenchResult]) -> None:
+async def test_fill_without_a_speed_test_and_when_behind(
+    tmp_path: Path, bench_history: list[BenchResult]
+) -> None:
     s = _session(FakeCtx(_paths(tmp_path), _config(_profile(ContentKind.ANIMATION))), tmp_path)
     profile = _profile(ContentKind.ANIMATION, BackendId.RIFE_TRT)
     on, why = await s.hold_fill_choice(
         profile, BackendId.RIFE_TRT, _facts(), None, NTSC * 2, s.ctx.config(),
         model=None, forced=False, block=False,
     )  # fmt: skip
-    assert on is False and "TensorRT" in why
+    assert on is True and "2D animation" in why  # TensorRT as any engine
     on, _ = await s.hold_fill_choice(
         profile, BackendId.MVTOOLS, _facts(), None, NTSC * 2, s.ctx.config(),
         model=None, forced=False, block=False,
@@ -346,3 +350,51 @@ async def test_pinned_engine_is_kept_for_animation(
     assert _engine(s) is BackendId.MVGPU
     ((data, _),) = _filters(s)
     assert data["hold_fill"] is True
+
+
+# ---- DRBA: a model for 2D animation on TensorRT, only when the profile names it
+DRBA = "drba-v1"
+
+
+def _drba_ready(ctx: FakeCtx) -> None:
+    key = trt.EngineKey(f"GPU-{GPU}", "615.71.09", "v16.3.test1-0-g44033da", "11.3.0", DRBA,
+                        1920, 1080)  # fmt: skip
+    folder = trt.engine_dir(ctx.paths, key)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "x.engine").write_bytes(b"engine")
+    (folder / trt.READY).write_text("{}")
+
+
+async def test_drba_plays_when_the_profile_names_it(
+    tmp_path: Path, bench_history: list[BenchResult], no_xid: Any, fake_trt: TrtFake,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:  # fmt: skip
+    monkeypatch.setattr(trt, "available_models", lambda install: frozenset({M26, DRBA}))
+    bench_history.append(_result(_trt_m(260.0), _ncnn_m(120.0)))  # DRBA itself is not measured
+    pinned = dataclasses.replace(_profile(ContentKind.ANIMATION, BackendId.RIFE_TRT), model=DRBA)
+    ctx = FakeCtx(_paths(tmp_path), _opted(pinned))
+    s = _session(ctx, tmp_path)
+    _drba_ready(ctx)
+    _load(s, fps=23.976)
+    await s.apply(raise_on_fail=False)
+    assert _engine(s) is BackendId.RIFE_TRT
+    data = _filters(s)[-1][0]
+    assert data["trt"]["model"] == "drba_v1" and data["trt"]["onnx"] == "drba_v1"
+    assert data["hold_fill"] is False  # DRBA keeps held drawings as drawn
+    # its capacity: the default model's measurement, taken lower
+    full = await s.sustainable_fps(BackendId.RIFE_TRT, M26, _facts(), ctx.config())
+    drba = await s.sustainable_fps(BackendId.RIFE_TRT, DRBA, _facts(), ctx.config())
+    assert full is not None and drba == pytest.approx(full * live.DRBA_SPEED)
+
+
+async def test_drba_is_never_a_stand_in(
+    tmp_path: Path, bench_history: list[BenchResult], no_xid: Any, fake_trt: TrtFake,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:  # fmt: skip
+    # only a DRBA model on disk: Automatic and a 2D animation profile do not take it
+    monkeypatch.setattr(trt, "available_models", lambda install: frozenset({DRBA}))
+    ctx = FakeCtx(_paths(tmp_path), _opted(_profile(ContentKind.ANIMATION)))
+    s = _session(ctx, tmp_path)
+    assert s.trt_setup(ctx.config(), _profile(ContentKind.ANIMATION))[1] is None
+    named = dataclasses.replace(_profile(ContentKind.ANIMATION), model=DRBA)
+    assert s.trt_setup(ctx.config(), named)[1] == DRBA

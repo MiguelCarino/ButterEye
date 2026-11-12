@@ -369,6 +369,28 @@ def trt_findings(
                 M("VapourSynth R{n} can load API3 plugins", {"n": core_n}),
             )
         )
+    raw_errors = probe_raw.get("module_errors") if isinstance(probe_raw, dict) else None
+    errors = raw_errors if isinstance(raw_errors, dict) else {}
+    broken = next((m for m in ("onnx", "onnxconverter_common") if errors.get(m)), None)
+    if broken is not None:
+        # there, but for another Python: both rows would say "found" and every
+        # engine build would fail (a distribution upgrade to a new Python)
+        out.append(
+            _f(
+                "trt.onnx",
+                Severity.DEGRADED,
+                M("onnx can't be loaded by this Python"),
+                code=ErrorCode.TRT_UNSUPPORTED,
+                cause=M(
+                    "The packages TensorRT engines are converted with were installed for "
+                    "another Python version, so no new engine can be built: {error}",
+                    {"error": str(errors[broken])[:300]},
+                ),
+                fix=M("Install them again into ButterEye's own Python folder."),
+                commands=("contrib/build-vstrt.sh --with-python-deps --skip-build",),
+            )
+        )
+        return out
     if mods.get("onnxconverter_common"):
         out.append(
             _f("trt.fp16", Severity.OK, M("onnxconverter-common found: fp16 engines possible"))

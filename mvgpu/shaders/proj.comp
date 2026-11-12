@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+// Carries the vectors uni.comp found from the source frames to the in-between
+// frame. A block of A that moves by m is half-way at +m/2, a block of C at
+// -m/2: an in-between block whose centre lies in such a block's half-way
+// position takes its half-vector u = m/2, when the two frames do agree there
+// under it (the content is in both, by how it was found, but the half-way
+// position is checked on its own pixels). The content that was found moving
+// goes in front of what the symmetric search saw at that place: that is what
+// explains both frames - the background showed there before and after only
+// because the object was not there yet, or no longer.
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, binding = 0) readonly buffer PyrA { float pa[]; };
+layout(std430, binding = 1) readonly buffer PyrC { float pc[]; };
+layout(std430, binding = 2) readonly buffer Vin { vec2 vin[]; };
+layout(std430, binding = 3) readonly buffer Fwd { vec4 fwd[]; };
+layout(std430, binding = 4) readonly buffer Bwd { vec4 bwd[]; };
+layout(std430, binding = 5) writeonly buffer Vout { vec2 vout[]; };
+// +1: what was here in A has left, show C here; -1: what is here in C had not
+// arrived, show A (render.comp). 0: nothing known
+layout(std430, binding = 6) writeonly buffer Side { float vside[]; };
+layout(push_constant) uniform P { uint off; int w, h, sbw, sbh, sbs, bw, bh, reach, enable; float gdc, abs_thr, land; } p;
+float bil(bool from_a, vec2 q) {
+    q = clamp(q, vec2(0.0), vec2(p.w - 1.001, p.h - 1.001));
+    ivec2 i = ivec2(q); vec2 f = q - vec2(i);
+    uint r0 = p.off + uint(i.y * p.w + i.x), r1 = r0 + uint(p.w);
+    if (from_a) return mix(mix(pa[r0], pa[r0 + 1u], f.x), mix(pa[r1], pa[r1 + 1u], f.x), f.y);
+    return mix(mix(pc[r0], pc[r0 + 1u], f.x), mix(pc[r1], pc[r1 + 1u], f.x), f.y);
+}
+// A find counts when the other frame says the same: the block of A found in C
+// at +m lies where a block of C was found in A at -m (and the reverse). A block
+// with little in it - the corner of a letter, a piece of an edge - is found in
+// many places; the place it was wrongly found at is explained by the
+// in-between vectors, was never searched, and says nothing back.
+bool agrees(bool is_fwd, ivec2 q, vec2 m) {
+    vec2 there = vec2(q) * 8.0 + 3.5 + (is_fwd ? m : -m);
+    ivec2 r0 = ivec2(floor(there / 8.0));
+    for (int j = -1; j <= 1; ++j)
+        for (int i = -1; i <= 1; ++i) {
+            ivec2 r = r0 + ivec2(i, j);
+            if (r.x < 0 || r.y < 0 || r.x >= p.bw || r.y >= p.bh) continue;
+            vec4 o = is_fwd ? bwd[r.y * p.bw + r.x] : fwd[r.y * p.bw + r.x];
+            if (o.w > 0.5 && all(lessThanEqual(abs(o.xy - m), vec2(2.0)))) return true;
+        }
+    return false;
+}
+void main() {
+    int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+    if (x >= p.sbw || y >= p.sbh) return;
+    int idx = y * p.sbw + x;
+    vec2 u = vin[idx];
+    float side = 0.0;
+    if (p.enable != 0) {
+        vec2 cp = vec2(x, y) * float(p.sbs) + 0.5 * float(p.sbs - 1);
+        ivec2 q0 = ivec2(cp) / 8;
+        float best = 3.4e38;
+        vec2 cand = vec2(0.0);
+        for (int j = -p.reach; j <= p.reach; ++j)
+            for (int i = -p.reach; i <= p.reach; ++i) {
+                ivec2 q = q0 + ivec2(i, j);
+                if (q.x < 0 || q.y < 0 || q.x >= p.bw || q.y >= p.bh) continue;
+                vec2 cq = vec2(q) * 8.0 + 3.5;
+                vec4 f = fwd[q.y * p.bw + q.x];
+                if (f.w > 0.5 && f.z < best && all(lessThanEqual(abs(cq + 0.5 * f.xy - cp), vec2(p.land)))
+                        && agrees(true, q, f.xy)) {
+                    best = f.z; cand = 0.5 * f.xy;
+                }
+                vec4 b = bwd[q.y * p.bw + q.x];
+                if (b.w > 0.5 && b.z < best && all(lessThanEqual(abs(cq - 0.5 * b.xy - cp), vec2(p.land)))
+                        && agrees(false, q, b.xy)) {
+                    best = b.z; cand = 0.5 * b.xy;
+                }
+            }
+        if (best < 3.0e38) {
+            float e = 0.0;
+            vec2 o = vec2(x, y) * float(p.sbs);
+            for (int j = 0; j < p.sbs; ++j)
+                for (int i = 0; i < p.sbs; ++i) {
+                    vec2 q = o + vec2(i, j);
+                    e += abs(bil(true, q - cand) - bil(false, q + cand) - p.gdc);
+                }
+            if (e / float(p.sbs * p.sbs) < p.abs_thr) u = cand;
+        }
+        // The source block this in-between block lies on. Found moving on by
+        // more than its own size, it has left (A) or not yet arrived (C): the
+        // two frames disagree here, and averaging them draws it as a ghost at
+        // both ends of its path. Not when it was just carried here itself.
+        if (u == vin[idx] && q0.x < p.bw && q0.y < p.bh) {
+            vec4 f = fwd[q0.y * p.bw + q0.x], b = bwd[q0.y * p.bw + q0.x];
+            bool left = f.w > 0.5 && max(abs(f.x), abs(f.y)) >= 16.0 && agrees(true, q0, f.xy);
+            bool coming = b.w > 0.5 && max(abs(b.x), abs(b.y)) >= 16.0 && agrees(false, q0, b.xy);
+            side = left && !coming ? 1.0 : coming && !left ? -1.0 : 0.0;
+        }
+    }
+    vout[idx] = u;
+    vside[idx] = side;
+}

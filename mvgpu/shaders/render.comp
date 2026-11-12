@@ -65,6 +65,9 @@ void main() {
               + field[min(l.y + R, p.lh - 1) * p.lw + l.x].y - field[max(l.y - R, 0) * p.lw + l.x].y;
     float one = div < -0.25 ? sa : div > 0.25 ? sc : (p.t <= 0.5 ? sa : sc);
     float res = mix(blend, one, smoothstep(p.lo, p.hi, mismatch));
+    // what was found to have left this place, or not to have arrived (proj.comp)
+    float side = field[l.y * p.lw + l.x].w;
+    if (side > 0.5) res = sc; else if (side < -0.5) res = sa;
     // where the vectors fail over an area (strobes, flashes, motion past the
     // search: the mean mismatch of a 5x5 grid of luma pixels 4 apart), the
     // per-pixel choice between A and C turns into holes and mosaic: fade to the

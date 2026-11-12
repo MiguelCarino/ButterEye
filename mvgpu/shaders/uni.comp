@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+// Vectors searched from a source frame, for what the symmetric search cannot
+// see (docs/spikes/m0t.md). That search asks, for a block of the in-between
+// frame, which vector makes the two source frames agree there - and where a
+// small object passes over a background, "nothing here, the background in both
+// frames" agrees perfectly: the object's vector is never even proposed, and
+// the object is missing from the in-between frame.
+// Here the question is asked from the other side. A block of a source frame
+// that the in-between vectors do not explain (it is not found in the other
+// frame where they say it went) is searched for in the other frame over a
+// wide window, and what is found is handed to proj.comp, which carries it to
+// where the content is at the in-between time.
+// dir 0: blocks of A, found in C at +m. dir 1: blocks of C, found in A at -m.
+// m is the motion A -> C in whole pixels either way.
+// One group per 8x8 block; a block that is explained costs one small SAD.
+#version 450
+layout(local_size_x = 512) in;
+layout(std430, binding = 0) readonly buffer PyrA { float pa[]; };
+layout(std430, binding = 1) readonly buffer PyrC { float pc[]; };
+layout(std430, binding = 2) readonly buffer Mid { vec2 mid[]; };   // half-vectors (subpel.comp)
+layout(std430, binding = 3) writeonly buffer Out { vec4 uo[]; };   // (m.x, m.y, SAD a pixel, found)
+layout(push_constant) uniform P {
+    uint off; int w, h, bw, bh, sbw, sbh, sbs, radius, dir;
+    float gdc, flag, abs_thr, rel;
+} p;
+shared float sbest[512];
+shared ivec2 sv[512];
+shared float s0[64];
+shared float se0;
+shared int sflag;
+float px_a(ivec2 q) { q = clamp(q, ivec2(0), ivec2(p.w - 1, p.h - 1)); return pa[p.off + uint(q.y * p.w + q.x)]; }
+float px_c(ivec2 q) { q = clamp(q, ivec2(0), ivec2(p.w - 1, p.h - 1)); return pc[p.off + uint(q.y * p.w + q.x)]; }
+float diff(ivec2 q, ivec2 m) { return abs(px_a(q - p.dir * m) - px_c(q + (1 - p.dir) * m) - p.gdc); }
+float cost(ivec2 o, ivec2 m) {
+    float s = 0.0;
+    for (int j = 0; j < 8; ++j)
+        for (int i = 0; i < 8; ++i) s += diff(o + ivec2(i, j), m);
+    return s / 64.0;
+}
+void main() {
+    uint k = gl_LocalInvocationID.x;
+    int bx = int(gl_WorkGroupID.x), by = int(gl_WorkGroupID.y);
+    ivec2 o = ivec2(bx, by) * 8;
+    ivec2 c = min(o + 4, ivec2(p.w - 1, p.h - 1));
+    ivec2 sb = min(c / p.sbs, ivec2(p.sbw - 1, p.sbh - 1));
+    ivec2 m0 = ivec2(round(2.0 * mid[sb.y * p.sbw + sb.x]));
+    if (k < 64u) s0[k] = diff(o + ivec2(int(k) % 8, int(k) / 8), m0);
+    barrier();
+    if (k == 0u) {
+        float e = 0.0;
+        for (int i = 0; i < 64; ++i) e += s0[i];
+        se0 = e / 64.0;
+        sflag = se0 > p.flag ? 1 : 0;
+    }
+    barrier();
+    bool on = sflag != 0;
+    // every second position of the window first, then +-1 around the best
+    int side = p.radius + 1, total = side * side;
+    float b = 3.4e38;
+    ivec2 bv = m0;
+    if (on)
+        for (int n = int(k); n < total; n += 512) {
+            ivec2 m = 2 * ivec2(n % side, n / side) - ivec2(p.radius);
+            float e = cost(o, m) + 1e-5 * float(abs(m.x) + abs(m.y));
+            if (e < b) { b = e; bv = m; }
+        }
+    sbest[k] = b;
+    sv[k] = bv;
+    barrier();
+    for (uint stride = 256u; stride > 0u; stride >>= 1u) {
+        if (k < stride && sbest[k + stride] < sbest[k]) {
+            sbest[k] = sbest[k + stride];
+            sv[k] = sv[k + stride];
+        }
+        barrier();
+    }
+    ivec2 centre = sv[0];
+    barrier();
+    if (k < 9u) {
+        ivec2 m = centre + ivec2(int(k) % 3 - 1, int(k) / 3 - 1);
+        sbest[k] = on ? cost(o, m) : 3.4e38;
+        sv[k] = m;
+    }
+    barrier();
+    if (k == 0u) {
+        float e = sbest[0];
+        ivec2 m = sv[0];
+        for (int i = 1; i < 9; ++i)
+            if (sbest[i] < e) { e = sbest[i]; m = sv[i]; }
+        // where it went has to be in the picture, and it has to be found
+        // clearly: well, and far better than where the vectors said
+        ivec2 d = o + (p.dir == 0 ? m : -m);
+        bool inside = d.x >= 0 && d.y >= 0 && d.x + 8 <= p.w && d.y + 8 <= p.h;
+        bool found = on && inside && e < p.abs_thr && e < p.rel * se0;
+        if (bx < p.bw && by < p.bh) uo[by * p.bw + bx] = vec4(vec2(m), e, found ? 1.0 : 0.0);
+    }
+}
