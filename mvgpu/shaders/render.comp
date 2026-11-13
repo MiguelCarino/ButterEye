@@ -10,7 +10,7 @@ layout(std430, binding = 0) readonly buffer A { float a[]; };
 layout(std430, binding = 1) readonly buffer C { float c[]; };
 layout(std430, binding = 2) readonly buffer F { vec4 field[]; };  // per luma pixel (select.comp)
 layout(std430, binding = 3) writeonly buffer Out { float o[]; };
-layout(push_constant) uniform P { uint off; int w, h, lw, lh, sub; float t, lo, hi, fail_lo, fail_hi; } p;
+layout(push_constant) uniform P { uint off; int w, h, lw, lh, sub; float t, lo, hi, fail_lo, fail_hi; int show; } p;
 // Catmull-Rom (cubic, exact at whole pixels): bilinear sampling at the
 // in-between positions sub-pixel vectors land on softens fine detail and lines,
 // and a soft in-between frame between two sharp source frames flickers
@@ -67,7 +67,8 @@ void main() {
     float res = mix(blend, one, smoothstep(p.lo, p.hi, mismatch));
     // what was found to have left this place, or not to have arrived (proj.comp)
     float side = field[l.y * p.lw + l.x].w;
-    if (side > 0.5) res = sc; else if (side < -0.5) res = sa;
+    // (and select.comp, from three frames: by as much as the frames disagree)
+    res = mix(res, side > 0.0 ? sc : sa, min(abs(side), 1.0));
     // where the vectors fail over an area (strobes, flashes, motion past the
     // search: the mean mismatch of a 5x5 grid of luma pixels 4 apart), the
     // per-pixel choice between A and C turns into holes and mosaic: fade to the
@@ -79,5 +80,12 @@ void main() {
             area += field[q.y * p.lw + q.x].z;
         }
     float plain = (1.0 - p.t) * tap(true, x, y) + p.t * tap(false, x, y);
+    // MVGPU_SHOW (for looking at what was decided, luma only): 1 the side taken
+    // (grey: none, white: C, black: A), 2 the mismatch, 3 the vector's length
+    if (p.show != 0) {
+        float v = p.show == 1 ? 0.5 + 0.5 * side : p.show == 2 ? 4.0 * mismatch : length(u) / 32.0;
+        o[p.off + uint(y * p.w + x)] = p.sub == 1 ? v : 0.5;
+        return;
+    }
     o[p.off + uint(y * p.w + x)] = mix(res, plain, smoothstep(p.fail_lo, p.fail_hi, area / 25.0));
 }

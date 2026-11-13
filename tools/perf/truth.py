@@ -235,6 +235,16 @@ def block_ssim(np: Any, a: Any, b: Any) -> Any:
     return ((2 * mx * my + c1) * (2 * cov + c2)) / ((mx * mx + my * my + c1) * (vx + vy + c2))
 
 
+def _real_truths(lumas: list[Any]) -> list[tuple[int, Any]]:
+    """The in-between frames a real moment is scored on. Five frames: both (each
+    has a real frame on one side of its pair only). Seven (--around): the middle
+    one, whose pair has a real frame before it and one after, as nearly every
+    pair has in playback."""
+    if len(lumas) >= 7:
+        return [(3, lumas[3])]
+    return [(1, lumas[1]), (3, lumas[3])]
+
+
 def score(np: Any, got: Any, truth: Any) -> dict[str, float]:
     s = block_ssim(np, got, truth)
     mse = float(np.mean((got.astype(np.float64) - truth.astype(np.float64)) ** 2))
@@ -475,6 +485,12 @@ def main() -> int:
     )
     ap.add_argument("--save-set", type=Path, help="keep the real moments scored, decoded, here")
     ap.add_argument("--set", type=Path, help="score the moments kept by --save-set (no decoding)")
+    ap.add_argument(
+        "--around",
+        action="store_true",
+        help="real moments: seven frames, not five, and score the middle in-between "
+        "frame only (engines that read the pairs before and after)",
+    )
     ap.add_argument("--first", action="store_true",
                     help="real moments: score the first in-between frame only, the one "
                     "with a real frame after its pair (engines that read three frames)",
@@ -504,6 +520,7 @@ def main() -> int:
         drawn = draw(np, case, h, w, 2 * args.pairs + 3)
         src = as_clip(core, vs, np, drawn[0::2])
         tests.append((case, src, [(2 * i + 1, drawn[2 * i + 1][0]) for i in range(args.pairs)]))
+    count_frames = 7 if args.around else 5
     for i, spec in enumerate(args.clip):
         path, _, times = spec.rpartition("@")
         if not hasattr(core, "ffms2"):
@@ -530,22 +547,29 @@ def main() -> int:
             n = round(float(t) * fps)
             # footage that holds frames (a 24 fps film in a 60 fps recording, drawings
             # on twos) or does not move has no in-between frame to rebuild
-            if n + 4 >= full.num_frames:
+            if n + count_frames - 1 >= full.num_frames:
                 continue
-            five = [luma(np, full, n + k).astype(np.int16) for k in range(5)]
-            steps = sorted(float(np.abs(five[k + 1] - five[k]).mean()) for k in range(4))
+            five = [luma(np, full, n + k).astype(np.int16) for k in range(count_frames)]
+            steps = sorted(
+                float(np.abs(five[k + 1] - five[k]).mean()) for k in range(count_frames - 1)
+            )
             # ... and across a cut there is nothing to rebuild either: one step
             # far larger than the others
-            if steps[0] < args.min_motion or steps[3] > 4.0 * steps[1] + 2.0:
+            if steps[0] < args.min_motion or steps[-1] > 4.0 * steps[1] + 2.0:
                 continue
-            src = core.std.AssumeFPS(full[n] + full[n + 2] + full[n + 4], fpsnum=24, fpsden=1)
-            truths = [(1, five[1].astype(np.uint8)), (3, five[3].astype(np.uint8))]
+            src = full[n]
+            for k in range(2, count_frames, 2):
+                src += full[n + k]
+            src = core.std.AssumeFPS(src, fpsnum=24, fpsden=1)
+            truths = _real_truths([f.astype(np.uint8) for f in five])
             tests.append((f"clip{i + 1}@{t}", src, truths))
             if args.save_set is not None:
-                # the five frames as they are, so later runs need no decoding
+                # the frames as they are, so later runs need no decoding
                 args.save_set.mkdir(parents=True, exist_ok=True)
                 planes = [
-                    np.stack([np.asarray(full.get_frame(n + k)[pl]) for k in range(5)])
+                    np.stack(
+                        [np.asarray(full.get_frame(n + k)[pl]) for k in range(count_frames)]
+                    )
                     for pl in range(3)
                 ]
                 np.savez(
@@ -556,9 +580,9 @@ def main() -> int:
             args.set.glob("*.npz"), key=lambda q: (int(q.name[4:].split("@")[0]), q.name)
         ):
             d = np.load(path)
-            frames = [(d["y"][k], d["u"][k], d["v"][k]) for k in range(5)]
+            frames = [(d["y"][k], d["u"][k], d["v"][k]) for k in range(d["y"].shape[0])]
             src = as_clip(core, vs, np, frames[0::2])
-            tests.append((path.stem, src, [(1, frames[1][0]), (3, frames[3][0])]))
+            tests.append((path.stem, src, _real_truths([f[0] for f in frames])))
     if args.first:
         tests = [(c, src, truths[:1] if c.startswith("clip") else truths)
                  for c, src, truths in tests]  # fmt: skip

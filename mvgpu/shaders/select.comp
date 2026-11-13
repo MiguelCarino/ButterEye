@@ -13,13 +13,36 @@ layout(std430, binding = 1) readonly buffer C { float c[]; };
 layout(std430, binding = 2) readonly buffer V { vec2 vec[]; };  // subpel.comp
 layout(std430, binding = 3) writeonly buffer F { vec4 field[]; };  // (u.x, u.y, mismatch, side)
 layout(std430, binding = 4) readonly buffer S { float vside[]; };  // proj.comp
-layout(push_constant) uniform P { int w, h, bw, bh; float t, lambda; int smooth_vec, bs; float margin, gdc; } p;
-float bil(bool from_a, vec2 q) {
+// the frame before A and the frame after C, and the vectors of the pairs they
+// close (as binding 2); read only where p.tri says they are there (bit 0, bit 1)
+layout(std430, binding = 5) readonly buffer B { float b4[]; };
+layout(std430, binding = 6) readonly buffer N { float n4[]; };
+layout(std430, binding = 7) readonly buffer VB { vec2 vbefore[]; };
+layout(std430, binding = 8) readonly buffer VN { vec2 vafter[]; };
+layout(push_constant) uniform P {
+    int w, h, bw, bh; float t, lambda; int smooth_vec, bs; float margin, gdc;
+    int tri, edge; float gdp, gdn, tri_gate, tri_thr, tri_ratio, tri_pre, tri_bad, edge_thr, edge_act, tri_fine, tri_reach;
+} p;
+// which: 0 A, 1 C, 2 the frame before A, 3 the frame after C
+float bilf(int which, vec2 q) {
     q = clamp(q, vec2(0.0), vec2(p.w - 1.001, p.h - 1.001));
     ivec2 i = ivec2(q); vec2 f = q - vec2(i);
     uint r0 = uint(i.y * p.w + i.x), r1 = r0 + uint(p.w);
-    if (from_a) return mix(mix(a[r0], a[r0 + 1u], f.x), mix(a[r1], a[r1 + 1u], f.x), f.y);
-    return mix(mix(c[r0], c[r0 + 1u], f.x), mix(c[r1], c[r1 + 1u], f.x), f.y);
+    if (which == 0) return mix(mix(a[r0], a[r0 + 1u], f.x), mix(a[r1], a[r1 + 1u], f.x), f.y);
+    if (which == 1) return mix(mix(c[r0], c[r0 + 1u], f.x), mix(c[r1], c[r1 + 1u], f.x), f.y);
+    if (which == 2) return mix(mix(b4[r0], b4[r0 + 1u], f.x), mix(b4[r1], b4[r1 + 1u], f.x), f.y);
+    return mix(mix(n4[r0], n4[r0 + 1u], f.x), mix(n4[r1], n4[r1 + 1u], f.x), f.y);
+}
+float bil(bool from_a, vec2 q) { return bilf(from_a ? 0 : 1, q); }
+const ivec2 cross5[5] = ivec2[5](ivec2(0, 0), ivec2(-2, 0), ivec2(2, 0), ivec2(0, -2), ivec2(0, 2));
+// mean |A - C| over the cross around `here` under the half-vector v
+float pair_err(vec2 here, vec2 v) {
+    float e = 0.0;
+    for (int k = 0; k < 5; ++k) {
+        vec2 q = here + vec2(cross5[k]);
+        e += abs(bil(true, q - 2.0 * p.t * v) - bil(false, q + 2.0 * (1.0 - p.t) * v) - p.gdc);
+    }
+    return e / 5.0;
 }
 void main() {
     int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
@@ -37,11 +60,11 @@ void main() {
         }
     ivec2 b0 = min(ivec2(x, y) / p.bs, ivec2(p.bw - 1, p.bh - 1));
     float side = vside[b0.y * p.bw + b0.x];
+    if (abs(side) > 1.5) side = 0.0;  // 2: a vector proj.comp carried here, not a side
     if (p.smooth_vec != 0) {
         field[y * p.w + x] = vec4(smoothv, 0.0, side);
         return;
     }
-    const ivec2 cross5[5] = ivec2[5](ivec2(0, 0), ivec2(-2, 0), ivec2(2, 0), ivec2(0, -2), ivec2(0, 2));
     float best = 3.4e38, best_err = 0.0;
     vec2 bestv = vec2(0.0);
     for (int j = -1; j <= 1; ++j)
@@ -69,6 +92,109 @@ void main() {
         se += abs(bil(true, q - 2.0 * p.t * smoothv) - bil(false, q + 2.0 * (1.0 - p.t) * smoothv) - p.gdc);
     }
     if (!(best + 5.0 * p.margin < se)) { bestv = smoothv; best_err = se / 5.0; }
+    // The edge of an object proj.comp found. Its blocks that are part object,
+    // part background were not found, and at their pixels "the background, still"
+    // explains both frames as well as "the object, passing" does: the object was
+    // drawn without its rim. What was found moving goes in front there too, where
+    // its vector makes the frames agree and brings something (an edge, a texture):
+    // two flat patches agree under any vector and are no evidence of an object.
+    if (p.edge != 0 && side == 0.0) {
+        float eb = 3.4e38;
+        vec2 ev = vec2(0.0);
+        for (int j = -2; j <= 2; ++j)
+            for (int i = -2; i <= 2; ++i) {
+                ivec2 b = b0 + ivec2(i, j);
+                if (b.x < 0 || b.y < 0 || b.x >= p.bw || b.y >= p.bh) continue;
+                if (vside[b.y * p.bw + b.x] < 1.5) continue;
+                vec2 v = vec2(vec[b.y * p.bw + b.x]);
+                if (v == bestv) continue;
+                float e = pair_err(here, v);
+                if (e < eb) { eb = e; ev = v; }
+            }
+        if (eb < p.edge_thr) {
+            float lo = 3.4e38, hi = -3.4e38;
+            for (int j = -1; j <= 1; ++j)
+                for (int i = -1; i <= 1; ++i) {
+                    float s = bil(true, here + 3.0 * vec2(i, j) - 2.0 * p.t * ev);
+                    lo = min(lo, s); hi = max(hi, s);
+                }
+            if (hi - lo > p.edge_act) { bestv = ev; best_err = eb; }
+        }
+    }
+    // Three frames. What is covered or uncovered between A and C is in one of
+    // them only, and two frames cannot say which: no vector makes them agree
+    // there, and each pixel is left with whatever matched by chance. The pairs
+    // before and after know more. Where their vectors at this place differ, two
+    // motions meet here (an object's edge passed, or is about to). Over a wide
+    // patch (the chance matches of a few pixels do not survive 25), when neither
+    // motion explains A and C and nor does the vector chosen: what was just
+    // uncovered is in C and in the frame after C, where that pair's vector puts
+    // it; what is about to be covered is in A and in the frame before A. The
+    // side whose pair agrees, clearly better than the other, is shown alone,
+    // with that pair's vector (the motion is taken to go on as it is over the
+    // two pairs).
+    if ((p.tri & 3) == 3 && side == 0.0) {
+        vec2 vn = vafter[b0.y * p.bw + b0.x], vq = vbefore[b0.y * p.bw + b0.x];
+        if (any(greaterThan(abs(vn - vq), vec2(p.tri_pre)))) {
+            float sb = 0.0, sn = 0.0, sq = 0.0, en = 0.0, eq = 0.0;
+            for (int j = -2; j <= 2; ++j)
+                for (int i = -2; i <= 2; ++i) {
+                    vec2 q = here + 2.0 * vec2(i, j);
+                    vec2 an = q - 2.0 * p.t * vn, cn = q + 2.0 * (1.0 - p.t) * vn;
+                    vec2 aq = q - 2.0 * p.t * vq, cq = q + 2.0 * (1.0 - p.t) * vq;
+                    float c_n = bilf(1, cn), a_q = bilf(0, aq);
+                    sb += abs(bilf(0, q - 2.0 * p.t * bestv) - bilf(1, q + 2.0 * (1.0 - p.t) * bestv) - p.gdc);
+                    sn += abs(bilf(0, an) - c_n - p.gdc);
+                    sq += abs(a_q - bilf(1, cq) - p.gdc);
+                    en += abs(c_n - bilf(3, cn + 2.0 * vn) - p.gdn);
+                    eq += abs(a_q - bilf(2, aq - 2.0 * vq) - p.gdp);
+                }
+            sb /= 25.0; sn /= 25.0; sq /= 25.0; en /= 25.0; eq /= 25.0;
+            if (min(sn, sq) > p.tri_gate && sb > p.tri_gate && (p.tri & 8) == 0) {
+                bool fwd = en < p.tri_thr && en < p.tri_ratio * eq;
+                bool bwd = eq < p.tri_thr && eq < p.tri_ratio * en;
+                if (fwd != bwd) {
+                    // The patch is wider than the strip, and the object's edge
+                    // beside it is soft: its pixels are part object, part what
+                    // is behind, and neither frame alone has them. Where the
+                    // other motion explains this pixel or one a few pixels
+                    // along the motion, this is the object or its edge, and it
+                    // stays as it was.
+                    vec2 other = fwd ? vq : vn;
+                    vec2 dir = normalize(vn - vq);
+                    float eo = 3.4e38;
+                    for (int k = -1; k <= 1; ++k) {
+                        vec2 q = here + p.tri_reach * float(k) * dir;
+                        eo = min(eo, abs(bil(true, q - 2.0 * p.t * other) - bil(false, q + 2.0 * (1.0 - p.t) * other) - p.gdc));
+                    }
+                    if (eo >= p.tri_fine) {
+                        // all or nothing: a part of the blend under this vector
+                        // would be the two frames' different content, averaged
+                        bestv = fwd ? vn : vq;
+                        side = fwd ? 1.0 : -1.0;
+                    }
+                }
+            }
+        }
+    }
+    // And where A and C disagree under the best vector, a vector of the pair
+    // before or after that makes them agree is simply a better vector (a fast
+    // small object the search of this pair lost and the next one found).
+    if ((p.tri & 4) == 0 && (p.tri & 3) != 0 && side == 0.0 && best_err > p.tri_bad) {
+        float eb = 3.4e38;
+        vec2 ev = vec2(0.0);
+        for (int j = -1; j <= 1; ++j)
+            for (int i = -1; i <= 1; ++i) {
+                ivec2 b = clamp(b0 + ivec2(i, j), ivec2(0), ivec2(p.bw - 1, p.bh - 1));
+                for (int k = 0; k < 2; ++k) {
+                    if ((p.tri & (1 << k)) == 0) continue;
+                    vec2 v = k == 0 ? vbefore[b.y * p.bw + b.x] : vafter[b.y * p.bw + b.x];
+                    float e = pair_err(here, v);
+                    if (e < eb) { eb = e; ev = v; }
+                }
+            }
+        if (eb < 0.5 * best_err) { bestv = ev; best_err = eb; }
+    }
     // a known side explains the mismatch: it is not a failure of the vectors
-    field[y * p.w + x] = vec4(bestv, side != 0.0 ? 0.0 : best_err, side);
+    field[y * p.w + x] = vec4(bestv, abs(side) > 0.99 ? 0.0 : best_err, side);
 }

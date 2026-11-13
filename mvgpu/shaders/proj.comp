@@ -18,7 +18,8 @@ layout(std430, binding = 3) readonly buffer Fwd { vec4 fwd[]; };
 layout(std430, binding = 4) readonly buffer Bwd { vec4 bwd[]; };
 layout(std430, binding = 5) writeonly buffer Vout { vec2 vout[]; };
 // +1: what was here in A has left, show C here; -1: what is here in C had not
-// arrived, show A (render.comp). 0: nothing known
+// arrived, show A (render.comp). 0: nothing known. 2: the block's vector was
+// carried here from a source frame
 layout(std430, binding = 6) writeonly buffer Side { float vside[]; };
 layout(push_constant) uniform P { uint off; int w, h, sbw, sbh, sbs, bw, bh, reach, enable; float gdc, abs_thr, land; } p;
 float bil(bool from_a, vec2 q) {
@@ -94,5 +95,6 @@ void main() {
         }
     }
     vout[idx] = u;
-    vside[idx] = side;
+    // 2: this vector was carried here (select.comp offers it to the pixels around)
+    vside[idx] = u != vin[idx] ? 2.0 : side;
 }

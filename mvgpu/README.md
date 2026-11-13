@@ -44,6 +44,13 @@ smooth = core.mvgpu.Interpolate(clip, fps_num=120, fps_den=1[, device=0])
   takes the frame that has the content instead of averaging two different things: A where
   the vectors converge (something is being covered), C where they spread (uncovered), else
   the nearer frame.
+- **Three frames**: the frame before the pair and the frame after it are kept too, with
+  the vectors of their pairs. Where those vectors differ at a place (an object's edge
+  passed, or is about to) and neither explains both frames, the content is in one frame
+  only: what C and the frame after agree on was just uncovered and is taken from C, what
+  A and the frame before agree on is about to be covered and is taken from A. A vector of
+  a neighbouring pair that explains a pixel better than the pair's own is taken as well.
+  Not across a scene cut. `MVGPU_TRI=0` turns it off (`docs/spikes/m0t.md`).
 - Source positions are the source frames, untouched. A frame with `_SceneChangeNext` set
   (ButterEye's scripts mark them) is repeated instead of interpolated.
 - `MVGPU_PROFILE=1` prints the mean CPU/GPU time per upload and per render.
@@ -52,7 +59,10 @@ smooth = core.mvgpu.Interpolate(clip, fps_num=120, fps_den=1[, device=0])
   full size too), `MVGPU_OCC=lo,hi` (the mismatch ramp, default `0.12,0.36`; `9,10` turns it
   off), `MVGPU_ACT=x` (the credit for detail, default `0.5`; `0` turns it off),
   `MVGPU_FAIL=lo,hi` (the area mismatch where a frame fades to the plain blend, default
-  `0.05,0.15`), `MVGPU_TEMPORAL=-1` (no candidate from the pair before). `tools/perf/truth.py --mvgpu build/libmvgpu.so` scores a build against
+  `0.05,0.15`), `MVGPU_TEMPORAL=-1` (no candidate from the pair before), `MVGPU_EDGE=1` (a found object's
+  vector offered to the pixels around its blocks: off, it completes a wrongly matched bar),
+  `MVGPU_SHOW=1|2|3` (draws the side taken, the mismatch or the vector's length instead of
+  the picture). `tools/perf/truth.py --mvgpu build/libmvgpu.so` scores a build against
   drawn in-between frames.
 
 ## Build

@@ -215,6 +215,74 @@ and there it is now close to MVTools at many times the speed, not a replacement 
 2. Occlusion strips from three frames: the vectors of the pair before and the pair after.
 3. Fewer in-between frames when the vectors of a whole frame are poor.
 
+(1 and 2: see "Three frames, and the edge of a found object" below.)
+
+## Three frames, and the edge of a found object (2026-11-12)
+
+Items 2 and 1 of the list above.
+
+**Three frames.** The engine now holds four source frames (the pair, the frame before
+and the frame after) and the final vectors of three pairs. `select.comp` uses them in
+two ways:
+
+- *Strips.* Where the vectors of the pair before and of the pair after differ at a
+  place, two motions meet there. Over a patch of 25 pixels, when neither motion explains
+  A and C: content that C and the frame after agree on (under that pair's vector) was
+  just uncovered and is taken from C; content that A and the frame before agree on is
+  about to be covered and is taken from A. The object's soft edge beside the strip is
+  left as it was.
+- *A better vector.* Where A and C disagree under the best vector, a vector of a
+  neighbouring pair that halves the error is taken.
+
+What it took to get there, since each step looked right and scored worse:
+
+1. Asking only "do C and the frame after agree" picks the right side wherever it is
+   sure (2.4 levels of error against 57 for the wrong frame), but a partial weight with
+   the changed vector blended two different things. All or nothing.
+2. Five pixels are too few on a smooth texture: among nine candidate vectors one
+   matches by chance, in either pair. Hence the wide patch, and only the vector of the
+   block itself.
+3. Comparing two small errors with each other decides at random. Hence the test that
+   neither motion explains A and C, which is what a strip is.
+4. The last loss was a column one or two pixels wide: an anti-aliased edge is part
+   object, part background, and neither frame alone has it. Pixels that the other
+   motion explains, or that lie within 3 px of one along the motion, are left alone.
+
+| | off | strips | better vector | both |
+|---|---|---|---|---|
+| 12 drawn scenes, mean of worst | 0.641 | 0.649 | 0.649 | **0.657** |
+| object over a still background | 0.808 / 55.5 | 0.825 / 56.0 | | 0.825 / 56.0 |
+| both moving | 0.753 / 54.4 | 0.753 / 54.9 | | 0.753 / 54.9 |
+| 96 px a frame | 0.259 | 0.351 | | 0.351 |
+| small fast object | 0.457 | | 0.544 | 0.544 |
+| 99 real moments, seven frames | 0.253 | 0.259 | 0.256 | **0.261** |
+
+No scene fell. On the occlusion scene the squared error of every in-between frame
+fell by 10 to 25 %; the strips are still not clean (RIFE: 0.95), because where the
+texture is smooth the patch test does not fire and the pixel keeps its chance match.
+Thresholds (`MVGPU_TRI_T`) moved the real set by 0.002 at most in either direction.
+GPU time per in-between frame on the real moments, 24 → 48: 1080p 3.69 → 4.15 ms, 4K
+14.5 → 16.7 ms. `MVGPU_TRI=0` turns it off.
+
+The real set for this is new: `truth.py --around` keeps seven frames a moment and
+scores the middle in-between frame, whose pair has a real frame on both sides, as
+nearly every pair has in playback (99 moments; the five-frame set gives every
+in-between frame one side only, and the strips need both).
+
+**The edge of a found object: built, off.** `select.comp` can offer the vector of a
+block `proj.comp` carried to the pixels up to two blocks around it, taken where it makes
+the frames agree and brings detail. The small fast object goes 0.544 → 0.675 and two of
+three frames of the thin bars improve (squared error 48215 → 14477), but in the third a
+bar's end had been matched to the neighbouring bar (identical bars, 40 px apart, moving
+16), and what was a 3-pixel fragment becomes a whole phantom bar: thin bars 0.79 → 0.55,
+the real set 0.261 → 0.253. Two frames cannot tell that match from the right one, and
+nor can three (the bars repeat in every frame). `MVGPU_EDGE=1` turns it on. What it
+needs first is a source-frame search that refuses a match when another place matches as
+well.
+
+`MVGPU_SHOW=1|2|3` draws what was decided instead of the picture (the side taken, the
+mismatch, the vector's length); it is how each of the four steps above was found.
+
 ## RIFE models compared through TensorRT
 
 The same two sets, each model run through TensorRT (fp16) as playback runs it
