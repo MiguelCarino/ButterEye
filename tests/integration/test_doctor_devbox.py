@@ -9,6 +9,7 @@ The GPU smoke test is short (48 source frames at 720p).
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -16,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from buttereye.core import osapi
 from buttereye.core.api import ButterEye
 from buttereye.core.doctor.run import doctor, plugins
 from buttereye.core.doctor.smoke import smoke_test
@@ -25,6 +27,15 @@ from buttereye.core.profiles.defaults import default_config
 from buttereye.core.types import BackendId, Feature, OpState, Section, Severity
 
 pytestmark = [pytest.mark.devbox, pytest.mark.integration]
+
+
+@pytest.fixture(autouse=True)
+def system_vsscript(xdg_env: Any) -> None:
+    """VapourSynth R79 and later: VSScript finds Python through a line in its
+    configuration, which the test's empty configuration folder does not have.
+    ``ButterEye.open`` writes it; the tests that call the doctor directly get it
+    here."""
+    osapi.register_system_vsscript(os.environ)
 
 
 def _rpm_installed(name: str) -> bool:

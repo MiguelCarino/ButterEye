@@ -163,8 +163,11 @@ async def test_speed_test_measures_mvgpu_in_vspipe_and_mpv(mvgpu_env: Live) -> N
     """The speed test's mvgpu candidate in the real harness: vspipe on the moving
     pattern, then mpv on lavfi testsrc2, reported like the other engines."""
     result = await mvgpu_env.core.bench(BenchRequest(1920, 1080, Fraction(24000, 1001))).result()
-    (m,) = result.measurements
+    # a live engine is measured at the bigger sizes too (runner.AUTO_LIVE_SIZES)
+    m, *bigger = result.measurements
     assert (m.label, m.backend, m.model) == ("mvgpu", BackendId.MVGPU, None)
+    assert [x.label for x in bigger] == ["mvgpu @ 1440p", "mvgpu @ 2160p"]
+    assert all(x.backend is BackendId.MVGPU and x.vspipe_fps > 0 for x in bigger), bigger
     # RTX 4090: about 1000 fps in vspipe and several hundred in mpv at 1080p 2x
     assert m.vspipe_fps > 60 and m.mpv_fps > 60, m
     assert m.realtime and result.recommended == "mvgpu"

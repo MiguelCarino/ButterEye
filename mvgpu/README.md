@@ -44,13 +44,15 @@ smooth = core.mvgpu.Interpolate(clip, fps_num=120, fps_den=1[, device=0])
   takes the frame that has the content instead of averaging two different things: A where
   the vectors converge (something is being covered), C where they spread (uncovered), else
   the nearer frame.
-- **Three frames**: the frame before the pair and the frame after it are kept too, with
-  the vectors of their pairs. Where those vectors differ at a place (an object's edge
+- **Three frames** (off; `MVGPU_TRI=1` turns it on): the frame before the pair and the
+  frame after it are kept too, with the vectors of their pairs. Where those vectors differ at a place (an object's edge
   passed, or is about to) and neither explains both frames, the content is in one frame
   only: what C and the frame after agree on was just uncovered and is taken from C, what
   A and the frame before agree on is about to be covered and is taken from A. A vector of
   a neighbouring pair that explains a pixel better than the pair's own is taken as well.
-  Not across a scene cut. `MVGPU_TRI=0` turns it off (`docs/spikes/m0t.md`).
+  Not across a scene cut. Off because on real fast motion it draws hard-edged flecks
+  where there was a soft smear, and the error against the real frame rises by a tenth
+  (`docs/spikes/m0t.md`).
 - Source positions are the source frames, untouched. A frame with `_SceneChangeNext` set
   (ButterEye's scripts mark them) is repeated instead of interpolated.
 - `MVGPU_PROFILE=1` prints the mean CPU/GPU time per upload and per render.

@@ -50,17 +50,14 @@ longer makes ButterEye shrink the picture or change engine.
   source frame and carried to where it is in between (drawn, not yet whole:
   −0.09 → 0.46). About 30 % slower on the GPU alone in all (1080p 1128 → 831
   fps, 4K 292 → 204).
-- **GPU motion vectors look at three frames.** Beside a moving object there is
-  a strip the object has just uncovered and one it is about to cover; each is
-  in one of the two frames only, and was drawn mottled. The engine now also
-  reads the frame before the pair and the frame after it: what the later pair
-  agrees on was just uncovered and is taken from the later frame, what the
-  earlier pair agrees on is taken from the earlier one. A vector the
-  neighbouring pair found is also tried where this pair's own fails (a small
-  fast object: 0.46 → 0.54). All drawn scenes 0.641 → 0.657, and on 99 moments
-  of real footage with a real frame on both sides 0.253 → 0.261; no scene
-  fell. A small step, not the end of the strips. It costs about 12 % of GPU
-  time at 1080p and 15 % at 4K.
+- **GPU motion vectors can look at three frames (off by default).** Beside a
+  moving object there is a strip the object has just uncovered and one it is
+  about to cover; each is in one of the two frames only. With `MVGPU_TRI=1`
+  the engine also reads the frame before the pair and the frame after it and
+  takes each strip from the frame that has it. It helps on drawn test scenes
+  (0.641 → 0.657) but not yet on real fast motion, where it draws hard-edged
+  flecks and the error against the real frame rises by a tenth, so it is not
+  on. Without it nothing changes in speed or picture.
 - **2D animation on TensorRT is re-timed too.** Drawings held for two or three
   frames were filled in on every engine except TensorRT, so with TensorRT set
   up, animation either played "still, still, jump" or was sent to RIFE-ncnn at

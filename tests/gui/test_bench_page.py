@@ -346,7 +346,9 @@ REAL_MODEL = "rife-v4.22_lite_ensembleFalse"
 @pytest.mark.integration
 @pytest.mark.gpu
 @pytest.mark.devbox
-def test_real_bench_through_the_gui(qtbot: Any, xdg_env: Any, tmp_path: Any) -> None:
+def test_real_bench_through_the_gui(
+    qtbot: Any, xdg_env: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The shipped bridge + real providers: one RIFE model and MVTools at 640×360.
 
     Kept short (two configurations, tiny size). Values must come from the real
@@ -358,10 +360,13 @@ def test_real_bench_through_the_gui(qtbot: Any, xdg_env: Any, tmp_path: Any) -> 
     from PySide6.QtCore import QSettings
 
     from buttereye.core.api import DetachPolicy
+    from buttereye.core.bench import runner
     from buttereye.core.paths import resolve
     from buttereye.gui.bridge import CoreBridge
     from buttereye.gui.main_window import MainWindow
 
+    # the asked size only: the live engines at 1440p and 2160p take minutes
+    monkeypatch.setattr(runner, "AUTO_LIVE_SIZES", False)
     if not (Path(RPM_MODELS) / REAL_MODEL).is_dir() or not Path("/dev/nvidia0").exists():
         pytest.skip("needs the dev box GPU and the packaged RIFE models")
     share = tmp_path / "rpm-share"

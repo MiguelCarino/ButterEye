@@ -109,6 +109,8 @@ struct Plane {
 
 class Gpu {
 public:
+    // whether the frames around the pair are wanted (MVGPU_TRI=1)
+    bool three_frames() const { return tri; }
     Gpu(int w, int h, int bits, int device);
     ~Gpu();
     Gpu(const Gpu&) = delete;
@@ -175,7 +177,10 @@ private:
     std::array<Buffer, SLOTS> vfin, vsd;
     std::array<VkDescriptorSet, SLOTS> ds_uni_f{}, ds_uni_b{}, ds_proj{};
     void vectors(int a, bool temporal);
-    // MVGPU_TRI=0: no third frame (for comparisons). Where the vectors of the
+    // MVGPU_TRI=1: the frame before the pair and the frame after it are read
+    // too. Off unless asked for: on drawn scenes it helps, on real fast motion
+    // it turns a soft smear into hard-edged flecks and the error against the
+    // real frame rises by a tenth (docs/spikes/m0t.md). Where the vectors of the
     // pair before and the pair after differ by more than tri_pre px at a place,
     // and neither they nor the vector chosen explain A and C over a patch
     // (mean difference above tri_gate), the content is in one frame only: what
@@ -186,7 +191,7 @@ private:
     // motion, within tri_fine (the object's soft edge). A neighbouring pair's
     // vector is also tried where the best one leaves more than tri_bad.
     // MVGPU_TRI_T="gate,thr,ratio,pre,bad,fine,reach"
-    bool tri = !(std::getenv("MVGPU_TRI") && std::string(std::getenv("MVGPU_TRI")) == "0");
+    bool tri = std::getenv("MVGPU_TRI") && std::string(std::getenv("MVGPU_TRI")) == "1";
     // MVGPU_SHOW=1|2|3: draw the side taken, the mismatch or the vector's length (render.comp)
     int show = std::getenv("MVGPU_SHOW") ? std::atoi(std::getenv("MVGPU_SHOW")) : 0;
     // MVGPU_TRI_DBG=4: no neighbouring pair's vector; 8: no strips (for comparisons)
@@ -969,7 +974,9 @@ const VSFrame* VS_CC getFrame(int n, int ar, void* inst, void**, VSFrameContext*
     bool between = fn != 0 && i + 1 < d->src_frames;
     // the frame before the pair and the one after it: what is covered or
     // uncovered between A and C is told apart by them (select.comp)
-    bool before = between && i >= 1, after = between && i + 2 < d->src_frames;
+    // without the three-frame rule the pair is all that is read and searched
+    const bool tri = d->gpu->three_frames();
+    bool before = tri && between && i >= 1, after = tri && between && i + 2 < d->src_frames;
     if (ar == arInitial) {
         if (before) api->requestFrameFilter(i - 1, d->node, ctx);
         api->requestFrameFilter(i, d->node, ctx);

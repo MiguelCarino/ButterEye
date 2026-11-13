@@ -262,7 +262,29 @@ fell by 10 to 25 %; the strips are still not clean (RIFE: 0.95), because where t
 texture is smooth the patch test does not fire and the pixel keeps its chance match.
 Thresholds (`MVGPU_TRI_T`) moved the real set by 0.002 at most in either direction.
 GPU time per in-between frame on the real moments, 24 → 48: 1080p 3.69 → 4.15 ms, 4K
-14.5 → 16.7 ms. `MVGPU_TRI=0` turns it off.
+14.5 → 16.7 ms.
+
+**Off by default (2026-11-13).** The scores above look only at the worst blocks of a
+frame. Looking at the frames themselves, and at the squared error over the whole
+picture on the same 99 real moments, the rule loses:
+
+| | squared error against the real frame |
+|---|---|
+| off | 6.98e9 |
+| strips | 7.61e9 (+9.0 %) |
+| better vector | 7.07e9 (+1.2 %) |
+| both | 7.68e9 (+10.0 %) |
+
+Worse on each of the six clips (+1 % to +23 %), while the drawn scenes gain on both
+measures (mean squared error 13.67 → 12.96). Around fast real objects (a bow across a
+caption, a hand, strings) both motions are wrong and the picture is a soft smear; the
+strips rule then takes single pixels from one frame, which gives dark flecks and
+hard-edged patches where the smear was. Only 0.8 % of the pixels change by more than
+two levels, and the moments are picked for fast motion, so ordinary scenes hardly
+differ. The rule needs a test that the neighbouring pair's vector is itself
+trustworthy before it is used; until then `MVGPU_TRI=1` turns it on, and without it
+the frames around the pair are neither read nor searched. Lesson for the harness:
+score the whole frame as well as its worst blocks, and look at the pictures.
 
 The real set for this is new: `truth.py --around` keeps seven frames a moment and
 scores the middle in-between frame, whose pair has a real frame on both sides, as

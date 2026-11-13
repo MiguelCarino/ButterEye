@@ -73,6 +73,7 @@ buttereye = ["data/**/*"]
 line-length = 100
 target-version = "py314"
 extend-exclude = [
+    "spikes/m0e-ffms2",  # one-off spike script, kept as it was run
     "spikes/m0f-copr-plugins/work",
     "spikes/m0f-copr-plugins/results",
     ".scratch-*",  # throwaway review/integration trees, never shipped
