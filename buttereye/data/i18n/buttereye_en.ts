@@ -4134,6 +4134,16 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/sessions.py"/>
+        <source>Frames late at the screen</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/sessions.py"/>
+        <source>Frames late at the screen ({pct}% over 10 s)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/sessions.py"/>
         <source>GPU device lost — interpolation turned off</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4424,6 +4434,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/pages/sessions.py"/>
+        <source>Smoothing itself is on time: the screen missed refreshes while the graphics card was busy.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/sessions.py"/>
         <source>Smoothing off</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4505,6 +4520,16 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <message>
         <location filename="buttereye/gui/pages/sessions.py"/>
         <source>The GPU stopped responding (Vulkan device lost).</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/sessions.py"/>
+        <source>The screen showed frames late ({pct}% over 10 s).</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/pages/sessions.py"/>
+        <source>The screen showed frames late.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5981,6 +6006,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Smooth, some frames late</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Smoother motion for the videos you play in mpv.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -6007,6 +6037,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>Some frames are being dropped: smoothing can't quite keep up. A lighter Smoothness or a lower Target helps.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Some frames are shown late: the screen missed refreshes while the graphics card was busy. Smoothing itself is on time.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

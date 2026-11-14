@@ -651,6 +651,7 @@ class _Session:
         self.health_code: ErrorCode | None = None
         self.gen = 0
         self.drop_rate: float | None = None
+        self.drop_at_screen = False  # the DROPPING verdict's side (health.Verdict.at_screen)
         #: (time, frame-drop-count, mistimed-frame-count, vo-delayed-frame-count)
         #: over the health detector's window, for ``drop_breakdown``
         self._counters: deque[tuple[float, int, int, int]] = deque()
@@ -725,6 +726,7 @@ class _Session:
             flow_scale=self.run_flow,
             mv_block=self.run_block,
             smooth_at_screen=self.run_fit,
+            drops_at_screen=self.health is Health.DROPPING and self.drop_at_screen,
             exit_code=self.exit_code,
         )
 
@@ -3118,7 +3120,12 @@ class _Session:
             self.note_counters(now)
             if verdict.flowing and self.filter is FilterState.PENDING:
                 self.filter = FilterState.ACTIVE
-            rate = verdict.drop_rate if verdict.health is Health.DROPPING else None
+            # only what smoothing itself is behind on counts against the engine: a
+            # frame the screen showed late says nothing about the engine's speed
+            rate = None
+            if verdict.health is Health.DROPPING:
+                # a verdict that does not split its drops puts them all on the engine
+                rate = verdict.drop_rate if verdict.engine_rate is None else verdict.engine_rate
             if rate is not None and rate >= IMPLAUSIBLE_DROP:
                 rate = None  # nothing reaches the screen: not the engine (see above)
             heavy = rate is not None and rate >= HEAVY_DROP
@@ -3146,10 +3153,13 @@ class _Session:
             if verdict.health is Health.STALLED:
                 await self.stalled(verdict)
             elif verdict.health is Health.DROPPING:
-                if self.health is not Health.DROPPING:
+                side = verdict.at_screen
+                if self.health is not Health.DROPPING or side != self.drop_at_screen:
                     self.health, self.health_code = Health.DROPPING, None
+                    self.drop_at_screen = side
                     self.log.info("%s: %s", self.title, self.drop_breakdown())
-                    self.step_down_to = await self.step_down_choice()
+                    # a lighter engine does not make the screen keep its refreshes
+                    self.step_down_to = None if side else await self.step_down_choice()
                     self.emit(
                         HealthChanged(self.sid, Health.DROPPING, None,
                                       verdict.reason or Msg("Dropping frames."), (), None)

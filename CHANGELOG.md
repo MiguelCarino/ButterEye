@@ -13,6 +13,19 @@ longer makes ButterEye shrink the picture or change engine.
 
 ### Fixed
 
+- **Frames the screen shows late are no longer blamed on smoothing.** On a
+  144 Hz screen about one frame a second can be shown late: the screen misses
+  a refresh while the graphics card is busy, and mpv then drops the next frame
+  although smoothing delivered it on time. It happens to the plain player too
+  when another program loads the GPU, more often the longer each burst of work
+  is (late refreshes in 30 s: 6 with no load, 9 with 3.6 ms bursts, 20 with
+  9 ms, 46 with 18 ms; docs/spikes/m0v.md). ButterEye read those drops as
+  "smoothing can't quite keep up", offered a lighter setting that would not
+  help, and could count them against the engine. It now tells the two apart
+  with mpv's own count of missed refreshes: the row says "Smooth, some frames
+  late" and why, no step down is offered, and only frames smoothing itself is
+  behind on count against the engine. The late frames themselves are still
+  there: no player setting tried absorbs them.
 - **Fedora 45: nothing was smoothed.** VapourSynth R79 could not find its
   Python ("Python executable and library path couldn't be determined"), in
   mpv and in `vspipe`: the distribution names VapourSynth's script library

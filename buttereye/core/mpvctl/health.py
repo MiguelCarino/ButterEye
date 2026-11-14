@@ -65,6 +65,9 @@ class Sample:
     paused_for_cache: bool
     seeking: bool
     frame_drops: int
+    #: mpv's ``vo-delayed-frame-count``: refreshes the output itself missed (the
+    #: renderer, the compositor, or the GPU busy with something else)
+    vo_delayed: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +78,12 @@ class Verdict:
     evidence: tuple[str, ...]
     flowing: bool
     drop_rate: float | None
+    #: the part of ``drop_rate`` smoothing itself is behind on: dropped frames
+    #: that no missed refresh at the output explains. Only this says anything
+    #: about the engine's speed
+    engine_rate: float | None = None
+    #: DROPPING, and the output explains it: ``engine_rate`` is within the limit
+    at_screen: bool = False
 
 
 def sample_from(props: Mapping[str, Any], t: float) -> Sample:
@@ -83,6 +92,7 @@ def sample_from(props: Mapping[str, Any], t: float) -> Sample:
         return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
     drops = props.get("frame-drop-count")
+    delayed = props.get("vo-delayed-frame-count")
     return Sample(
         t=t,
         playback_time=num("playback-time"),
@@ -92,6 +102,7 @@ def sample_from(props: Mapping[str, Any], t: float) -> Sample:
         paused_for_cache=props.get("paused-for-cache") is True,
         seeking=props.get("seeking") is True,
         frame_drops=drops if isinstance(drops, int) and not isinstance(drops, bool) else 0,
+        vo_delayed=delayed if isinstance(delayed, int) and not isinstance(delayed, bool) else 0,
     )
 
 
@@ -112,7 +123,7 @@ class HealthDetector:
         self._advance = 0.0
         self._lag_since: float | None = None
         self._stalled: Verdict | None = None
-        self._drops: deque[tuple[float, int]] = deque()
+        self._drops: deque[tuple[float, int, int]] = deque()  # t, dropped, delayed
         self._target_fps: float | None = None
 
     def filter_started(self, t: float, target_fps: float | None) -> None:
@@ -198,29 +209,49 @@ class HealthDetector:
         if s.t - self._settle_from < th.drop_settle_s:
             self._drops.clear()
             return self._ok(None)
-        self._drops.append((s.t, s.frame_drops))
+        self._drops.append((s.t, s.frame_drops, s.vo_delayed))
         while self._drops and s.t - self._drops[0][0] > th.drop_window_s:
             self._drops.popleft()
         rate = self._drop_rate()
         if rate is not None and rate > th.drop_ratio:
-            return Verdict(
-                Health.DROPPING,
-                None,
-                Msg("Dropping frames ({percent}% over 10 s).", {"percent": round(rate * 100, 1)}),
-                (),
-                self.flowing,
-                rate,
-            )
+            engine = self._engine_rate()
+            assert engine is not None
+            # with display sync, a refresh the output misses costs the next frame
+            # its turn: mpv drops it, and smoothing was on time all along
+            at_screen = engine <= th.drop_ratio
+            percent = {"percent": round(rate * 100, 1)}
+            reason = (
+                Msg("The screen showed frames late ({percent}% over 10 s); smoothing is "
+                    "on time.", percent)
+                if at_screen
+                else Msg("Dropping frames ({percent}% over 10 s).", percent)
+            )  # fmt: skip
+            return Verdict(Health.DROPPING, None, reason, (), self.flowing, rate, engine, at_screen)
         return self._ok(rate)
 
-    def _drop_rate(self) -> float | None:
+    def _window(self) -> tuple[float, int, int] | None:
+        """(seconds, frames dropped, refreshes the output missed) over the window."""
         if len(self._drops) < 2 or not self._target_fps:
             return None
-        (t0, d0), (t1, d1) = self._drops[0], self._drops[-1]
+        (t0, d0, v0), (t1, d1, v1) = self._drops[0], self._drops[-1]
         span = t1 - t0
         if span < self.th.drop_min_span_s:
             return None
-        return max(0, d1 - d0) / (self._target_fps * span)
+        return span, max(0, d1 - d0), max(0, v1 - v0)
+
+    def _drop_rate(self) -> float | None:
+        w = self._window()
+        if w is None or not self._target_fps:
+            return None
+        return w[1] / (self._target_fps * w[0])
+
+    def _engine_rate(self) -> float | None:
+        """The drop rate left once every missed refresh has explained one dropped
+        frame: what the filter (or the decoder feeding it) is behind by."""
+        w = self._window()
+        if w is None or not self._target_fps:
+            return None
+        return max(0, w[1] - w[2]) / (self._target_fps * w[0])
 
     def _stall(self, reason: Msg, evidence: tuple[str, ...]) -> Verdict:
         self._stalled = Verdict(

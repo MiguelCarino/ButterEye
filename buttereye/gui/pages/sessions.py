@@ -188,8 +188,14 @@ def drop_percent(rate: float | None) -> str | None:
     return f"{pct:.0f}" if pct >= 1 or pct == 0 else f"{pct:.1f}"
 
 
-def health_text(health: Health, drop_rate: float | None = None) -> str:
-    """Headline text for a session whose health is not OK."""
+def health_text(health: Health, drop_rate: float | None = None, at_screen: bool = False) -> str:
+    """Headline text for a session whose health is not OK. ``at_screen``: the
+    frames were late at the output, not in smoothing (``drops_at_screen``)."""
+    if health is Health.DROPPING and at_screen:
+        pct = drop_percent(drop_rate)
+        if pct is None:
+            return _t("Frames late at the screen")
+        return _t("Frames late at the screen ({pct}% over 10 s)").format(pct=pct)
     if health is Health.DROPPING:
         pct = drop_percent(drop_rate)
         if pct is None:
@@ -285,7 +291,7 @@ def headline(
         return "off", ended_text(ended_reason)
     if snap.health is not Health.OK:
         kind, _word = health_word(snap.health)
-        return kind, health_text(snap.health, snap.drop_rate_10s)
+        return kind, health_text(snap.health, snap.drop_rate_10s, snap.drops_at_screen)
     f = snap.filter
     if f is FilterState.PENDING:
         if snap.notice is not None:  # the core gave up waiting (start deadline)
@@ -366,7 +372,19 @@ def health_banner_spec(
         return None
     code = snap.health_code or (event.code if event is not None else None)
     code = code or default_health_code(h)
-    if h is Health.DROPPING:
+    if h is Health.DROPPING and snap.drops_at_screen:
+        pct = drop_percent(snap.drop_rate_10s)
+        title = (
+            _t("The screen showed frames late ({pct}% over 10 s).").format(pct=pct)
+            if pct is not None
+            else _t("The screen showed frames late.")
+        )
+        body = _t(
+            "Smoothing itself is on time: the screen missed refreshes while the graphics "
+            "card was busy."
+        )
+        kind: BadgeKind = "degraded"
+    elif h is Health.DROPPING:
         pct = drop_percent(snap.drop_rate_10s)
         title = (
             _t("Dropping frames ({pct}% over 10 s).").format(pct=pct)
@@ -374,7 +392,7 @@ def health_banner_spec(
             else _t("Dropping frames.")
         )
         body = _t("Your GPU can't keep up with this profile. A lighter profile may help.")
-        kind: BadgeKind = "degraded"
+        kind = "degraded"
     elif h is Health.STALLED:
         title = _t("Video stalled while audio kept playing; interpolation was turned off.")
         body = _t(
@@ -1505,7 +1523,10 @@ class SessionsPage(Page):
         sid = track.snap.sid
         h = track.snap.health
         actions: list[Action]
-        if h is Health.DROPPING:
+        if h is Health.DROPPING and track.snap.drops_at_screen:
+            # a lighter profile does not make the screen keep its refreshes
+            actions = [(self.tr("Ignore"), lambda: self._dismiss_health(sid))]
+        elif h is Health.DROPPING:
             actions = [
                 (self.tr("Step down"), lambda: self._step_down(sid)),
                 (self.tr("Ignore"), lambda: self._dismiss_health(sid)),
@@ -1543,7 +1564,9 @@ class SessionsPage(Page):
             lines.extend(ev.evidence)
         code = track.snap.health_code or default_health_code(track.snap.health)
         if not lines:
-            lines.append(health_text(track.snap.health, track.snap.drop_rate_10s))
+            lines.append(
+                health_text(track.snap.health, track.snap.drop_rate_10s, track.snap.drops_at_screen)
+            )
         if code is not None:
             lines.append(self.tr("Code: {code}").format(code=code.code))
         if track.snap.origin is Origin.ATTACHED:

@@ -709,6 +709,9 @@ class SessionSnapshot:
     #: `smooth_size` is the screen's own size, taken because the video is larger than
     #: the screen (nothing is lost), not a step down to keep up (SCOPE §4.11)
     smooth_at_screen: bool = False
+    #: `health` is DROPPING because the screen showed frames late (the output missed
+    #: refreshes), not because smoothing fell behind: nothing to step down (SCOPE §4.11)
+    drops_at_screen: bool = False
     #: how mpv ended (once ``ended``): its exit code, negative = killed by that
     #: signal (a crash); None while it runs or when ButterEye only let it go
     exit_code: int | None = None

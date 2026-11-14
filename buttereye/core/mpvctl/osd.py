@@ -83,7 +83,10 @@ def parts(snap: SessionSnapshot, items: Sequence[str]) -> list[str]:
         if size:
             out.append(size.strip(" ·"))
     if "health" in items:
-        out.append("dropping frames" if snap.health is Health.DROPPING else "frames OK")
+        if snap.health is not Health.DROPPING:
+            out.append("frames OK")
+        else:
+            out.append("screen showing frames late" if snap.drops_at_screen else "dropping frames")
     return out
 
 

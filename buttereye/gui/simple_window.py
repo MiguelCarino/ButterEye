@@ -467,7 +467,12 @@ def bypass_words(snap: SessionSnapshot) -> str:
     return texts[snap.bypass] if snap.bypass is not None else ""
 
 
-def health_words(health: Health) -> str:
+def health_words(health: Health, at_screen: bool = False) -> str:
+    if health is Health.DROPPING and at_screen:
+        return _t(
+            "Some frames are shown late: the screen missed refreshes while the graphics "
+            "card was busy. Smoothing itself is on time."
+        )
     texts = {
         Health.OK: "",
         Health.DROPPING: _t(
@@ -544,7 +549,7 @@ def row_view(snap: SessionSnapshot, note: str | None = None) -> RowView:
     if not notice and snap.filter is FilterState.BYPASSED:
         notice = bypass_words(snap)
     if not notice and snap.health is not Health.OK:
-        notice = health_words(snap.health)
+        notice = health_words(snap.health, snap.drops_at_screen)
     if not notice and note:
         notice = without_code(note)
     if not notice and snap.filter is FilterState.ROLLED_BACK:
@@ -564,7 +569,9 @@ def row_view(snap: SessionSnapshot, note: str | None = None) -> RowView:
     elif snap.health is Health.CONNECTION_LOST:
         kind, word = "blocking", _t("Lost touch")
     elif snap.filter is FilterState.ACTIVE:
-        if snap.health is Health.DROPPING:
+        if snap.health is Health.DROPPING and snap.drops_at_screen:
+            kind, word = "degraded", _t("Smooth, some frames late")
+        elif snap.health is Health.DROPPING:
             kind, word = "degraded", _t("Smooth, some drops")
         else:
             kind, word = "ok", _t("Smooth")
