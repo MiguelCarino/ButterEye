@@ -184,6 +184,11 @@ class FilterParams:
     #: copy instead of interpolating identical frame pairs (speed only, nothing
     #: visible). Off for speed tests: their blank source is all identical pairs.
     still_skip: bool = False
+    #: a cascade (RIFE engines): the engine runs to this rate, twice the
+    #: source's, and mvgpu makes ``target_fps`` from it. ``cascade_gpu_id`` is
+    #: mvgpu's Vulkan device there (``gpu_id`` is the RIFE engine's)
+    cascade_fps: Fraction | None = None
+    cascade_gpu_id: int | None = None
     #: chroma siting, zimg name ("left", "center", "top_left", "top",
     #: "bottom_left", "bottom"), from mpv's video-params; None = what the source
     #: frames say when the script reads them itself (offline), else left
@@ -259,6 +264,13 @@ def user_data(params: FilterParams) -> str:
     }
     if params.chroma_loc is not None:
         data["chromaloc"] = params.chroma_loc
+    if params.cascade_fps is not None and params.backend in (
+        BackendId.RIFE_NCNN,
+        BackendId.RIFE_TRT,
+    ):
+        data["cascade_fps"] = _rate(params.cascade_fps)
+        if params.cascade_gpu_id is not None:
+            data["cascade_gpu_id"] = int(params.cascade_gpu_id)
     if params.compare == "split":
         data["compare"] = "split"
     if params.aa:

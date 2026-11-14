@@ -194,8 +194,17 @@ Tried on this set and not kept: a cost for leaving the coarser level's vector (0
 per-pixel choice (0.146, 0.136); a stronger or weaker credit for detail (1.0: drawn
 scenes 0.566; 0.25: 0.144).
 
-A reference engine's own motion-vector mode scored 0.045 / 60.8 on the real set through
-the adapter, with settings chosen here and not tuned: not a verdict on it.
+A reference engine's own motion-vector mode, through the adapter, depends on one of its
+settings more than on its search. With its artifact masking off it scored 0.172 / 49.4 on
+the real set, the range of MVTools and mvgpu. With masking on it shows a blend where its
+vectors are doubtful, which this test counts as wrong: 0.065 / 58.5 at the middle level,
+−0.028 / 65.4 at the strong one. So the test says how often it gives up on a spot, not how
+that choice looks. (Corrected 2026-11-13: the first figure here, 0.045 / 60.8, was one
+masking level with settings chosen here, and said none of this. Its frames are rendered
+in playback order by the adapter; asked for one frame out of order its filters return a
+different one.) Its hardware-optical-flow mode scored like its own search: 0.235 against
+0.237 on the 99 seven-frame moments with masking off, where mvgpu has 0.246, MVTools
+0.276 and RIFE v4.26 0.394.
 
 What this says about the product: where RIFE keeps up it should be what plays, and it is
 what Automatic picks. mvgpu is for what RIFE cannot do in real time (4K at 60 and 120),

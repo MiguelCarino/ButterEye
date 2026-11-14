@@ -706,6 +706,9 @@ class SessionSnapshot:
     smooth_size: tuple[int, int] | None = None
     flow_scale: float = 1.0
     mv_block: bool = False
+    #: `smooth_size` is the screen's own size, taken because the video is larger than
+    #: the screen (nothing is lost), not a step down to keep up (SCOPE §4.11)
+    smooth_at_screen: bool = False
     #: how mpv ended (once ``ended``): its exit code, negative = killed by that
     #: signal (a crash); None while it runs or when ButterEye only let it go
     exit_code: int | None = None
@@ -2008,7 +2011,7 @@ Every Now playing and Saving copies row has **Copy log** (accessible name "Copy 
 
 ### 12.1.2 Resolution (2026-10-10)
 
-**Resolution**: "Lower if needed" (default) or "Always full size", stored as `[general] full_size`. With full size on, a video the speed test says can't be smoothed at its own size is smoothed there anyway (uncapped, like Smooth anyway) instead of at a smaller size or in MVTools' block mode; the row says "Smoothing at full size as you chose; this computer may not keep up, so some frames may drop."
+**Resolution**: "Lower if needed" (default) or "Always full size", stored as `[general] full_size`. With full size on, a video the speed test says can't be smoothed at its own size is smoothed there anyway (uncapped, like Smooth anyway) instead of at a smaller size or in MVTools' block mode; the row says "Smoothing at full size as you chose; this computer may not keep up, so some frames may drop." With "Lower if needed", a video larger than the screen its window is on is smoothed at the screen's size before anything else is weighed (SCOPE §4.11): that loses nothing, so the row says "smoothed at your screen's size, W × H" and no notice is shown; "Always full size" keeps the video's own size there too.
 
 ### 12.1.4 The speed test runs once per hardware (2026-10-10)
 
@@ -2016,7 +2019,7 @@ The automatic speed test (`FIRST_BENCH`) runs when no stored result was measured
 
 ### 12.1.3 What a row says (2026-10-10)
 
-The detail line names what is smoothing the video and how: "24 → 48 fps · RIFE v4.26 on the GPU with TensorRT, motion estimated at half resolution, full size 3840 × 1616, HDR10" (engine and model, or "GPU motion vectors" for mvgpu, MVTools' fast block mode, half-resolution flow, the size it works at, "smoothed at W × H, scaled up" when smaller, HDR10), from the snapshot's `backend`, `model`, `smooth_size`, `flow_scale`, `mv_block` and `source`. When the video isn't smoothed the badge says "Not smoothed" and the reason line starts "Not smoothed:" with the cause and what to change (Target, Smoothness, Always full size, Smooth HDR, Resume, Copy log). A button that can't act for the row (Pause on an unsmoothed video) is hidden, not greyed out.
+The detail line names what is smoothing the video and how: "24 → 48 fps · RIFE v4.26 on the GPU with TensorRT, motion estimated at half resolution, full size 3840 × 1616, HDR10" (engine and model, or "GPU motion vectors" for mvgpu, MVTools' fast block mode, half-resolution flow, the size it works at, "smoothed at W × H, scaled up" when smaller, "smoothed at your screen's size, W × H" when the video is larger than its screen, HDR10), from the snapshot's `backend`, `model`, `smooth_size`, `smooth_at_screen`, `flow_scale`, `mv_block` and `source`. When the video isn't smoothed the badge says "Not smoothed" and the reason line starts "Not smoothed:" with the cause and what to change (Target, Smoothness, Always full size, Smooth HDR, Resume, Copy log). A button that can't act for the row (Pause on an unsmoothed video) is hidden, not greyed out.
 
 ### 12.3 Carino Systems branding (2026-10-10)
 

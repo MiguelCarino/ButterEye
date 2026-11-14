@@ -195,6 +195,30 @@ def test_engines_repeat_the_frame_at_a_same_backdrop_cut(
     assert not np.array_equal(out[27], out[26])  # an ordinary pair is interpolated
 
 
+@pytest.mark.gpu
+def test_cascade_passes_rife_frames_through_and_repeats_at_a_cut(
+    scripts: tuple[Path, Path],
+) -> None:
+    """RIFE (TensorRT) to 48, mvgpu to 144 (docs/spikes/m0u.md): the source frames
+    and RIFE's frames come out as they were, mvgpu fills the two slots between
+    each, and at a cut every slot repeats the frame before it."""
+    if not (g.DEFAULT_CONSTANTS.plugin_dir / "libmvgpu.so").is_file():
+        pytest.skip("mvgpu plugin not installed")
+    rife = _render(scripts, "rife-trt", "cut")
+    out = _render(scripts, "rife-trt", "cut", target_fps=[144, 1], cascade_fps=[48, 1],
+                  frames=6 * N)  # fmt: skip
+    for k in (3, 10, 20, 30):
+        assert np.array_equal(out[6 * k], rife[2 * k])  # a source frame
+        assert np.array_equal(out[6 * k + 3], rife[2 * k + 1])  # RIFE's frame
+        for j in (1, 2, 4, 5):  # mvgpu's: between its neighbours, not a copy of one
+            assert not np.array_equal(out[6 * k + j], out[6 * k])
+            assert not np.array_equal(out[6 * k + j], out[6 * k + 3])
+    # source frames 14 and 15 are two shots: frame 14 six times, then frame 15
+    for j in range(1, 6):
+        assert np.array_equal(out[84 + j], out[84])
+    assert not np.array_equal(out[90], out[84])
+
+
 @pytest.mark.parametrize("backend", ENGINES)
 def test_still_skip_is_invisible(scripts: tuple[Path, Path], backend: str) -> None:
     off = _render(scripts, backend, "twos")

@@ -861,17 +861,38 @@ def _mvtools(clip, cfg, target):
     return _passthrough(clip, out, target, marked) if marked else out
 
 
-def _mvgpu(clip, cfg, target):
-    # ButterEye's GPU block motion-vector engine (Vulkan, mvgpu/). It takes YUV
-    # 4:2:0 at 8-16 bits as it comes (no RGB round trip) and returns source
-    # frames untouched; a frame marked _SceneChangeNext is repeated instead of
-    # interpolated across the cut, like RIFE.
+def _mvgpu_input(clip, cfg):
     _load('mvgpu', 'libmvgpu.so')
     if clip.format.subsampling_w != 1 or clip.format.subsampling_h != 1:
         # mpv hands over what it decoded; 4:2:2 and 4:4:4 go to 4:2:0 here
         fmt = core.query_video_format(vs.YUV, vs.INTEGER, clip.format.bits_per_sample, 1, 1)
         loc = _chromaloc(cfg, None)
         clip = core.resize.Bicubic(clip, format=fmt.id, chromaloc_in_s=loc, chromaloc_s=loc)
+    return clip
+
+
+def _cascade(clip, cfg, mid, target):
+    # RIFE made ``mid`` (twice the source rate); motion vectors make the rest.
+    # Between two frames RIFE has already brought close together the block
+    # search has a third or less of the motion to find, and the picture scores
+    # like RIFE at the full multiplier at a fraction of its cost (docs/spikes/
+    # m0u.md). A frame RIFE repeated at a cut or a still pair carries
+    # _SceneChangeNext from the source frame it copies, so mvgpu repeats it too.
+    clip = core.std.AssumeFPS(clip, fpsnum=mid.numerator, fpsden=mid.denominator)
+    clip = _mvgpu_input(clip, cfg)
+    opts = {}
+    if cfg.get('cascade_gpu_id') is not None:
+        opts['device'] = int(cfg['cascade_gpu_id'])
+    return core.mvgpu.Interpolate(clip, fps_num=target.numerator, fps_den=target.denominator,
+                                  **opts)
+
+
+def _mvgpu(clip, cfg, target):
+    # ButterEye's GPU block motion-vector engine (Vulkan, mvgpu/). It takes YUV
+    # 4:2:0 at 8-16 bits as it comes (no RGB round trip) and returns source
+    # frames untouched; a frame marked _SceneChangeNext is repeated instead of
+    # interpolated across the cut, like RIFE.
+    clip = _mvgpu_input(clip, cfg)
     opts = {}
     if cfg.get('gpu_id') is not None:
         opts['device'] = int(cfg['gpu_id'])
@@ -993,6 +1014,12 @@ def build():
     plain = clip  # what the A/B view shows unsmoothed
     target = _rate(cfg.get('target_fps'))
     backend = cfg.get('backend')
+    # a cascade: the RIFE engine runs to ``cascade_fps``, mvgpu from there
+    final = None
+    if cfg.get('cascade_fps') and backend in ('rife-ncnn', 'rife-trt'):
+        mid = _rate(cfg.get('cascade_fps'))
+        if Fraction(clip.fps_num, clip.fps_den) < mid < target:
+            final, target = target, mid
     if cfg.get('aa') and backend in GPU_ENGINES:
         clip = _aa(clip)
     if backend == 'rife-ncnn':
@@ -1005,6 +1032,8 @@ def build():
         out = _mvgpu(clip, cfg, target)
     else:
         raise vs.Error('ButterEye: unknown backend')
+    if final is not None:
+        out, target = _cascade(out, cfg, target, final), final
     if cfg.get('compare') == 'split':
         out = _compare(plain, out, target, cfg)
     out = core.std.AssumeFPS(out, fpsnum=target.numerator, fpsden=target.denominator)

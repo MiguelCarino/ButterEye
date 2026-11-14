@@ -404,8 +404,11 @@ def choose_target(
     reports drops (§4.11 step-down).
 
     * ``DISPLAY`` ("Match your display"): the display rate itself (180 Hz → 180)
-      when it fits and is at most ``DISPLAY_MULTIPLIER`` × the source; else 60 fps
-      (owner decision 2026-10-10); else the rules below (2×, then refresh/k).
+      when it fits and is at most ``DISPLAY_MULTIPLIER`` × the source; else the
+      highest refresh/k that at least doubles and fits (144 Hz → 72: every frame
+      is up for the same number of refreshes, which 60 on 144 Hz is not; owner
+      decision 2026-11-13); else 60 fps (owner decision 2026-10-10); else the
+      rules below (2×, then refresh/k).
     * ``DISPLAY_MAX`` (max smoothness): the highest such refresh/k
       (180 Hz: 23.976 → 90).
 
@@ -454,6 +457,9 @@ def choose_target(
     if kind is TargetKind.DISPLAY:
         if display / src <= DISPLAY_MULTIPLIER and fits(display):
             return TargetChoice(display, None)
+        even = _even_division(src, display, fits)
+        if even is not None:
+            return TargetChoice(even, None)
         sixty = Fraction(60)
         if src < sixty < display and fits(sixty):
             return TargetChoice(sixty, None)
@@ -479,6 +485,24 @@ def choose_target(
         if t < doubling and fits(t):
             return TargetChoice(t, None)
     return TargetChoice(None, BypassReason.NO_REALTIME if rates else BypassReason.ALREADY_AT_RATE)
+
+
+def _even_division(
+    src: Fraction, display: Fraction, fits: Callable[[Fraction], bool] | None = None
+) -> Fraction | None:
+    """The highest ``display / k`` (k from 2) that at least doubles ``src``, is
+    within the multiplier cap and ``fits`` (None: speed aside), or None.
+
+    What "Match your display" takes when the display rate itself is out of
+    reach: 24 fps on 144 Hz → 72, shown for two refreshes a frame. Never the
+    display rate itself (k = 1), which the caller has already ruled out."""
+    doubling = src * 2 * AUTO_DOUBLING_TOLERANCE
+    k = 2
+    while (t := display / k) >= doubling:
+        if t / src <= MAX_MULTIPLIER and (fits is None or fits(t)):
+            return t
+        k += 1
+    return None
 
 
 def _even_from(
@@ -604,12 +628,127 @@ def smaller_sizes(width: int, height: int) -> tuple[tuple[int, int], ...]:
     return tuple(out)
 
 
+#: A video larger than the screen it is shown on is smoothed at the screen's size.
+#: mpv would scale it down to that anyway, so nothing that can be seen is lost, and
+#: every engine has that much less to do (a 4K film on a 3440×1440 screen: 44 % of
+#: the pixels). Not when the saving is under a tenth: the resampling, and for
+#: TensorRT an engine for one more size, would cost more than they give.
+SCREEN_FIT_MAX_SHARE = 0.9
+
+
+def screen_size(props: Mapping[str, object]) -> tuple[int, int] | None:
+    """The screen mpv's window is on, in pixels (mpv's ``display-width`` and
+    ``display-height``), or None where mpv does not say."""
+    w, h = props.get("display-width"), props.get("display-height")
+    if isinstance(w, bool) or isinstance(h, bool):
+        return None
+    if not isinstance(w, (int, float)) or not isinstance(h, (int, float)):
+        return None
+    return (int(w), int(h)) if w >= 2 and h >= 2 else None
+
+
+def screen_fit(
+    width: int, height: int, screen: tuple[int, int] | None, *, rotated: bool = False
+) -> tuple[int, int] | None:
+    """The size a ``width``×``height`` video takes on ``screen`` when it is larger
+    than the screen (same shape, even sides, as ``smaller_sizes``), or None: it
+    fits, the screen is unknown, or the saving is too small to be worth it
+    (``SCREEN_FIT_MAX_SHARE``). ``rotated``: mpv turns the picture a quarter turn
+    for display, so the screen's sides swap."""
+    if screen is None or width <= 0 or height <= 0:
+        return None
+    sw, sh = (screen[1], screen[0]) if rotated else screen
+    if sw <= 0 or sh <= 0 or (width <= sw and height <= sh):
+        return None
+    h = min(sh, sw * height // width)
+    h -= h % 2
+    if h < 2:
+        return None
+    w = max(2, round(width * h / height / 2) * 2)
+    if w * h > SCREEN_FIT_MAX_SHARE * width * height:
+        return None
+    return w, h
+
+
 # Decoding a big video and shrinking it costs time the speed test (run at the
 # smaller size) never saw: about 4 ms per output frame for 4K 10-bit HEVC on the
 # dev box (RTX 4090, mpv copy-back decoding; RIFE v4.26 24 → 48 ran 47.5 fps at
 # 1080p and 86 fps at 720p against a 61 fps 1080p benchmark). Scaled by pixels.
 SHRINK_COST_S_PER_UHD_FRAME = 0.004
 UHD_PIXELS = 3840 * 2160
+
+
+#: A cascade is not smoothed below this many lines to reach the display rate
+#: (unless the video itself is smaller): below it the picture is visibly softer
+#: than the rate is worth
+CASCADE_MIN_HEIGHT = 1080
+#: What a cascade really uses of the sum of its parts (``cascade_load``): the
+#: speed test's 2x runs are partly bound by their source rate, so two stages
+#: sharing the GPU cost less than the two measured apart. 4K 24 fps → 1080p →
+#: 48 (RIFE v4.26, TensorRT) → 144 (mvgpu) on an RTX 4090 ran 1.30x real time
+#: in mpv where the parts say 1.13x (docs/spikes/m0u.md)
+CASCADE_GAIN = 0.87
+
+
+def cascade_target(src: Fraction, display_hz: float | None) -> tuple[Fraction, Fraction] | None:
+    """``(mid, target)`` of a cascade for "Match your display", or None.
+
+    A cascade runs a RIFE engine to ``mid`` = twice the source rate and mvgpu
+    from there to ``target``, a whole multiple of ``mid`` (2 or more) within
+    mpv's resample tolerance of the display rate, so
+    every stage has whole steps and the RIFE frames pass through mvgpu
+    untouched: 24 → 48 → 144 on 144 Hz, 23.976 → 47.952 → 143.856. Not above
+    ``DISPLAY_MULTIPLIER`` x the source, like the display target itself."""
+    display = display_rate(display_hz)
+    if display is None or src <= 0 or display / src > DISPLAY_MULTIPLIER:
+        return None
+    mid = src * 2
+    n = round(display / mid)
+    if n < 2:
+        return None
+    target = mid * n
+    if abs(target - display) > display * (DISPLAY_RESAMPLE_TOLERANCE - 1):
+        return None
+    return mid, target
+
+
+def cascade_load(
+    src: Fraction,
+    mid: Fraction,
+    target: Fraction,
+    rife_cap: float | None,
+    mv_cap: float | None,
+    *,
+    shrunk_from: tuple[int, int] | None = None,
+    rife_factor: float = 1.0,
+) -> float | None:
+    """The share of real time a cascade needs (1.0 = all of it), or None when
+    either engine has no live cap.
+
+    The caps are live caps at the size the cascade runs (``load_rate`` units,
+    headroom already taken): the RIFE engine's share for ``src`` → ``mid`` (times
+    ``rife_factor``, hold fill's worst case), mvgpu's for ``mid`` → ``target``,
+    and, smoothing a bigger video (``shrunk_from`` its size) at a smaller size,
+    decoding and shrinking each source frame (``shrink_cap``'s cost, which is per
+    2x output frame: twice per source frame). The sum times ``CASCADE_GAIN``."""
+    if rife_cap is None or mv_cap is None or rife_cap <= 0 or mv_cap <= 0:
+        return None
+    load = float(load_rate(src, mid)) * rife_factor / rife_cap
+    load += float(load_rate(mid, target)) / mv_cap
+    if shrunk_from is not None:
+        px = shrunk_from[0] * shrunk_from[1]
+        load += float(src) * 2 * SHRINK_COST_S_PER_UHD_FRAME * px / UHD_PIXELS
+    return load * CASCADE_GAIN
+
+
+def cascade_notice(height: int | None) -> Msg:
+    if height is None:
+        return Msg("RIFE makes every second frame and motion vectors the rest.")
+    return Msg(
+        "Smoothing at {height}p to reach your screen's rate: RIFE makes every second "
+        "frame and motion vectors the rest.",
+        {"height": height},
+    )
 
 
 def shrink_cap(cap: float | None, src_width: int, src_height: int) -> float | None:
@@ -741,16 +880,21 @@ def _display_tier(
     t: Fraction | None, src: Fraction, display_hz: float | None, kind: TargetKind
 ) -> int:
     """How well ``t`` answers "Match your display" (§5.6, owner decision
-    2026-10-10): 0 = the display rate itself, 1 = 60 fps, 2 = any other rate.
+    2026-10-10 and 2026-11-13): 0 = the display rate itself, 1 = a whole division
+    of it that at least doubles (144 Hz → 72), 2 = 60 fps, 3 = any other rate.
     Other target kinds: always 0 (only the multiplier rules apply)."""
     if kind is not TargetKind.DISPLAY or t is None:
         return 0
     display = display_rate(display_hz)
     if display is not None and t == display and display / src <= DISPLAY_MULTIPLIER:
         return 0
+    if display is not None and t < display and t >= src * 2 * AUTO_DOUBLING_TOLERANCE:
+        k = display / t
+        if k.denominator == 1 and t / src <= MAX_MULTIPLIER:
+            return 1
     if t == Fraction(60) and display is not None and src < t < display:
-        return 1
-    return 2
+        return 2
+    return 3
 
 
 def pick_engine(
@@ -998,8 +1142,8 @@ def _pick_engine(
             picks[-1],  # not reached
         )
         if chosen[0].backend in RIFE_BACKENDS and not animation:
-            # "Match your display": mvgpu at the display rate (then 60) beats a
-            # RIFE that reaches only a lower rate
+            # "Match your display": mvgpu at the display rate (then a whole
+            # division of it, then 60) beats a RIFE that reaches only a lower tier
             tier = _display_tier(chosen[1].target, src, display_hz, kind)
             for o, tc in picks:
                 if (
@@ -1292,6 +1436,14 @@ __all__ = [
     "uneven_pacing",
     "uneven_pacing_notice",
     "even_pacing_notice",
+    "CASCADE_MIN_HEIGHT",
+    "SCREEN_FIT_MAX_SHARE",
+    "screen_fit",
+    "screen_size",
+    "CASCADE_GAIN",
+    "cascade_target",
+    "cascade_load",
+    "cascade_notice",
     "pick_even_size",
     "prefer_gpu_smaller",
     "display_rate",

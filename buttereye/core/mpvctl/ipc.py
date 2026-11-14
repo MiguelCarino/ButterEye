@@ -44,6 +44,10 @@ OBSERVABLE: frozenset[str] = frozenset(
     {
         "container-fps",
         "display-fps",
+        "display-names",
+        # the screen's size: a larger video is smoothed at it (decide.screen_fit)
+        "display-width",
+        "display-height",
         "frame-drop-count",
         "decoder-frame-drop-count",
         "vo-delayed-frame-count",

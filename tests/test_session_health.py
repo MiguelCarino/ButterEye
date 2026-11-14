@@ -246,7 +246,8 @@ NTSC = Fraction(24000, 1001)
         (NTSC, 119.88, Fraction(120000, 1001)),  # the display rate itself
         (NTSC, 180.0, Fraction(180)),  # 7.5x: within the 8x limit for the display rate
         (Fraction(24), 144.0, Fraction(144)),
-        (Fraction(15), 144.0, Fraction(60)),  # 9.6x is over 8x: 60 fps instead
+        (Fraction(15), 144.0, Fraction(72)),  # 9.6x is over 8x: half the display rate
+        (Fraction(15), 75.0, Fraction(75)),  # 5x
         (NTSC, 60.0, Fraction(60)),  # 2.5x
         (Fraction(50), 60.0, Fraction(60)),  # no refresh/k doubles: the highest one
     ],
@@ -254,6 +255,41 @@ NTSC = Fraction(24000, 1001)
 def test_display_target(src: Fraction, hz: float, expected: Fraction) -> None:
     tc = decide.choose_target(src, hz, TargetKind.DISPLAY)
     assert tc.bypass is None and tc.target == expected
+
+
+@pytest.mark.parametrize(
+    ("hz", "cap", "expected"),
+    [
+        # 24 fps: 144 costs 240 (two times the frames made), 72 and 60 cost 96, 48 costs 48
+        (144.0, 300.0, Fraction(144)),
+        (144.0, 110.0, Fraction(72)),  # two refreshes a frame, where 60 is 2.4
+        (144.0, 80.0, Fraction(48)),  # 144 / 3
+        (180.0, 200.0, Fraction(90)),
+        (180.0, 100.0, Fraction(60)),  # 180 / 3
+        (75.0, 100.0, Fraction(60)),  # 37.5 does not double: 60 fps as before
+        (240.0, 200.0, Fraction(120)),
+    ],
+)
+def test_display_target_out_of_reach_takes_an_even_division(
+    hz: float, cap: float, expected: Fraction
+) -> None:
+    """"Match your display" when the engine can't make the display rate: the
+    highest whole division of it that at least doubles and fits, then 60 fps."""
+    tc = decide.choose_target(Fraction(24), hz, TargetKind.DISPLAY, sustainable_fps=cap)
+    assert tc.bypass is None and tc.target == expected
+    if hz != 75.0:
+        assert not decide.uneven_pacing(tc.target, hz)
+
+
+def test_display_tier_ranks_an_even_division_above_sixty() -> None:
+    tier = decide._display_tier
+    kind = TargetKind.DISPLAY
+    assert tier(Fraction(144), Fraction(24), 144.0, kind) == 0
+    assert tier(Fraction(72), Fraction(24), 144.0, kind) == 1
+    assert tier(Fraction(60), Fraction(24), 144.0, kind) == 2
+    assert tier(Fraction(60), Fraction(24), 180.0, kind) == 1  # 180 / 3
+    assert tier(Fraction(48), Fraction(24), 75.0, kind) == 3
+    assert tier(Fraction(60), Fraction(24), 144.0, TargetKind.X2) == 0
 
 
 @pytest.mark.parametrize(

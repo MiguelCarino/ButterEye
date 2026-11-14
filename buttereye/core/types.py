@@ -838,6 +838,9 @@ class SessionSnapshot:
     smooth_size: tuple[int, int] | None = None
     flow_scale: float = 1.0
     mv_block: bool = False
+    #: ``smooth_size`` is the screen's own size, taken because the video is larger
+    #: than the screen (nothing is lost), not a step down to keep up
+    smooth_at_screen: bool = False
     #: how mpv ended (once ``ended``): its exit code, negative = killed by that
     #: signal (a crash); None while it runs or when ButterEye only let it go
     exit_code: int | None = None

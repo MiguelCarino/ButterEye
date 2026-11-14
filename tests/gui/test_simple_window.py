@@ -185,6 +185,11 @@ def test_row_view_plain_words() -> None:
         "RIFE v4.22 lite on the GPU with TensorRT, motion estimated at half resolution, "
         "smoothed at 1280 × 720, scaled up, HDR10"
     )
+    # the screen's size is not a step down, and the row does not call it one
+    fit = dataclasses.replace(active, smooth_size=(2560, 1440), smooth_at_screen=True)
+    assert sw.row_view(fit).engine == (
+        "RIFE v4.26 on the GPU with Vulkan, smoothed at your screen's size, 2560 × 1440"
+    )
     off = sc.session(2, filter=FilterState.OFF)
     v = sw.row_view(off)
     assert (v.kind, v.word, v.paused, v.rates) == ("off", "Paused", True, "24 fps")

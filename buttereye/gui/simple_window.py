@@ -425,7 +425,10 @@ def engine_words(snap: SessionSnapshot) -> str:
         src = snap.source
         if snap.smooth_size is not None:
             w, h = snap.smooth_size
-            parts.append(_t("smoothed at {w} × {h}, scaled up").format(w=w, h=h))
+            if snap.smooth_at_screen:
+                parts.append(_t("smoothed at your screen's size, {w} × {h}").format(w=w, h=h))
+            else:
+                parts.append(_t("smoothed at {w} × {h}, scaled up").format(w=w, h=h))
         elif src is not None:
             parts.append(_t("full size {w} × {h}").format(w=src.width, h=src.height))
         if src is not None and src.hdr_class is HdrClass.HDR10:

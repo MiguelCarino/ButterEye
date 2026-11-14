@@ -265,8 +265,11 @@ file. There are four choices:
 
 - **Smooth motion** — on or off. Off: new videos play normally, and videos already
   playing turn smoothing off.
-- **Target** — *Double (2×)*, *60 fps*, or *Match your display (N Hz)* (the lowest
-  refresh/k that at least doubles the video: 60 fps on 180 Hz, 48 on 144 Hz).
+- **Target** — *Double (2×)*, *60 fps*, or *Match your display (N Hz)* (the display
+  rate itself where the engine can make it; otherwise the highest whole division of
+  it that can: 72 fps on 144 Hz, so every frame is up for two refreshes. With TensorRT
+  set up, RIFE makes every second frame and motion vectors the rest, which reaches
+  144 fps from film with RIFE's picture).
 - **Smoothness** — *Auto (recommended)*, *Best quality — GPU*, *Lighter — GPU*,
   *Fastest — GPU (motion vectors)* or *CPU only*. Auto uses RIFE on the GPU when the
   speed test shows it can keep up; where it can't (4K, high rates, "Match your

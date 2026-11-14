@@ -182,6 +182,9 @@ WAKE_PROPS = frozenset(
         "video-params",
         "path",
         "display-fps",
+        "display-names",
+        "display-width",
+        "display-height",
         "pause",
         "seeking",
         "core-idle",
@@ -282,6 +285,9 @@ class LiveOptions:
     verify_timeout_s: float = 4.0
     tick_s: float = 0.25
     display_debounce_s: float = 2.0  # §4.2 step 7
+    #: how long the decision waits for mpv's window to be on a screen
+    #: (``display_unsettled``); after it, the rate mpv reports is taken as it is
+    display_settle_s: float = 3.0
     no_video_after_s: float = 3.0
     start_deadline_s: float = 15.0  # no video yet after this → "mpv hasn't opened the video"
     probe_after_s: float = 1.5  # IPC silence before ButterEye checks that mpv still answers
@@ -510,12 +516,16 @@ class _Session:
         self.title = file.name
         self.log = filelog.for_item(_log, filelog.session_key(sid))
         self.flow_scale = 1.0  # TensorRT RIFE flow resolution chosen by apply (M0(q))
+        #: the rate RIFE runs to when mvgpu makes the rest (a cascade), chosen by apply
+        self.cascade: Fraction | None = None
         self.exit_code: int | None = None  # mpv's, once it has exited
         # the on-screen line (osd.py): what it last showed, and its hide timer
         self.osd_shown: tuple[object, ...] = ()
         self.osd_task: asyncio.Task[None] | None = None
         # what the running filter does, for the snapshot (reset when it is off)
         self.run_size: tuple[int, int] | None = None
+        self.run_fit = False  # run_size is the screen's size (decide.screen_fit)
+        self.fit_logged: tuple[int, int] | None = None
         self.run_flow = 1.0
         self.auto_chosen = False  # the running engine was Automatic's choice
         self.heavy_since: float | None = None  # heavy dropping since (monotonic)
@@ -544,6 +554,7 @@ class _Session:
         self.fault_lock = asyncio.Lock()
         self.props: dict[str, Any] = {}
         self.file_loaded_at: float | None = None
+        self.display_wait_from: float | None = None  # display_unsettled
         # another file in the same mpv (playlist-next, loadfile, drag and drop)
         self.new_file = False
         self.refetch_props = False
@@ -713,6 +724,7 @@ class _Session:
             smooth_size=self.run_size,
             flow_scale=self.run_flow,
             mv_block=self.run_block,
+            smooth_at_screen=self.run_fit,
             exit_code=self.exit_code,
         )
 
@@ -1350,6 +1362,7 @@ class _Session:
         self.drop_rate = None
         self._counters.clear()
         self.run_size, self.run_flow, self.run_block = None, 1.0, False
+        self.run_fit = False
         self.run_fill = False
 
     async def bypass_with(self, reason: BypassReason, *, display_hz: float | None = None) -> None:
@@ -1775,6 +1788,27 @@ class _Session:
         for m in msgs:
             self.emit(Notice(m, None, self.sid))
 
+    def display_unsettled(self, props: Mapping[str, object]) -> bool:
+        """mpv's window is not on a screen yet, so ``display-fps`` is a guess.
+
+        Until its surface enters an output (Wayland), mpv answers ``display-fps``
+        with a rate that is not the window's: on a desktop with 144, 144 and 75
+        Hz screens it said 75 for the first second, then 144 (mpv 0.41,
+        Hyprland). A target decided then is decided twice, and the first one
+        may pick another engine or size. ``display-names`` is empty for exactly
+        that long, so the decision waits for a name - at most
+        ``display_settle_s`` from the first empty answer (a window that is never
+        shown). Where mpv has no ``display-names`` (no window: ``--vo=null``)
+        there is nothing to wait for."""
+        names = props.get("display-names")
+        if not isinstance(names, list) or names:
+            self.display_wait_from = None
+            return False
+        now = time.monotonic()
+        if self.display_wait_from is None:
+            self.display_wait_from = now
+        return now - self.display_wait_from < self.opts.display_settle_s
+
     async def apply(self, *, raise_on_fail: bool) -> None:
         """Decide (§4.11, §5.6) and add/replace/remove the filter; verify a new gen."""
         cfg_now = self.config()[0]
@@ -1821,6 +1855,8 @@ class _Session:
             return
         if profile.target.kind in DISPLAY_KINDS and not facts.display_hz:
             return  # PENDING: "waiting for the video window" (§4.2 step 2)
+        if self.display_unsettled(props):
+            return  # PENDING: the rate mpv reports is not this window's screen yet
 
         paths = self.ctx.paths
         model_dir = paths.rpm_data_dir / MODEL_SUBDIR
@@ -1904,6 +1940,34 @@ class _Session:
         full_size = cfg is not None and cfg.general.full_size
         #: B3: the user puts even pacing before resolution ("Match your display")
         cadence_first = cfg is not None and cfg.general.cadence_first
+        #: what the decoder hands over, and the size smoothing starts from: the
+        #: screen's when the video is larger than its screen (decide.screen_fit;
+        #: not with "full size", where the user asked for the video's own)
+        decoded = (facts.width, facts.height)
+        fit = (
+            None
+            if full_size
+            else decide.screen_fit(
+                *decoded, decide.screen_size(props), rotated=vp.get("rotate") in (90, 270)
+            )
+        )
+        base = fit or decoded
+        base_facts = (
+            facts if fit is None else dataclasses.replace(facts, width=fit[0], height=fit[1])
+        )
+
+        async def base_options(cands: Sequence[BackendId]) -> list[decide.EngineOption]:
+            """The engine options at the size smoothing starts from, less what
+            shrinking to it costs when that is the screen's size."""
+            opts = await engine_options(base_facts, cands)
+            if fit is None:
+                return opts
+            return [
+                dataclasses.replace(
+                    o, sustainable_fps=decide.shrink_cap(o.sustainable_fps, *decoded)
+                )
+                for o in opts
+            ]
 
         async def sized_options(
             cands: Sequence[BackendId], below: int | None = None
@@ -1924,9 +1988,79 @@ class _Session:
                         )
                     ],
                 )
-                for w, h in decide.smaller_sizes(facts.width, facts.height)
-                if below is None or h < below
+                for w, h in decide.smaller_sizes(*decoded)
+                if h < base[1] and (below is None or h < below)
             ]
+
+        async def cascade_choice(
+            cands: Sequence[BackendId],
+            pick: decide.EnginePick,
+            size: tuple[int, int] | None,
+            *,
+            rife_factor: float = 1.0,
+            only: tuple[int, int] | None = None,
+        ) -> tuple[decide.EnginePick, tuple[int, int] | None, Fraction] | None:
+            """ "Match your display" by a cascade: TensorRT RIFE to twice the source
+            rate and mvgpu from there to the display rate, at the largest size
+            (the video's own first, never under ``CASCADE_MIN_HEIGHT`` lines)
+            where the two fit together (``decide.cascade_load``).
+
+            It scores like RIFE at the full multiplier (docs/spikes/m0u.md), so it
+            takes over from everything but a RIFE engine that already makes the
+            display rate at the video's own size. Not for a 2D animation profile
+            (mvgpu loses large flat shapes), a DRBA model, "full size" or an
+            engine the user pinned that is not TensorRT's RIFE."""
+            if (
+                profile.target.kind is not TargetKind.DISPLAY
+                or full_size
+                or animation
+                or self.forced
+                or trt_model is None
+                or trt.is_drba(trt_model)
+                or BackendId.RIFE_TRT not in cands
+                or BackendId.MVGPU not in installed
+                or wanted not in (None, BackendId.RIFE_TRT)
+            ):
+                return None
+            steps = decide.cascade_target(facts.fps, facts.display_hz or None)
+            if steps is None:
+                return None
+            mid, target = steps
+            got = pick.target.target
+            if (
+                only is None
+                and pick.backend in decide.RIFE_BACKENDS
+                and size == fit
+                and got is not None
+                and got >= target
+            ):
+                return None  # RIFE makes every frame at full size: nothing to gain
+            own = decoded
+            sizes = [base] + [
+                sz
+                for sz in decide.smaller_sizes(*decoded)
+                if min(decide.CASCADE_MIN_HEIGHT, facts.height) <= sz[1] < base[1]
+            ]
+            for sz in sizes if only is None else [only]:
+                at = dataclasses.replace(facts, width=sz[0], height=sz[1])
+                load = decide.cascade_load(
+                    facts.fps,
+                    mid,
+                    target,
+                    await self.sustainable_fps(BackendId.RIFE_TRT, trt_model, at, cfg),
+                    await self.sustainable_fps(BackendId.MVGPU, None, at, cfg),
+                    shrunk_from=None if sz == own else own,
+                    rife_factor=rife_factor,
+                )
+                if load is not None and load <= 1.0:
+                    return (
+                        decide.EnginePick(
+                            BackendId.RIFE_TRT, decide.TargetChoice(target, None), None
+                        ),
+                        None if sz == own else sz,
+                        mid,
+                    )
+            return None
 
         async def decide_with(
             cands: Sequence[BackendId],
@@ -1937,6 +2071,20 @@ class _Session:
             found = await decide_size(cands)
             pick, size = found[0], found[1]
             t = pick.target.target
+            self.cascade = None
+            via = await cascade_choice(cands, pick, size)
+            if via is not None:
+                cp, csize, mid = via
+                self.flow_scale = 1.0
+                self.cascade = mid
+                return (
+                    cp,
+                    csize,
+                    False,
+                    # the screen's size is not a step down: no size in the notice
+                    [decide.cascade_notice(csize[1] if csize and csize != fit else None)],
+                    False,
+                )
             if (
                 cadence_first
                 and not full_size
@@ -1971,29 +2119,27 @@ class _Session:
             """(pick, smaller size or None, forced past the speed test, notes,
             MVTools in block mode)"""
             extra: list[Msg] = []
-            options = await engine_options(facts, cands)
+            options = await base_options(cands)
             pick = choose(options, forced=False)
-            size: tuple[int, int] | None = None
+            size: tuple[int, int] | None = fit
             forced_used = False
             if (
                 pick.target.bypass is BypassReason.NO_REALTIME
                 and BackendId.RIFE_TRT in cands
-                and facts.width * facts.height >= decide.HALF_FLOW_MIN_PIXELS
+                and base[0] * base[1] >= decide.HALF_FLOW_MIN_PIXELS
                 and not trt.is_drba(trt_model)
             ):
                 # TensorRT with half-resolution flow (M0(q)) before a smaller picture
-                half = [
-                    decide.EngineOption(
-                        BackendId.RIFE_TRT,
-                        await self.sustainable_fps(
-                            BackendId.RIFE_TRT, trt_model, facts, cfg, flow_scale=0.5
-                        ),
-                    )
-                ]
+                half_cap = await self.sustainable_fps(
+                    BackendId.RIFE_TRT, trt_model, base_facts, cfg, flow_scale=0.5
+                )
+                if fit is not None:
+                    half_cap = decide.shrink_cap(half_cap, *decoded)
+                half = [decide.EngineOption(BackendId.RIFE_TRT, half_cap)]
                 hp = choose(half, forced=False)
                 if hp.backend is BackendId.RIFE_TRT and hp.target.bypass is None:
                     self.flow_scale = 0.5
-                    return hp, None, False, [decide.half_flow_notice()], False
+                    return hp, fit, False, [decide.half_flow_notice()], False
             if pick.target.bypass is BypassReason.NO_REALTIME and full_size:
                 # the user chose the video's own size over keeping up: no smaller
                 # size and no block mode, smooth uncapped (frames may drop)
@@ -2068,10 +2214,11 @@ class _Session:
                     bp = choose([block], forced=False)
                     if bp.backend is BackendId.MVTOOLS and bp.target.bypass is None:
                         if bp.target.target is not None:
-                            return bp, None, False, [decide.blockfps_notice()], True
+                            return bp, fit, False, [decide.blockfps_notice()], True
             return pick, size, forced_used, extra, False
 
         self.flow_scale = 1.0
+        self.cascade = None
         pick, size, forced_used, extra, mv_block = await decide_with(order)
         trt_key: trt.EngineKey | None = None
         self.trt_waiting = None
@@ -2146,17 +2293,29 @@ class _Session:
             buffered = profile.buffered_frames
         if profile.concurrent_frames:
             concurrent = profile.concurrent_frames
+        cascade = self.cascade if backend is BackendId.RIFE_TRT else None
         hold_fill, fill_why = await self.hold_fill_choice(
             profile,
             backend,
             facts,
             size,
-            tc.target,
+            cascade or tc.target,
             cfg,
             model=model_for(backend),
             forced=forced_used,
             block=bool(mv_block and backend is BackendId.MVTOOLS),
         )
+        if hold_fill and cascade is not None:
+            # the RIFE stage shares the GPU with mvgpu: on only when both still fit
+            again = await cascade_choice(
+                order,
+                pick,
+                size,
+                rife_factor=decide.hold_fill_factor(facts.fps, cascade),
+                only=size or (facts.width, facts.height),
+            )
+            if again is None:
+                hold_fill, fill_why = False, "RIFE and motion vectors share the GPU here"
         # the script's frame analysis (cuts, still pairs) reads up to 4 frames
         # back: a profile's smaller buffer would make mpv refuse those requests
         buffered = max(buffered, BUFFERED_FRAMES_DEFAULT)
@@ -2173,6 +2332,14 @@ class _Session:
         h = facts.height
         gen = self.next_gen()
         self.run_size = size
+        self.run_fit = fit is not None and size == fit
+        if fit is not None and fit != self.fit_logged:
+            self.fit_logged = fit
+            self.log.info(
+                "%s: %s × %s is larger than its screen, so smoothing starts from the "
+                "screen's size, %s × %s",
+                self.title, decoded[0], decoded[1], fit[0], fit[1],
+            )  # fmt: skip
         self.run_flow = self.flow_scale if backend is BackendId.RIFE_TRT else 1.0
         # live correction only second-guesses ButterEye's own choice: not an engine
         # the user picked, nor "smooth at full size" (frames may drop by choice)
@@ -2187,6 +2354,8 @@ class _Session:
             backend=backend,
             src_fps=facts.fps,
             target_fps=tc.target,
+            cascade_fps=cascade,
+            cascade_gpu_id=self.gpu_index(cfg) if cascade is not None else None,
             buffered_frames=buffered,
             concurrent_frames=concurrent,
             matrix=decide.matrix_name(vp.get("colormatrix"), h),
@@ -2224,12 +2393,17 @@ class _Session:
             ),
         )
         self.log.info(
-            "%s: smoothing %s → %s fps with %s%s at %s × %s (video %s × %s)%s",
+            "%s: smoothing %s → %s fps with %s%s%s at %s × %s (video %s × %s)%s",
             self.title,
             decide.fmt_rate(facts.fps),
             decide.fmt_rate(tc.target),
             decide.BACKEND_NAMES.get(backend, backend.value),
             f" {model}" if model else "",
+            (
+                f" to {decide.fmt_rate(cascade)} fps, then GPU motion vectors"
+                if cascade is not None
+                else ""
+            ),
             *(size or (facts.width, facts.height)),
             facts.width,
             facts.height,
@@ -2245,7 +2419,15 @@ class _Session:
         try:
             write_script(
                 self.script_path,
-                ScriptConstants(_paths.plugin_dir_for(paths, decide.BACKEND_PLUGIN.get(backend))),
+                ScriptConstants(
+                    _paths.plugin_dir_for(
+                        paths,
+                        # a cascade's TensorRT stage reads no PLUGIN_DIR; mvgpu's does
+                        decide.MVGPU_PLUGIN
+                        if cascade is not None
+                        else decide.BACKEND_PLUGIN.get(backend),
+                    )
+                ),
             )
         except OSError as exc:
             # B14: a full disk, or the runtime folder removed under a running

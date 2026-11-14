@@ -6086,6 +6086,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>smoothed at your screen's size, {w} × {h}</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>smoothed at {w} × {h}, scaled up</source>
         <translation type="unfinished"></translation>
     </message>

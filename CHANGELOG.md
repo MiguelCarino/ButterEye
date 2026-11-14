@@ -31,6 +31,33 @@ longer makes ButterEye shrink the picture or change engine.
 
 ### Improved
 
+- **A video larger than your screen is smoothed at the screen's size.** A 4K
+  film on a 3440×1440 screen is shown at 2560×1440 whatever ButterEye does, so
+  smoothing it at 4K was work nobody could see. ButterEye now starts from what
+  the screen shows (here 44 % of the pixels): nothing visible is lost, and the
+  engines reach further. A 4K film doubled gets RIFE's picture at the screen's
+  1440 lines, where it used to get GPU motion vectors at 4K. The row says
+  "smoothed at your screen's size", moving the window to another screen takes
+  that screen's size, and "Always full size" keeps the video's own. Not where
+  mpv does not report the screen, and not for a saving under a tenth.
+- **Film at your screen's full rate, with RIFE's picture.** On a 144 Hz screen a
+  24 fps video needs five new frames for each real one. RIFE could not make them
+  in time, so ButterEye used GPU motion vectors, which tear fast motion apart
+  (dancers, flashes). Now RIFE (TensorRT) makes every second frame and motion
+  vectors make the rest from RIFE's frames, where there is little motion left
+  to find. Against real frames it scores like RIFE making all of them. A 4K
+  music video plays at 144 fps in real time on an RTX 4090, smoothed at 1080p.
+  It needs TensorRT set up and the motion-vector plugin installed, and is used
+  with "Match your display" only.
+- **The right screen's rate from the start.** With screens of different rates,
+  mpv reports a rate before its window is on one of them (75 Hz where the
+  window opens on a 144 Hz screen). ButterEye decided on that and again two
+  seconds later. It now waits until the window is on a screen.
+- **"Match your display" on a fast screen:** when the engine cannot make the
+  display rate at the video's size (a 4K film on a 144 Hz screen), ButterEye
+  used to fall back to 60 fps, which a 144 Hz screen cannot show evenly. It
+  now takes the highest even division of the display rate that it can make:
+  72 fps on 144 Hz, each frame shown for exactly two refreshes.
 - **GPU motion vectors (mvgpu):** rolling credits and subtitles on a plain
   background, thin lines and small flat shapes no longer vanish or smear in
   in-between frames. A match between two patches is now worth what matched
