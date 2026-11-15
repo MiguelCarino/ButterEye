@@ -521,8 +521,10 @@ layer_so=$deps/lib/buttereye/libVkLayer_buttereye_frames.so
 layer_json=$deps/share/vulkan/explicit_layer.d/VkLayer_buttereye_frames.json
 nm -D --defined-only "$layer_so" | grep -q ' vkNegotiateLoaderLayerInterfaceVersion$' \
     || { echo "the frames layer does not export vkNegotiateLoaderLayerInterfaceVersion" >&2; exit 1; }
+# (ld-linux is glibc's own loader: on glibc 2.35 a thread_local in a shared
+# library needs its __tls_get_addr)
 if readelf -dW "$layer_so" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' \
-        | grep -vxE 'libstdc\+\+\.so\.6|libm\.so\.6|libgcc_s\.so\.1|libc\.so\.6'; then
+        | grep -vxE 'libstdc\+\+\.so\.6|libm\.so\.6|libgcc_s\.so\.1|libc\.so\.6|ld-linux-x86-64\.so\.2'; then
     echo "the frames layer links more than the C/C++ runtime (above)" >&2
     exit 1
 fi

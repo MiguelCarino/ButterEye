@@ -96,6 +96,39 @@ def test_sample_reads_the_missed_refreshes() -> None:
     assert health.sample_from({}, 0.0).vo_delayed == 0
 
 
+def _sides(extra_at: "dict[int, int]", seconds: float = 50.0) -> list[bool]:
+    """48 fps on a 144 Hz screen with about 6 dropped frames a second, each after a
+    missed refresh, plus dropped frames no refresh explains: ``{tick: how many more}``
+    (mpv's counters only grow). The side each DROPPING verdict put the drops down to."""
+    d = HealthDetector(TH)
+    d.filter_started(0.0, 48.0)
+    d.update(Sample(0.5, 0.5, None, False, False, False, False, 0, 0))
+    sides, extra, i = [], 0, 2
+    while i * 0.5 <= seconds:
+        t = i * 0.5
+        extra += extra_at.get(i, 0)
+        v = d.update(Sample(t, t, None, False, False, False, False, int(6 * t) + extra, int(6 * t)))
+        if v.health is Health.DROPPING:
+            sides.append(v.at_screen)
+        i += 1
+    return sides
+
+
+def test_the_side_does_not_flip_on_a_few_frames() -> None:
+    """The MMD log (0.0.8 test, 2026-11-14): at 48 fps, 1 % of the 10 s window is
+    under 5 frames, and the two counts differ by a few frames from tick to tick, so
+    "the screen showed frames late" and "Dropping frames" took turns, four reports in
+    3 s. Here 4 frames no refresh explains come every 8 s, so the window holds 4 or 8
+    of them (0.8 % or 1.7 %): the verdict stays with the screen."""
+    sides = _sides({k: 4 for k in range(30, 100, 16)})
+    assert len(sides) > 40 and all(sides)
+
+
+def test_a_clear_change_still_moves_the_side() -> None:
+    sides = _sides({40: 60})  # 60 frames no refresh explains: 12 % of the window
+    assert sides[0] is True and False in sides
+
+
 # ---------------------------------------------------------------- the session
 def _late(rate: float = 0.02) -> Verdict:
     return Verdict(

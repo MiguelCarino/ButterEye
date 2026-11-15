@@ -53,6 +53,13 @@ class Thresholds:
     #: first 8 s, then none in 70 s), and a reload made in answer to that burst
     #: only causes the next one.
     drop_settle_s: float = 8.0
+    #: Once drops are put down to the screen or to smoothing, the other side needs a
+    #: clear difference to take over: frames that no missed refresh explains must
+    #: fall under ``drop_ratio / side_margin`` (for the screen) or rise over
+    #: ``drop_ratio * side_margin`` (for smoothing). The two counts are read a tick
+    #: apart and differ by a few frames, and 1 % of 10 s at 48 fps is under 5 frames,
+    #: so without a margin the verdict flipped every tick or two (four reports in 3 s).
+    side_margin: float = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +132,7 @@ class HealthDetector:
         self._stalled: Verdict | None = None
         self._drops: deque[tuple[float, int, int]] = deque()  # t, dropped, delayed
         self._target_fps: float | None = None
+        self._at_screen: bool | None = None  # the side the last drops were put down to
 
     def filter_started(self, t: float, target_fps: float | None) -> None:
         self.active = True
@@ -139,6 +147,7 @@ class HealthDetector:
         self._stalled = None
         self._drops.clear()
         self._target_fps = target_fps
+        self._at_screen = None
 
     def filter_stopped(self) -> None:
         self.active = False
@@ -154,6 +163,7 @@ class HealthDetector:
         self._lag_since = None
         self._drops.clear()
         self._settle_from = t
+        self._at_screen = None
 
     def _ok(self, drop_rate: float | None) -> Verdict:
         return Verdict(Health.OK, None, None, (), self.flowing, drop_rate)
@@ -188,7 +198,7 @@ class HealthDetector:
                 shown = f"{pt:.2f} s" if pt is not None else "unavailable"
                 return self._stall(
                     Msg("The picture stopped while playback was not paused."),
-                    (f"playback-time {shown}, unchanged for {frozen_for:.1f} s",),
+                    (f"playback-time {shown}, unchanged for {frozen_for:.1f} s", self._since(s.t)),
                 )
 
         # 2. audio running ahead of a stalled picture (the M0(f) failure)
@@ -200,7 +210,10 @@ class HealthDetector:
                 if s.t - self._lag_since >= th.lag_hold_s:
                     return self._stall(
                         Msg("Video stalled while audio kept playing."),
-                        (f"audio-pts {s.audio_pts:.2f} s, playback-time {pt:.2f} s",),
+                        (
+                            f"audio-pts {s.audio_pts:.2f} s, playback-time {pt:.2f} s",
+                            f"audio ahead for {s.t - self._lag_since:.1f} s; {self._since(s.t)}",
+                        ),
                     )
             else:
                 self._lag_since = None
@@ -218,7 +231,13 @@ class HealthDetector:
             assert engine is not None
             # with display sync, a refresh the output misses costs the next frame
             # its turn: mpv drops it, and smoothing was on time all along
-            at_screen = engine <= th.drop_ratio
+            if self._at_screen is None:
+                at_screen = engine <= th.drop_ratio
+            elif self._at_screen:
+                at_screen = engine <= th.drop_ratio * th.side_margin
+            else:
+                at_screen = engine <= th.drop_ratio / th.side_margin
+            self._at_screen = at_screen
             percent = {"percent": round(rate * 100, 1)}
             reason = (
                 Msg("The screen showed frames late ({percent}% over 10 s); smoothing is "
@@ -228,6 +247,11 @@ class HealthDetector:
             )  # fmt: skip
             return Verdict(Health.DROPPING, None, reason, (), self.flowing, rate, engine, at_screen)
         return self._ok(rate)
+
+    def _since(self, t: float) -> str:
+        """When the filter last started, or playback last seeked: a gap between audio
+        and picture as large as a seek is the seek's distance, not a long freeze."""
+        return f"last seek or filter (re)start {t - self._settle_from:.1f} s before"
 
     def _window(self) -> tuple[float, int, int] | None:
         """(seconds, frames dropped, refreshes the output missed) over the window."""

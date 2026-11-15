@@ -120,6 +120,20 @@ def test_audio_over_stalled_picture() -> None:
     assert v.evidence and "audio-pts" in v.evidence[0]
 
 
+def test_a_stall_says_how_long_ago_playback_seeked() -> None:
+    """The Great Wall log (0.0.8 test): audio 84 s ahead of the picture looked like a
+    minute unnoticed, but it was a seek's distance. The report now says when the last
+    seek or filter start was, and how long audio has been ahead."""
+    d = HealthDetector(TH)
+    d.filter_started(0.0, 60.0)
+    _feed(d, [_s(0.5 * i, 0.5 * i, audio=0.5 * i) for i in range(1, 40)])
+    d.note_restart(20.0)  # a seek forward of 84 s: audio jumps, the picture does not
+    v = _feed(d, [_s(20.0 + 0.5 * i, 19.5 + 0.01 * i, audio=103.5 + 0.5 * i) for i in range(1, 30)])
+    assert v.health is Health.STALLED
+    assert len(v.evidence) == 2
+    assert "audio ahead for" in v.evidence[1] and "last seek or filter (re)start" in v.evidence[1]
+
+
 def test_short_lag_is_tolerated() -> None:
     d = HealthDetector(TH)
     d.filter_started(0.0, 60.0)

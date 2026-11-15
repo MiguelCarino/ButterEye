@@ -199,8 +199,12 @@ cp "$src"/vapoursynth-mvtools-v*.tar.gz "$src"/buttereye-vs-rife-ncnn-r*.tar.gz 
 cp "${tool_srcs[@]}" "$here"/vulkaninfo-mingw-user32.patch "$here"/build-tools-in-chroot.sh \
    "$here"/pins.sh "$out/sources/"
 # fftw is GPL and linked into mvtools.dll: its source must go with it, so no
-# source package, no build
-if ! (cd "$out/sources" && dnf download -q --source "$fftw_nvr") \
+# source package, no build. It is fetched for the chroot's Fedora release (the
+# .fcNN of the package), from Fedora's own repositories only: the machine running
+# this may be on a newer release, or have other repositories enabled.
+fftw_rel=$(sed -n 's/.*\.fc\([0-9]*\)$/\1/p' <<<"$fftw_nvr")
+if [ -z "$fftw_rel" ] || ! (cd "$out/sources" && dnf download -q --source --releasever="$fftw_rel" \
+        --disablerepo='*' --enablerepo=fedora --enablerepo=updates --assumeno "$fftw_nvr") \
     || ! compgen -G "$out/sources/mingw-fftw-*.src.rpm" >/dev/null; then
     echo "error: could not download the $fftw_nvr source package (Corresponding Source of mvtools.dll)" >&2
     rm -rf "$out"  # an output without it must not be packed into an installer

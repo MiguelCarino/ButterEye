@@ -12,7 +12,8 @@ ButterEye is a free, open-source (AGPL-3.0-or-later) smooth-motion control cente
 RIFE (Vulkan, via VapourSynth), its own GPU motion-vector engine (mvgpu) or MVTools, live
 in mpv or as an offline render. It works
 with your distribution's own mpv and never edits your `mpv.conf`. Current release:
-**0.0.1** (alpha, Fedora 44 and 45; see [`CHANGELOG.md`](CHANGELOG.md) and the
+**0.0.8** (alpha, Fedora 44 and 45, with experimental Windows, macOS and AppImage
+downloads; see [`CHANGELOG.md`](CHANGELOG.md) and the
 [releases page](https://github.com/MiguelCarino/ButterEye/releases)). The design lives in
 `docs/SCOPE.md` and `docs/design/GUI.md`; third-party components and their licences are
 listed in [`THIRD-PARTY.md`](THIRD-PARTY.md).
@@ -36,13 +37,13 @@ folder, then install them with dnf, which pulls everything else (mpv, VapourSynt
 ffmpeg, PySide6, the fonts) from Fedora:
 
 ```sh
-cd ~/Downloads/buttereye-0.0.1        # the folder holding the downloaded RPMs
-# Fedora 44 (use fc45 on Fedora 45)
-sudo dnf install ./buttereye-0.0.1-1.fc44.noarch.rpm \
-    ./buttereye-vs-mvtools-*.fc44.x86_64.rpm \
-    ./buttereye-vs-rife-ncnn-*.fc44.x86_64.rpm \
-    ./buttereye-rife-ncnn-models-*.fc44.noarch.rpm \
-    ./buttereye-vs-mvgpu-*.fc44.x86_64.rpm
+cd ~/Downloads/buttereye-0.0.8        # the folder holding the downloaded RPMs
+# Fedora 45 (use fc44 on Fedora 44)
+sudo dnf install ./buttereye-0.0.8-1.fc45.noarch.rpm \
+    ./buttereye-vs-mvtools-*.fc45.x86_64.rpm \
+    ./buttereye-vs-rife-ncnn-*.fc45.x86_64.rpm \
+    ./buttereye-rife-ncnn-models-*.fc45.noarch.rpm \
+    ./buttereye-vs-mvgpu-*.fc45.x86_64.rpm
 ```
 
 `buttereye` and `buttereye-vs-mvtools` are the minimum (MVTools is the only engine
@@ -155,8 +156,9 @@ the app (and, if you like, `~/Library/Application Support/ButterEye`,
 
 ## Status
 
-Alpha (0.0.1), verified on the dev box (Fedora 44, RTX 4090, mpv 0.41.0, VapourSynth R72) on
-2026-10-07. "Works" means it ran against the real tools, not a fake.
+Alpha (0.0.8), last verified on the dev box (Fedora 45, RTX 4090 with NVIDIA 620.70.06,
+mpv 0.41.0, VapourSynth R79) on 2026-11-14; first verified on Fedora 44 with VapourSynth
+R72 on 2026-10-07. "Works" means it ran against the real tools, not a fake.
 
 **Works for real**
 
@@ -328,6 +330,13 @@ motion vectors as each picture goes to the screen, so those frames never pass th
 CPU. Same smoothness as the usual path, with about half of mpv's GPU time (spike M0(z)).
 Linux on Wayland with mpv on Vulkan only. The layer is explicit: it loads only into an mpv
 ButterEye starts with this on.
+
+**Variable refresh (VRR, FreeSync, G-SYNC Compatible)**: on a fast screen it removes most
+of the frames shown late. Smoothing film to 144 fps fullscreen, dropped frames fell from
+18–88 a minute to 0–4 on one screen and from 18–38 to 2–4 on another, HDR included
+(`docs/spikes/m0v.md`). Turn it on for fullscreen windows only (in Hyprland, `vrr = 2`):
+always on can flicker on the desktop. Some monitors only offer it with a particular
+setting in their own menu (one tested needed "FreeSync Premium", not "Adaptive-Sync").
 
 **Picture-quality benchmark**: [docs/benchmark.md](docs/benchmark.md) scores every engine
 against real in-between frames of openly licensed high-frame-rate footage, with the

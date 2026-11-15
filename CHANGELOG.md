@@ -24,6 +24,18 @@ goes to the screen, and a public picture-quality benchmark.
 
 ### Fixed
 
+- **"The screen showed frames late" and "Dropping frames" no longer take
+  turns.** Which of the two a burst of dropped frames is put down to depends on
+  how many of them no missed refresh explains, against 1 % of the frames: at
+  48 fps that is under 5 frames in 10 s, and the two counts differ by a few
+  frames from one reading to the next, so the verdict could flip every second
+  (four reports in 3 s). Once given, it now changes only on a clear difference
+  (under half the limit to the screen, over twice the limit to smoothing).
+- **A stall says how long ago playback seeked.** After a seek, audio jumps to
+  the new place at once; if the picture does not follow, the gap between them
+  is the seek's distance, so a report of audio 84 s ahead looked like a minute
+  gone unnoticed. The report now adds how long audio has been ahead and when
+  the last seek or filter start was.
 - **RIFE on TensorRT draws fine detail where it belongs.** The engines worked
   out where to take each pixel from in half precision, so fine detail landed
   up to a quarter of a pixel off (half a pixel at 4K) and textures went soft.
@@ -36,7 +48,7 @@ goes to the screen, and a public picture-quality benchmark.
 - **RIFE with motion at half resolution could not build at 1080 or 1440
   lines.** The padding rule did not match the smaller motion picture. Fixed for
   the spike tools that still use it (playback no longer does, see below).
- On a
+- **Frames the screen shows late are no longer blamed on smoothing.** On a
   144 Hz screen about one frame a second can be shown late: the screen misses
   a refresh while the graphics card is busy, and mpv then drops the next frame
   although smoothing delivered it on time. It happens to the plain player too
@@ -189,6 +201,18 @@ goes to the screen, and a public picture-quality benchmark.
   drawn at twice the source rate, each isolating one thing that breaks
   interpolation, and real footage by its own middle frames; every engine is
   scored on its worst areas. Results of the first run: `docs/spikes/m0t.md`.
+
+### Packaging
+
+- **The Windows build works on a newer Fedora.** Its plugins are built in a
+  Fedora 44 chroot, but fftw's source package (shipped as the source of
+  `mvtools.dll`) was looked up in the building machine's own repositories, so
+  on Fedora 45 the build stopped at the end. It is now fetched for the
+  chroot's Fedora release, from Fedora's own repositories only.
+- **The AppImage accepts the frames layer's link to glibc's loader.** On
+  Ubuntu 22.04's glibc a `thread_local` in a shared library needs
+  `ld-linux-x86-64.so.2`, which the layer check refused although it is part of
+  the C runtime every Linux has.
 
 ## 0.0.7 — 2026-10-29
 
