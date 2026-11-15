@@ -31,6 +31,7 @@ import contextlib
 import dataclasses
 import logging
 import math
+import os
 import time
 import uuid
 from collections import deque
@@ -57,7 +58,9 @@ from buttereye.core.events import (
     SessionEnded,
 )
 from buttereye.core.i18n import render
+from buttereye.core.mpvctl import content as content_probe
 from buttereye.core.mpvctl import decide, launcher, livelimits, osd, shaders
+from buttereye.core.mpvctl import frames as gpuframes
 from buttereye.core.mpvctl.health import (
     HealthDetector,
     Thresholds,
@@ -169,6 +172,7 @@ STEADY_HOLD_S = 30.0
 #: (0 would read as "no cap")
 EXCLUDED_FPS = 1e-3
 LIVE_LIMITS = "mpvctl.live_limits"  # livelimits records, loaded once per core
+CONTENT_CACHE = "mpvctl.content_cache"  # content.Cache, loaded once per core
 #: The lite model must beat the full one by more than this in this machine's
 #: benchmark to be offered as a step down (§5.3 step 5).
 LITE_GAIN = 1.05
@@ -239,6 +243,18 @@ PRELOAD_CANCELLED: Mapping[object, str] = {
     "off": "not held, the helper stopped holding",
 }
 
+#: Layer mode (``mpvctl.frames``): the layer must send at least this share of
+#: mpv's presents down its own path; the rest pass through (the one after a
+#: seek or a pause, a cadence break)
+FRAMES_MIN_SHARE = 0.5
+#: how often the video's rectangle (``osd-dimensions``) is read again in layer mode
+FRAMES_RECT_S = 1.0
+#: a refresh the layer measures this far (Hz) from the real rate layer mode
+#: started at means the window is on another screen
+FRAMES_HZ_TOLERANCE = 0.5
+#: the audio delay layer mode left per file (``frames.AudioLedger``), once per core
+FRAMES_AUDIO = "mpvctl.frames_audio"
+
 #: Used only when this build has no config provider (U2): automatic settings,
 #: not data. Every value is the documented default (§4.4, §4.9, §5.6).
 FALLBACK_PROFILE = Profile(
@@ -288,12 +304,19 @@ class LiveOptions:
     #: how long the decision waits for mpv's window to be on a screen
     #: (``display_unsettled``); after it, the rate mpv reports is taken as it is
     display_settle_s: float = 3.0
+    #: how long the first decision for a file waits for the content probe (an
+    #: Auto profile: is this hand-drawn 2D?). A later answer decides again
+    content_wait_s: float = 2.0
     no_video_after_s: float = 3.0
     start_deadline_s: float = 15.0  # no video yet after this → "mpv hasn't opened the video"
     probe_after_s: float = 1.5  # IPC silence before ButterEye checks that mpv still answers
     unresponsive_after_s: float = 3.0  # silence + an unanswered probe → "not responding"
     probe_timeout_s: float = 1.0
     log_check_s: float = 30.0  # how often a running session's log size is checked
+    #: layer mode: seconds of playback within which the frames layer must take
+    #: over mpv's presents, and the window it is checked over after that
+    frames_check_s: float = 3.0
+    frames_window_s: float = 5.0
 
 
 TRT_BUILDS = "mpvctl.trt_builds"  # EngineKey -> "building" | "ready" | exception
@@ -515,9 +538,46 @@ class _Session:
         self.file = file
         self.title = file.name
         self.log = filelog.for_item(_log, filelog.session_key(sid))
-        self.flow_scale = 1.0  # TensorRT RIFE flow resolution chosen by apply (M0(q))
         #: the rate RIFE runs to when mvgpu makes the rest (a cascade), chosen by apply
         self.cascade: Fraction | None = None
+        #: the frames layer (``mpvctl.frames``, ``[general] gpu_frames``): this
+        #: mpv's control block when it was started with the layer, else None
+        self.frames: gpuframes.ControlBlock | None = None
+        #: k while layer mode runs (the layer makes the last frames), 0 = not
+        self.frames_k = 0
+        #: the layer did not take over once: today's cascade for the rest of
+        #: the session (like ``backend_override``, never lifted by itself)
+        self.frames_failed = False
+        #: the screen's real rate while ``display-fps-override`` is set. mpv
+        #: then answers ``display-fps`` with the override, which is never taken
+        #: back into ``props`` or a decision
+        self.real_hz: float | None = None
+        #: seconds of layer mode's in mpv's audio-delay on top of the user's own;
+        #: kept after layer mode when taking it off failed (retried on the tick)
+        self.frames_audio_add = 0.0
+        #: mpv's audio-delay with that add in it, as last known for its file
+        #: (followed while the user changes it), and the file's ledger key
+        self.frames_audio_value: float | None = None
+        self.frames_audio_key: str | None = None
+        #: another file started since: mpv's audio-delay may be that file's own
+        #: (its resume file, per-file options), which has no add in it
+        self.frames_file_ended = False
+        self.frames_override_restore = 0.0  # the user's own display-fps-override (0: none)
+        #: the layer's counters at the start of the take-over check's window, the
+        #: last ones read, and the missed refreshes it saw in layer mode (summed
+        #: over mpv's swapchains, whose counters each start from 0)
+        self.frames_base = gpuframes.LayerStats()
+        self.frames_last = gpuframes.LayerStats()
+        self.frames_missed = 0
+        self.frames_play_s = 0.0  # playback seconds in the check's window
+        self.frames_tick: float | None = None
+        self.frames_confirmed = False  # the layer took over at least once
+        #: the refresh the layer reported when layer mode started (or first after)
+        self.frames_hz0: float | None = None
+        self.frames_rect_at = 0.0
+        self.frames_screen_moved = False  # display-names changed in layer mode
+        #: decide again at this monotonic time (a screen change, a fallback)
+        self.frames_redecide_at: float | None = None
         self.exit_code: int | None = None  # mpv's, once it has exited
         # the on-screen line (osd.py): what it last showed, and its hide timer
         self.osd_shown: tuple[object, ...] = ()
@@ -525,8 +585,16 @@ class _Session:
         # what the running filter does, for the snapshot (reset when it is off)
         self.run_size: tuple[int, int] | None = None
         self.run_fit = False  # run_size is the screen's size (decide.screen_fit)
+        #: the content probe for this file (mpvctl.content): what it found, the
+        #: file it is for, and when it started
+        self.content_found: content_probe.Found | None = None
+        self.content_file: str | None = None
+        self.content_task: asyncio.Task[None] | None = None
+        self.content_since: float | None = None
+        self.content_changed = False  # an answer arrived after the decision
+        self.run_content = ContentKind.AUTO  # what the running filter treats the video as
+        self.run_content_found = False
         self.fit_logged: tuple[int, int] | None = None
-        self.run_flow = 1.0
         self.auto_chosen = False  # the running engine was Automatic's choice
         self.heavy_since: float | None = None  # heavy dropping since (monotonic)
         self.steady_since: float | None = None  # STEADY_DROP or more since (monotonic)
@@ -723,18 +791,21 @@ class _Session:
             restore_pending=(),
             ended=self.ended,
             smooth_size=self.run_size,
-            flow_scale=self.run_flow,
             mv_block=self.run_block,
             smooth_at_screen=self.run_fit,
             drops_at_screen=self.health is Health.DROPPING and self.drop_at_screen,
+            content=self.run_content,
+            content_detected=self.run_content_found,
             exit_code=self.exit_code,
+            gpu_frames=self.frames_k > 0,
         )
 
     def _key(self, s: SessionSnapshot) -> tuple[object, ...]:
         return (
             s.source, s.display_fps, s.target_fps, s.multiplier, s.backend, s.model,
             s.profile_id, s.filter, s.bypass, s.health, s.health_code, s.gen,
-            s.step_down_to, s.notice, s.ended, s.smooth_size, s.flow_scale, s.mv_block,
+            s.step_down_to, s.notice, s.ended, s.smooth_size, s.mv_block,
+            s.gpu_frames,
         )  # fmt: skip
 
     def publish(self) -> SessionSnapshot:
@@ -797,8 +868,16 @@ class _Session:
         ev = msg.get("event")
         if ev == "property-change":
             name = msg.get("name")
-            if isinstance(name, str):
+            if isinstance(name, str) and not (name == "display-fps" and self.real_hz is not None):
+                # (layer mode: mpv reports display-fps-override; the real rate stays)
                 self.props[name] = msg.get("data")
+            if self.frames_k and self.frames is not None:
+                if name in ("pause", "seeking"):
+                    self.frames.bump_event()  # that present passes through
+                elif name == "display-names":
+                    self.frames_screen_moved = True
+            if name == "audio-delay":
+                self.frames_audio_seen(msg.get("data"))
             if name not in WAKE_PROPS:
                 return  # per-frame counters: the 0.25 s tick reads them
         elif ev == "log-message":
@@ -818,6 +897,10 @@ class _Session:
             self.file_loaded_at = None
             self.file_started_mono = time.monotonic()
             self.new_file = True
+            if self.frames_audio_add:
+                # mpv applies the next file's resume file and per-file options
+                # before ButterEye can answer: its audio-delay may not be ours
+                self.frames_file_ended = True
             self.refetch_props = True
             if self.preload_s is not None:
                 self.start_preload()  # the helper holds this file too (on_preloaded)
@@ -828,6 +911,8 @@ class _Session:
             if ev == "playback-restart":
                 self.restart_seq += 1
             self.detector.note_restart(time.monotonic())
+            if self.frames_k and self.frames is not None:
+                self.frames.bump_event()
         elif ev == "client-message":
             args = msg.get("args")
             if isinstance(args, list) and args[:2] == ["buttereye-request", "toggle"]:
@@ -954,6 +1039,8 @@ class _Session:
                     },
                 )
             )
+            if self.frames_k:
+                text += " · " + render(Msg("last frames made on the GPU"))
             display = decide.display_rate(self.display_fps)
             if display is not None and decide.uneven_pacing(self.target, self.display_fps):
                 # B3: 2x of 23.976 on 60 Hz is shown 1-1-1-2
@@ -1023,8 +1110,6 @@ class _Session:
         model: str | None,
         facts: SourceFacts,
         cfg: Config | None,
-        *,
-        flow_scale: float = 1.0,
     ) -> float | None:
         """The live rate cap for ``backend``/``model`` at this video's size (§11.9).
 
@@ -1040,14 +1125,13 @@ class _Session:
         no benchmark for this engine.
 
         Scaling up to a bigger picture divides by ``ratio ** UPSCALE_EXPONENT``;
-        ``flow_scale`` 0.5 (TensorRT half-resolution flow) gains
-        ``decide.HALF_FLOW_GAIN``; what live playback learned about this engine at
-        this size on this GPU (``livelimits``) multiplies the result. An engine
+        what live playback learned about this engine at this size on this GPU
+        (``livelimits``) multiplies the result. An engine
         and size replaced on this video (``video_limits``) get ``EXCLUDED_FPS``,
         with or without a benchmark."""
         current = self.gpu_device(cfg)
         size = (facts.width, facts.height)
-        if self.limit_key(backend, model, size, flow_scale, current).text() in self.video_limits:
+        if self.limit_key(backend, model, size, current).text() in self.video_limits:
             return EXCLUDED_FPS
         history = capabilities.resolve(_BENCH_HISTORY)
         if history is None:
@@ -1095,11 +1179,9 @@ class _Session:
         if not found:
             return None
         rate = max(found)[2] / LIVE_HEADROOM * (DRBA_SPEED if drba else 1.0)
-        if flow_scale != 1.0:
-            rate *= decide.HALF_FLOW_GAIN
         if self.power.constrained:
             rate /= PRESSURE_HEADROOM
-        key = self.limit_key(backend, model, (facts.width, facts.height), flow_scale, current)
+        key = self.limit_key(backend, model, (facts.width, facts.height), current)
         return rate * livelimits.factor(self.live_limits(), key)
 
     def read_power(self) -> PowerSnapshot:
@@ -1119,7 +1201,6 @@ class _Session:
         backend: BackendId,
         model: str | None,
         size: tuple[int, int],
-        flow_scale: float,
         device: Any,
     ) -> livelimits.LimitKey:
         uuid = getattr(device, "uuid", None)
@@ -1129,7 +1210,6 @@ class _Session:
             model,
             size[0],
             size[1],
-            flow_scale,
         )
 
     def trt_building(self) -> bool:
@@ -1216,7 +1296,7 @@ class _Session:
             return
         cfg, _ = self.config()
         size = self.run_size or (src.width, src.height)
-        key = self.limit_key(self.backend, self.model, size, self.run_flow, self.gpu_device(cfg))
+        key = self.limit_key(self.backend, self.model, size, self.gpu_device(cfg))
         name = decide.BACKEND_NAMES.get(self.backend, self.backend.value)
         engine = f"{name} {self.model}" if self.model else name
         why: str | None = None
@@ -1344,6 +1424,8 @@ class _Session:
                     self.remove_pending = False
         self.active_gen = None
         self.detector.filter_stopped()
+        if not self.remove_pending:
+            await self.frames_leave("smoothing is off")
         # even pacing belongs to a running target: turned off, rolled back or
         # bypassed, mpv's own blending settings come back (an apply that adds a
         # filter again decides anew)
@@ -1363,8 +1445,9 @@ class _Session:
         self.step_down_to = None
         self.drop_rate = None
         self._counters.clear()
-        self.run_size, self.run_flow, self.run_block = None, 1.0, False
+        self.run_size, self.run_block = None, False
         self.run_fit = False
+        self.run_content, self.run_content_found = ContentKind.AUTO, False
         self.run_fill = False
 
     async def bypass_with(self, reason: BypassReason, *, display_hz: float | None = None) -> None:
@@ -1502,8 +1585,6 @@ class _Session:
         width: int,
         height: int,
         cfg: Config | None,
-        *,
-        flow_scale: float = 1.0,
     ) -> trt.EngineKey | None:
         dev = self.gpu_device(cfg)
         cache: dict[str | None, tuple[str, str] | None] = self.ctx.state(TRT_IDENTITY, dict)
@@ -1521,7 +1602,6 @@ class _Session:
             model,
             width,
             height,
-            flow_scale=flow_scale,
         )
 
     def engine_build_failed(self, key: trt.EngineKey | None) -> Msg | None:
@@ -1745,6 +1825,318 @@ class _Session:
         if self.lut is not None:
             await self.sync_lut(None)
         await self.sync_pacing(None)
+        # nobody would follow the screen, pauses or seeks: the filter keeps
+        # making twice the source rate and mpv shows it as it is
+        await self.frames_leave("ButterEye disconnected")
+
+    # ---- the frames layer (mpvctl.frames, experimental) ----
+    def frames_layer_k(self, cascade: Fraction | None, target: Fraction, profile: Profile) -> int:
+        """k for layer mode, 0 when it does not apply: only an mpv started with
+        the layer, only where the decision is a cascade (``cascade_target`` with
+        n >= 2, never for 2D animation), only k up to ``frames.KMAX``, and not
+        after the layer failed to take over in this session."""
+        if (
+            self.frames is None
+            or self.frames_failed
+            or cascade is None
+            or profile.content is ContentKind.ANIMATION
+        ):
+            return 0
+        return gpuframes.layer_k(cascade, target) or 0
+
+    def frames_restart_check(self, stats: gpuframes.LayerStats) -> None:
+        self.frames_base = stats
+        self.frames_play_s = 0.0
+        self.frames_tick = None
+
+    async def frames_engage(self, k: int, real_hz: float, size: tuple[int, int]) -> None:
+        """Layer mode starts: the control block gets k, then mpv gets
+        ``display-fps-override`` = real refresh / k, then ``audio-delay`` gets
+        the layer's delay added. ``real_hz`` is the screen's rate as decided
+        (from before any override).
+
+        Applied again while in layer mode with the same k (Alt+c, a TensorRT
+        engine, a step-down; ``apply`` leaves only for another k), mpv's
+        override is ButterEye's: the user's own is not read again, and the
+        audio delay's add replaces the one in it instead of stacking."""
+        block = self.frames
+        if block is None or real_hz <= 0:
+            return
+        rect: tuple[int, int, int, int] | None = None
+        with contextlib.suppress(IpcClosed, MpvError, TimeoutError):
+            rect = gpuframes.video_rect(await self.ipc.get("osd-dimensions", timeout_s=1.0))
+        stats = block.stats()
+        if self.real_hz is None:  # not in layer mode: mpv's override is the user's
+            self.frames_override_restore = 0.0
+            with contextlib.suppress(IpcClosed, MpvError, TimeoutError):
+                own = await self.ipc.get("display-fps-override", timeout_s=1.0)
+                if isinstance(own, (int, float)) and not isinstance(own, bool) and own > 0:
+                    self.frames_override_restore = float(own)
+        self.real_hz = real_hz  # from here on mpv's display-fps is not taken back
+        self.frames_k = k
+        self.frames_missed = 0
+        self.frames_last = stats
+        self.frames_hz0 = stats.refresh_hz
+        self.frames_confirmed = False
+        self.frames_screen_moved = False
+        self.frames_rect_at = time.monotonic()
+        self.frames_restart_check(stats)
+        # k first: until the override arrives mpv runs slow for a moment, never fast
+        block.set(k=k, mode=gpuframes.MODE_MC, rect=rect or (0, 0, 0, 0), source_h=size[1],
+                  event=True)  # fmt: skip
+        override = gpuframes.override_fps(real_hz, k)
+        try:
+            await self.ipc.command("set_property", "display-fps-override", override)
+        except (IpcClosed, MpvError, TimeoutError, CommandRefused) as exc:
+            await self.frames_fallback(f"display-fps-override was refused: {exc}")
+            return
+        # the layer holds each mpv image back k - 1 refreshes behind its own
+        # frames (measured: +13.2 ms at k=3 on 144 Hz); the refresh it measures
+        # is used when it agrees with the decided rate
+        refresh = stats.refresh_hz
+        if refresh is None or abs(refresh - real_hz) > FRAMES_HZ_TOLERANCE:
+            refresh = real_hz
+        await self.frames_audio((k - 1) / refresh)
+        self.log.info(
+            "%s: the frames layer makes the last frames: k=%d, mpv at %.3f fps "
+            "(display-fps-override), screen %.3f Hz, audio %.1f ms later, video %s",
+            self.title, k, override, real_hz, self.frames_audio_add * 1000,
+            "%d,%d %d × %d" % rect if rect else "rectangle unknown",
+        )  # fmt: skip
+
+    def frames_ledger(self) -> gpuframes.AudioLedger:
+        path = self.ctx.paths.state_dir / gpuframes.AUDIO_FILE
+        return self.ctx.state(FRAMES_AUDIO, lambda: gpuframes.AudioLedger(path))
+
+    def frames_file_key(self) -> str | None:
+        """The ledger's key for the file mpv plays (``path``), None when unknown."""
+        path = self.props.get("path")
+        return gpuframes.audio_key(path) if isinstance(path, str) and path else None
+
+    def frames_ours(self, cur: float) -> bool:
+        """Is layer mode's add (``frames_audio_add``) in mpv's audio-delay
+        ``cur``? Yes while its file plays (the user may have changed the value
+        meanwhile: theirs plus the add). After another file started only while
+        mpv still holds the value it had: a resume file or per-file option of
+        the new file sets that file's own value, with no add in it."""
+        if not self.frames_audio_add:
+            return False
+        if not self.frames_file_ended:
+            return True
+        last = self.frames_audio_value
+        return last is not None and abs(cur - last) <= gpuframes.AUDIO_MATCH_S
+
+    def frames_audio_seen(self, data: object) -> None:
+        """mpv's audio-delay changed (the user's keys, or ButterEye's own set).
+        While layer mode's add is in it for its file, the value is followed,
+        in the ledger too: mpv may write a resume file at any moment."""
+        if not self.frames_audio_add or self.frames_file_ended:
+            return
+        if not isinstance(data, (int, float)) or isinstance(data, bool):
+            return
+        self.frames_audio_value = float(data)
+        if self.frames_audio_key is not None:
+            self.frames_ledger().note(self.frames_audio_key, float(data), self.frames_audio_add)
+
+    async def frames_audio(self, add: float) -> None:
+        """Make layer mode's part of ``audio-delay`` ``add`` seconds on top of
+        the user's own (taken off again by ``frames_leave``). An add still in it
+        (layer mode applied again, a removal mpv did not answer) is replaced,
+        and a value a resume file brought with an add in it (``AudioLedger``)
+        is not added to twice.
+
+        ``audio-delay`` stays in ``watch-later-options``: mpv writes a resume
+        file on quit inside its quit command, before any hook or IPC message
+        could take the add off, and taking the name out of the list would lose
+        the user's own offset for that file. The ledger records what such a
+        file holds instead."""
+        try:
+            cur = await self.ipc.get("audio-delay", timeout_s=1.0)
+        except (IpcClosed, MpvError, TimeoutError) as exc:
+            self.log.warning("%s: could not change the audio delay: %s", self.title, exc)
+            return
+        if not isinstance(cur, (int, float)) or isinstance(cur, bool):
+            return
+        cur = float(cur)
+        key = self.frames_file_key()
+        if self.frames_ours(cur):
+            own = cur - self.frames_audio_add
+        elif key is not None:
+            own = cur - self.frames_ledger().match(key, cur)
+        else:
+            own = cur
+        value = own + add
+        try:
+            await self.ipc.command("set_property", "audio-delay", value)
+        except TimeoutError:
+            pass  # sent: mpv sets it when it catches up
+        except (IpcClosed, MpvError, CommandRefused) as exc:
+            self.log.warning("%s: could not change the audio delay: %s", self.title, exc)
+            value, add = cur, cur - own  # mpv holds what it held
+        self.frames_audio_add = add
+        self.frames_audio_value = value
+        self.frames_audio_key = key
+        self.frames_file_ended = False
+        if key is not None and add:
+            self.frames_ledger().note(key, value, add)
+
+    async def frames_audio_restore(self) -> None:
+        """Take layer mode's add off ``audio-delay``: the user's own value again
+        (one they changed meanwhile too). A player that does not answer the
+        read keeps the add, retried on the tick (``step``); a set that timed
+        out was sent and still reaches mpv, so it is never sent twice."""
+        add = self.frames_audio_add
+        if not add:
+            return
+        try:
+            cur = await self.ipc.get("audio-delay", timeout_s=1.0)
+        except TimeoutError:
+            self.log.warning(
+                "%s: mpv did not answer; the layer's audio delay is taken off later", self.title
+            )
+            return
+        except (IpcClosed, MpvError) as exc:
+            self.log.warning("%s: could not put the audio delay back: %s", self.title, exc)
+            cur = None
+        value = float(cur) if isinstance(cur, (int, float)) and not isinstance(cur, bool) else None
+        ours = value is not None and self.frames_ours(value)
+        self.frames_audio_add = 0.0
+        self.frames_audio_value = None
+        self.frames_file_ended = False
+        if value is None or not ours:
+            return
+        with contextlib.suppress(IpcClosed, MpvError, TimeoutError, CommandRefused):
+            await self.ipc.command("set_property", "audio-delay", value - add)
+
+    async def frames_leave(self, why: str) -> None:
+        """Layer mode ends: mpv's own rate first (so it never runs fast), then
+        the layer stops adding frames, then the user's audio delay comes back
+        (``frames_audio_restore``: a player that does not answer keeps the add
+        until it does). A set that times out was sent and still reaches mpv,
+        in order, before anything ButterEye asks next; a player known to be
+        unresponsive keeps all of it (the removal is retried, ``remove_filter``)."""
+        if not self.frames_k and self.real_hz is None:
+            return
+        if self.unresponsive:
+            return
+        self.frames_k = 0
+        live = not self.ipc.closed.is_set()
+        if live:
+            with contextlib.suppress(IpcClosed, MpvError, TimeoutError, CommandRefused):
+                await self.ipc.command(
+                    "set_property",
+                    "display-fps-override",
+                    self.frames_override_restore,
+                    timeout_s=1.0,
+                )
+        self.frames_override_restore = 0.0
+        if self.frames is not None:
+            self.frames.set(k=1, event=True)
+        if live:
+            await self.frames_audio_restore()
+        else:  # mpv is gone (its resume file is in the ledger)
+            self.frames_audio_add = 0.0
+            self.frames_audio_value = None
+            self.frames_file_ended = False
+        self.real_hz = None
+        self.frames_screen_moved = False
+        if live:
+            # mpv's own rate again: another screen's after a move
+            with contextlib.suppress(IpcClosed, MpvError, TimeoutError):
+                disp = await self.ipc.get("display-fps", timeout_s=1.0)
+                if isinstance(disp, (int, float)) and not isinstance(disp, bool) and disp > 0:
+                    self.props["display-fps"] = float(disp)
+        self.detector.note_restart(time.monotonic())
+        self.log.info("%s: the frames layer stops (%s)", self.title, why)
+
+    async def frames_fallback(self, why: str) -> None:
+        """The layer did not take over: today's cascade in VapourSynth for the
+        rest of the session, with a notice; decided again on the next tick."""
+        self.frames_failed = True
+        self.log.warning(
+            "%s: the frames layer did not take over (%s); the cascade runs in VapourSynth",
+            self.title, why,
+        )  # fmt: skip
+        await self.frames_leave(why)
+        msg = gpuframes.fallback_notice()
+        self.notice = msg
+        self.emit(Notice(msg, None, self.sid))
+        self.frames_redecide_at = time.monotonic()
+
+    async def frames_watch(self, now: float) -> None:
+        """Every tick in layer mode: follow the screen, sum the missed refreshes,
+        keep the video rectangle current and check that the layer really makes
+        the frames (``frames_fallback`` when it does not)."""
+        block = self.frames
+        if block is None or not self.frames_k:
+            return
+        if self.frames_screen_moved:
+            await self.frames_leave("the window moved to another screen")
+            self.frames_redecide_at = now + self.opts.display_debounce_s
+            return
+        stats = block.stats()
+        last = self.frames_last
+        if stats.app_presents < last.app_presents:
+            # mpv made a new swapchain: its counters start from 0
+            self.frames_missed += stats.missed_refreshes
+            self.frames_base = gpuframes.LayerStats()
+        else:
+            self.frames_missed += max(0, stats.missed_refreshes - last.missed_refreshes)
+        self.frames_last = stats
+        # the layer reads a swapchain's refresh once, when it is made, and a
+        # swapchain made while the window moves can keep the other screen's
+        # value (seen: 60 Hz on a 144 Hz screen after a move back). So only a
+        # change during layer mode, to a rate that is not the decided one,
+        # counts as another screen; display-names is the main signal
+        hz = stats.refresh_hz
+        if hz is not None and self.frames_hz0 is None:
+            self.frames_hz0 = hz
+        elif (
+            hz is not None
+            and self.frames_hz0 is not None
+            and self.real_hz is not None
+            and abs(hz - self.frames_hz0) > FRAMES_HZ_TOLERANCE
+            and abs(hz - self.real_hz) > FRAMES_HZ_TOLERANCE
+        ):
+            await self.frames_leave(f"the screen refreshes at {hz:.3f} Hz now")
+            self.frames_redecide_at = now + self.opts.display_debounce_s
+            return
+        if now - self.frames_rect_at >= FRAMES_RECT_S:
+            self.frames_rect_at = now
+            with contextlib.suppress(IpcClosed, MpvError, TimeoutError):
+                rect = gpuframes.video_rect(await self.ipc.get("osd-dimensions", timeout_s=0.5))
+                if rect is not None and rect != block.rect:
+                    block.set(rect=rect)
+        props = self.props
+        playing = self.detector.flowing and not any(
+            props.get(k) is True for k in ("pause", "seeking", "core-idle", "paused-for-cache")
+        )
+        last_t, self.frames_tick = self.frames_tick, now
+        if playing and last_t is not None:
+            self.frames_play_s += min(1.0, max(0.0, now - last_t))
+        need = self.opts.frames_window_s if self.frames_confirmed else self.opts.frames_check_s
+        if self.frames_play_s < need:
+            return
+        if not stats.written:
+            await self.frames_fallback("the layer wrote nothing: it is not loaded in mpv")
+            return
+        base = self.frames_base
+        app = stats.app_presents - base.app_presents
+        made = stats.frames_presents - base.frames_presents
+        if app <= 0:
+            self.frames_restart_check(stats)  # mpv showed nothing (a hidden window)
+            return
+        if made < FRAMES_MIN_SHARE * app:
+            await self.frames_fallback(f"{made} of {app} presents took the layer's path")
+            return
+        if not self.frames_confirmed:
+            self.frames_confirmed = True
+            self.log.info(
+                "%s: the frames layer took over: %d of %d presents, %d with motion-"
+                "compensated frames, %.1f Hz measured",
+                self.title, made, app, stats.mc_made - base.mc_made, hz or 0.0,
+            )  # fmt: skip
+        self.frames_restart_check(stats)
 
     def compare_on(self, cfg: Config | None) -> bool:
         """The A/B split view: this session's Alt+c choice, else the setting."""
@@ -1789,6 +2181,91 @@ class _Session:
             )
         for m in msgs:
             self.emit(Notice(m, None, self.sid))
+
+    def content_kind(self, profile: Profile) -> tuple[ContentKind, bool]:
+        """What ``profile`` smooths this video as, and whether the probe decided
+        it: the profile's own choice, or for an Auto profile the 2D rules when
+        the probe found hand-drawn animation (``mpvctl.content``)."""
+        if profile.content is not ContentKind.AUTO:
+            return profile.content, False
+        found = self.content_found
+        if found is not None and found.kind is ContentKind.ANIMATION:
+            return ContentKind.ANIMATION, True
+        return ContentKind.AUTO, False
+
+    def content_wait(self, profile: Profile, facts: SourceFacts) -> bool:
+        """Start the content probe for this file (once; a remembered answer is
+        taken at once) when the profile leaves the kind of video to ButterEye.
+        True while the first decision should still wait for the answer: at most
+        ``content_wait_s``, after which the decision goes ahead and a later
+        answer decides again (``content_changed``)."""
+        if profile.content is not ContentKind.AUTO:
+            return False
+        path = facts.path
+        if self.content_file != path:
+            if self.content_task is not None and not self.content_task.done():
+                self.content_task.cancel()
+            self.content_file, self.content_found = path, None
+            self.content_task, self.content_since, self.content_changed = None, None, False
+            cache = self.content_cache()
+            key = content_probe.file_key(path)
+            self.content_found = cache.get(key)
+            if self.content_found is None and content_probe.local_film(path, float(facts.fps)):
+                self.content_since = time.monotonic()
+                self.content_task = self.ctx.spawn(
+                    self.probe_content(path, key, float(facts.fps)),
+                    name=f"mpvctl-{self.sid}-content",
+                )
+        task = self.content_task
+        if task is None or task.done() or self.content_since is None:
+            return False
+        return time.monotonic() - self.content_since < self.opts.content_wait_s
+
+    def content_cache(self) -> content_probe.Cache:
+        return self.ctx.state(
+            CONTENT_CACHE,
+            lambda: content_probe.Cache(self.ctx.paths.state_dir / content_probe.CACHE_FILE),
+        )
+
+    async def probe_content(self, path: str, key: str | None, fps: float) -> None:
+        """Look at the file in the background and keep the answer. Any failure
+        leaves the video as it was: an Auto profile then plays as before."""
+        try:
+            length = await self.ipc.get("duration", timeout_s=2.0)
+        except IpcClosed, MpvError, TimeoutError:
+            length = None
+        seconds = (
+            float(length)
+            if isinstance(length, (int, float)) and not isinstance(length, bool)
+            else None
+        )
+        if not content_probe.worth_probing(path, fps, seconds) or seconds is None:
+            return
+        try:
+            found = await content_probe.probe(path, seconds)
+        except OSError as exc:
+            self.log.info("%s: could not look at the video's content: %s", self.title, exc)
+            return
+        if found is None or self.content_file != path:
+            return
+        self.content_found = found
+        self.content_cache().put(key, found)
+        if found.kind is None:
+            self.log.info(
+                "%s: too little moves in the samples to tell hand-drawn animation "
+                "from other video (%d frame pairs)",
+                self.title, found.judged,
+            )  # fmt: skip
+        else:
+            self.log.info(
+                "%s: a drawing is held in %.0f %% of %d moving frame pairs: %s",
+                self.title, found.share * 100, found.judged,
+                "hand-drawn 2D animation"
+                if found.kind is ContentKind.ANIMATION
+                else "not hand-drawn animation",
+            )  # fmt: skip
+        if found.kind is ContentKind.ANIMATION and self.run_content is not ContentKind.ANIMATION:
+            self.content_changed = True  # the tick decides again (step)
 
     def display_unsettled(self, props: Mapping[str, object]) -> bool:
         """mpv's window is not on a screen yet, so ``display-fps`` is a guess.
@@ -1859,6 +2336,13 @@ class _Session:
             return  # PENDING: "waiting for the video window" (§4.2 step 2)
         if self.display_unsettled(props):
             return  # PENDING: the rate mpv reports is not this window's screen yet
+        if self.content_wait(profile, facts):
+            return  # PENDING: still looking at what kind of video this is
+        kind, kind_found = self.content_kind(profile)
+        if kind is not profile.content:
+            # an Auto profile on a video the probe found to be hand-drawn: every
+            # rule below reads the profile, so it is the 2D profile from here on
+            profile = dataclasses.replace(profile, content=kind)
 
         paths = self.ctx.paths
         model_dir = paths.rpm_data_dir / MODEL_SUBDIR
@@ -2077,7 +2561,6 @@ class _Session:
             via = await cascade_choice(cands, pick, size)
             if via is not None:
                 cp, csize, mid = via
-                self.flow_scale = 1.0
                 self.cascade = mid
                 return (
                     cp,
@@ -2125,23 +2608,6 @@ class _Session:
             pick = choose(options, forced=False)
             size: tuple[int, int] | None = fit
             forced_used = False
-            if (
-                pick.target.bypass is BypassReason.NO_REALTIME
-                and BackendId.RIFE_TRT in cands
-                and base[0] * base[1] >= decide.HALF_FLOW_MIN_PIXELS
-                and not trt.is_drba(trt_model)
-            ):
-                # TensorRT with half-resolution flow (M0(q)) before a smaller picture
-                half_cap = await self.sustainable_fps(
-                    BackendId.RIFE_TRT, trt_model, base_facts, cfg, flow_scale=0.5
-                )
-                if fit is not None:
-                    half_cap = decide.shrink_cap(half_cap, *decoded)
-                half = [decide.EngineOption(BackendId.RIFE_TRT, half_cap)]
-                hp = choose(half, forced=False)
-                if hp.backend is BackendId.RIFE_TRT and hp.target.bypass is None:
-                    self.flow_scale = 0.5
-                    return hp, fit, False, [decide.half_flow_notice()], False
             if pick.target.bypass is BypassReason.NO_REALTIME and full_size:
                 # the user chose the video's own size over keeping up: no smaller
                 # size and no block mode, smooth uncapped (frames may drop)
@@ -2219,14 +2685,13 @@ class _Session:
                             return bp, fit, False, [decide.blockfps_notice()], True
             return pick, size, forced_used, extra, False
 
-        self.flow_scale = 1.0
         self.cascade = None
         pick, size, forced_used, extra, mv_block = await decide_with(order)
         trt_key: trt.EngineKey | None = None
         self.trt_waiting = None
         if pick.backend is BackendId.RIFE_TRT and trt_inst is not None and trt_model is not None:
             w, h = size or (facts.width, facts.height)
-            trt_key = await self.trt_key(trt_inst, trt_model, w, h, cfg, flow_scale=self.flow_scale)
+            trt_key = await self.trt_key(trt_inst, trt_model, w, h, cfg)
             ready = trt_key is not None and trt.is_ready(trt.engine_dir(paths, trt_key))
             if not ready:
                 failed = self.engine_build_failed(trt_key)
@@ -2296,6 +2761,14 @@ class _Session:
         if profile.concurrent_frames:
             concurrent = profile.concurrent_frames
         cascade = self.cascade if backend is BackendId.RIFE_TRT else None
+        # layer mode (mpvctl.frames): VapourSynth makes only the cascade's first
+        # stage, RIFE to twice the source rate, and the frames layer the rest at
+        # k = target / mid as mpv presents
+        layer_k = self.frames_layer_k(cascade, tc.target, profile)
+        vs_cascade = None if layer_k else cascade
+        vf_target = cascade if layer_k and cascade is not None else tc.target
+        if cascade is not None and self.frames is not None and self.frames_failed:
+            notes.append(gpuframes.fallback_notice())
         hold_fill, fill_why = await self.hold_fill_choice(
             profile,
             backend,
@@ -2334,6 +2807,7 @@ class _Session:
         h = facts.height
         gen = self.next_gen()
         self.run_size = size
+        self.run_content, self.run_content_found = kind, kind_found
         self.run_fit = fit is not None and size == fit
         if fit is not None and fit != self.fit_logged:
             self.fit_logged = fit
@@ -2342,7 +2816,6 @@ class _Session:
                 "screen's size, %s × %s",
                 self.title, decoded[0], decoded[1], fit[0], fit[1],
             )  # fmt: skip
-        self.run_flow = self.flow_scale if backend is BackendId.RIFE_TRT else 1.0
         # live correction only second-guesses ButterEye's own choice: not an engine
         # the user picked, nor "smooth at full size" (frames may drop by choice)
         self.auto_chosen = wanted is None and not forced_used
@@ -2355,9 +2828,9 @@ class _Session:
             gen=gen,
             backend=backend,
             src_fps=facts.fps,
-            target_fps=tc.target,
-            cascade_fps=cascade,
-            cascade_gpu_id=self.gpu_index(cfg) if cascade is not None else None,
+            target_fps=vf_target,
+            cascade_fps=vs_cascade,
+            cascade_gpu_id=self.gpu_index(cfg) if vs_cascade is not None else None,
             buffered_frames=buffered,
             concurrent_frames=concurrent,
             matrix=decide.matrix_name(vp.get("colormatrix"), h),
@@ -2402,7 +2875,12 @@ class _Session:
             decide.BACKEND_NAMES.get(backend, backend.value),
             f" {model}" if model else "",
             (
-                f" to {decide.fmt_rate(cascade)} fps, then GPU motion vectors"
+                f" to {decide.fmt_rate(cascade)} fps, then "
+                + (
+                    f"the frames layer at present (k={layer_k})"
+                    if layer_k
+                    else "GPU motion vectors"
+                )
                 if cascade is not None
                 else ""
             ),
@@ -2426,7 +2904,7 @@ class _Session:
                         paths,
                         # a cascade's TensorRT stage reads no PLUGIN_DIR; mvgpu's does
                         decide.MVGPU_PLUGIN
-                        if cascade is not None
+                        if vs_cascade is not None
                         else decide.BACKEND_PLUGIN.get(backend),
                     )
                 ),
@@ -2437,6 +2915,10 @@ class _Session:
             # the running one goes the normal rollback way instead of the
             # controller dying with mpv still playing an unmanaged filter
             self.failure.append(f"could not write the script {self.script_path.name}: {exc}")
+        if self.frames_k and self.frames_k != layer_k and not self.failure:
+            # the new filter makes every frame itself (or another k): mpv's own
+            # rate and the user's audio delay come back first
+            await self.frames_leave("the new filter makes the frames")
         self.busy = True
         if backend is BackendId.RIFE_NCNN and not self.failure:
             mark_rife_session(self.ctx.paths, (self.proc.pid,))  # BE-1030 window starts
@@ -2451,7 +2933,7 @@ class _Session:
                         self.vf_restarts = self.restart_seq  # the filter's comes after this
                 except MpvError as exc:
                     self.failure.append(f"vf add: {exc.error}")
-            ok = not self.failure and await self.verify(gen, float(tc.target))
+            ok = not self.failure and await self.verify(gen, float(vf_target))
         finally:
             self.busy = False
         if backend in _SWITCHABLE:
@@ -2479,8 +2961,14 @@ class _Session:
         self.bypass_display = None
         self.filter = FilterState.ACTIVE if self.detector.flowing else FilterState.PENDING
         self.bypass = None
+        if layer_k:
+            cascade_keys = {decide.cascade_notice(None).key, decide.cascade_notice(1).key}
+            notes = [n for n in notes if n.key not in cascade_keys]
+            notes.append(gpuframes.layer_notice())
         self.notice = notes[0] if len(notes) == 1 else (notes[-1] if notes else None)
         self.health, self.health_code = Health.OK, None
+        if layer_k:
+            await self.frames_engage(layer_k, facts.display_hz, size or (facts.width, facts.height))
         # B3: the OSD line and the helper's status say it (osd.parts, status_text);
         # the GUI reads the same from the snapshot (decide.uneven_pacing)
         pacing = (tc.target, decide.display_rate(facts.display_hz))
@@ -3040,6 +3528,10 @@ class _Session:
             await self.begin_new_file()
         if self.refetch_props:
             await self.refetch_file_props()
+        if self.content_changed and not self.busy:
+            self.content_changed = False
+            if self.want and self.active_gen is not None:
+                await self.apply(raise_on_fail=False)  # the 2D rules, hot reload
         await self.check_preload_video()
         if self.preloading and self.preload_until is not None and now >= self.preload_until:
             await self.release_preload("time limit")
@@ -3066,6 +3558,7 @@ class _Session:
             if entry is None or entry.get("enabled") is False:
                 self.active_gen = None
                 self.detector.filter_stopped()
+                await self.frames_leave("the filter was removed in mpv")
                 self.want = False
                 self.filter = FilterState.OFF
                 self.notice = Msg("Interpolation was turned off in mpv.")
@@ -3084,6 +3577,15 @@ class _Session:
             self.source = decide.source_facts(
                 self.props, path=str(self.props.get("path") or self.file)
             )
+
+        if self.frames_k:
+            await self.frames_watch(now)
+        elif self.frames_audio_add and not self.unresponsive:
+            await self.frames_audio_restore()  # layer mode left; mpv did not answer then
+        if self.frames_redecide_at is not None and now >= self.frames_redecide_at and not self.busy:
+            self.frames_redecide_at = None
+            if self.want and self.active_gen is not None:
+                await self.apply(raise_on_fail=False)  # the screen, or no layer (§4.11)
 
         disp = self.props.get("display-fps")
         if isinstance(disp, (int, float)) and disp > 0:
@@ -3115,7 +3617,12 @@ class _Session:
         # while held nothing plays: no drop verdict, no engine replaced (the
         # window starts at the release, end_preload)
         if self.active_gen is not None and not self.preloading:
-            verdict = self.detector.update(sample_from(self.props, now))
+            sample = sample_from(self.props, now)
+            if self.frames_k:
+                # layer mode: mpv's late count says little (each of its frames is k
+                # refreshes); what the screen missed comes from the layer
+                sample = dataclasses.replace(sample, vo_delayed=self.frames_missed)
+            verdict = self.detector.update(sample)
             self.drop_rate = verdict.drop_rate
             self.note_counters(now)
             if verdict.flowing and self.filter is FilterState.PENDING:
@@ -3194,7 +3701,7 @@ class _Session:
         self.clean_s = 0.0
         cfg, _ = self.config()
         size = self.run_size or (self.source.width, self.source.height)
-        key = self.limit_key(self.backend, self.model, size, self.run_flow, self.gpu_device(cfg))
+        key = self.limit_key(self.backend, self.model, size, self.gpu_device(cfg))
         limits = self.live_limits()
         old = livelimits.factor(limits, key)
         if old >= 1.0:
@@ -3252,6 +3759,8 @@ class _Session:
         self.detector.filter_stopped()
         with contextlib.suppress(Exception):
             await self.ipc.close()
+        if self.frames is not None:
+            self.frames.close()
         self.ctx.forget_coalesced(self.sid)
         snap = self.snapshot()
         self.mark_published(snap)
@@ -3316,9 +3825,17 @@ def _profile_known(ctx: ProviderContext, profile_id: str | None) -> None:
 
 
 async def play(
-    ctx: ProviderContext, file: Path, *, profile_id: str | None, op: OpContext
+    ctx: ProviderContext,
+    file: Path,
+    *,
+    profile_id: str | None,
+    op: OpContext,
+    gpu_frames: bool | None = None,
 ) -> SessionId:
-    """Launch mpv on ``file``; returns once IPC is up and ``SessionAdded`` was emitted."""
+    """Launch mpv on ``file``; returns once IPC is up and ``SessionAdded`` was emitted.
+
+    ``gpu_frames``: start mpv with the frames layer (``mpvctl.frames``) or not,
+    for this video only; None follows ``[general] gpu_frames``."""
     reg = registry(ctx)
     opts = reg.options
     _profile_known(ctx, profile_id)
@@ -3357,21 +3874,46 @@ async def play(
         lut = luts.resolve_lut(paths, general.lut)
     # "Start videos smooth": only for an mpv ButterEye starts (never one it attaches to)
     preload_s = general.preload_max_s if general is not None and general.preload else None
-    argv = launcher.build_argv(
-        opts.mpv,
-        include=paths.mpv_include,
-        socket=socket,
-        file=file,
-        extra=opts.extra_args,
-        shaders=(shader,) if shader is not None else (),
-        lut=lut,
-        preload_s=preload_s,
-    )
-    launcher.prune_logs(paths.logs_dir, runtime)
-    launcher.prepare_socket(socket)
+    # the frames layer (experimental): only in an mpv ButterEye starts, and only
+    # where it can work; the env and options are fixed for this mpv's lifetime
+    if gpu_frames is None:
+        gpu_frames = general is not None and general.gpu_frames
+    env = opts.env
+    extra = tuple(opts.extra_args)
+    block: gpuframes.ControlBlock | None = None
+    frames_note: Msg | None = None
+    if gpu_frames:
+        base_env = dict(os.environ) if env is None else dict(env)
+        why = osapi.frames_layer_status(base_env)
+        layer = osapi.frames_layer(base_env) if why is None else None
+        if layer is None:
+            frames_note = gpuframes.unavailable_notice(why or "layer")
+            _log.info("the frames layer is not used: %s", why or "layer")
+        else:
+            block = gpuframes.ControlBlock(runtime / f"mpv-{sid}.frames")
+            env = gpuframes.layer_env(base_env, shm=block.path, add_path=layer.add_path)
+            extra = (*gpuframes.MPV_ARGS, *extra)  # a test's own options come after
+            _log.info("mpv starts with the frames layer (%s)", layer.manifest)
+    try:
+        argv = launcher.build_argv(
+            opts.mpv,
+            include=paths.mpv_include,
+            socket=socket,
+            file=file,
+            extra=extra,
+            shaders=(shader,) if shader is not None else (),
+            lut=lut,
+            preload_s=preload_s,
+        )
+        launcher.prune_logs(paths.logs_dir, runtime)
+        launcher.prepare_socket(socket)
+    except BaseException:
+        if block is not None:
+            block.close()
+        raise
     reg.launching.add(socket)  # B23: not an orphan for discover() while it starts
     try:
-        proc = await launcher.spawn_mpv(argv, log_path, env=opts.env)
+        proc = await launcher.spawn_mpv(argv, log_path, env=env)
         try:
             op.report(Msg("Connecting to mpv"))
             ipc = await launcher.connect(socket, proc, log_path, timeout_s=opts.connect_timeout_s)
@@ -3380,6 +3922,7 @@ async def play(
                 log_path=log_path, script_path=script, profile_request=profile_id,
             )  # fmt: skip
             session.shader = shader  # added at launch
+            session.frames = block
             session.preload_s = preload_s
             session.start_preload()
             session.lut = str(lut) if lut is not None else None
@@ -3397,11 +3940,17 @@ async def play(
             launcher.remove_runtime_files(runtime, sid)
             raise
         reg.sessions[sid] = session
+    except BaseException:
+        if block is not None:
+            block.close()
+        raise
     finally:
         reg.launching.discard(socket)
     snap = session.snapshot()
     session.mark_published(snap)
     ctx.emit(SessionAdded(snap))
+    if frames_note is not None:
+        session.emit(Notice(frames_note, None, sid))
     session.task = ctx.spawn(session.run(), name=f"mpvctl-{sid}")
     return sid
 

@@ -705,7 +705,7 @@ async def test_session_4k_smooths_at_a_smaller_size(
     assert snap.backend is BackendId.RIFE_NCNN and snap.target_fps == 48
     assert snap.notice == decide.smaller_size_notice(720)
     assert s.ipc.sizes() == [(1280, 720)]  # type: ignore[attr-defined]
-    assert snap.smooth_size == (1280, 720) and snap.flow_scale == 1.0  # the row says so
+    assert snap.smooth_size == (1280, 720)  # the row says so
     # uhd is decided at the size RIFE really runs at
     assert '"uhd":false' in str(s.ipc.commands[-1][2])  # type: ignore[attr-defined]
 
@@ -1267,7 +1267,7 @@ async def test_an_engine_replaced_on_this_video_is_never_chosen_again_for_it(
     facts = _facts(1920, 1080)
     cfg = s.ctx.config()
     assert await s.sustainable_fps(BackendId.MVTOOLS, None, facts, cfg) is None
-    key = s.limit_key(BackendId.MVTOOLS, None, (1920, 1080), 1.0, s.gpu_device(cfg))
+    key = s.limit_key(BackendId.MVTOOLS, None, (1920, 1080), s.gpu_device(cfg))
     s.video_limits.add(key.text())
     assert await s.sustainable_fps(BackendId.MVTOOLS, None, facts, cfg) == live.EXCLUDED_FPS
     assert await s.sustainable_fps(BackendId.MVTOOLS, None, _facts(1280, 720), cfg) is None

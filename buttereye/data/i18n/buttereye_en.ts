@@ -4817,6 +4817,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     </message>
     <message>
         <location filename="buttereye/gui/settings_panel.py"/>
+        <source>Make the last frames on the GPU (experimental)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
         <source>Match my display smooths at a smaller size when that keeps every frame evenly paced, instead of doubling at the full size.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -4958,6 +4963,11 @@ ButterEye never changes mpv.conf unless you ask it to.</source>
     <message>
         <location filename="buttereye/gui/settings_panel.py"/>
         <source>What happened with each video and copy, for Copy log and More logs. Off: no log buttons, and each mpv log is deleted when the video closes.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/settings_panel.py"/>
+        <source>When Match your display runs RIFE and motion vectors together (a 24 fps film on a 144 Hz screen), RIFE makes every second frame and the rest are made on the GPU as mpv shows them, which costs less. Applies to videos started after you change it.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5416,6 +5426,26 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>&amp;Video type</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>2D animation</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>2D animation, detected</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>3D or live action</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>60 fps</source>
         <translation type="unfinished"></translation>
     </message>
@@ -5426,7 +5456,17 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
+        <source>Auto</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
         <source>Auto (recommended)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Auto looks at each video: where drawings are held for two or three frames it is smoothed as 2D animation, with held drawings re-timed. Choose 2D animation or 3D or live action to decide it yourself.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5452,6 +5492,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>ButterEye couldn't start: {cause}</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>ButterEye looks at each video and treats hand-drawn animation as 2D.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5482,6 +5527,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>CPU only</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Camera footage and 3D rendering: no frame is ever re-timed.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5627,6 +5677,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>HDR10</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>Hand-drawn animation: held drawings are re-timed, and motion vectors are used last.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -6091,11 +6146,6 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     </message>
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
-        <source>motion estimated at half resolution</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="buttereye/gui/simple_window.py"/>
         <source>mpv crashed</source>
         <translation type="unfinished"></translation>
     </message>
@@ -6127,6 +6177,11 @@ It makes the profile available (mpv --profile=buttereye) but does not smooth vid
     <message>
         <location filename="buttereye/gui/simple_window.py"/>
         <source>smoothed at {w} × {h}, scaled up</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="buttereye/gui/simple_window.py"/>
+        <source>the last frames made on the GPU as mpv shows them</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

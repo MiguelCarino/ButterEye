@@ -24,6 +24,12 @@ layout(push_constant) uniform P {
     uint off; int w, h, bw, bh, sbw, sbh, sbs, radius, dir;
     float gdc, flag, abs_thr, rel;
 } p;
+// The brightness difference (gdc) from binding 4 instead of the push constant when
+// GDC_FROM_BUFFER (constant 2): the present layer measures it on the GPU. Off, as in
+// the plugin, nothing is read from the buffer.
+layout(constant_id = 2) const bool GDC_FROM_BUFFER = false;
+layout(std430, binding = 4) readonly buffer Gdc { float gdcv[]; };
+#define GDC (GDC_FROM_BUFFER ? gdcv[0] : p.gdc)
 shared float sbest[512];
 shared ivec2 sv[512];
 shared float s0[64];
@@ -31,7 +37,7 @@ shared float se0;
 shared int sflag;
 float px_a(ivec2 q) { q = clamp(q, ivec2(0), ivec2(p.w - 1, p.h - 1)); return pa[p.off + uint(q.y * p.w + q.x)]; }
 float px_c(ivec2 q) { q = clamp(q, ivec2(0), ivec2(p.w - 1, p.h - 1)); return pc[p.off + uint(q.y * p.w + q.x)]; }
-float diff(ivec2 q, ivec2 m) { return abs(px_a(q - p.dir * m) - px_c(q + (1 - p.dir) * m) - p.gdc); }
+float diff(ivec2 q, ivec2 m) { return abs(px_a(q - p.dir * m) - px_c(q + (1 - p.dir) * m) - GDC); }
 float cost(ivec2 o, ivec2 m) {
     float s = 0.0;
     for (int j = 0; j < 8; ++j)

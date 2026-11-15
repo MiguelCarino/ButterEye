@@ -229,8 +229,19 @@ class EngineKey:
     height: int
     fp16: bool = True
     half_io: bool = True
-    #: RIFE's optical flow at this x the resolution (spike M0(q)); 1.0 = full
+    #: RIFE's optical flow at this x the resolution (spike M0(q)); 1.0 = full.
+    #: Tooling only: live playback no longer picks anything else (spike M0(x):
+    #: the next smaller picture beats half flow); kept for spike tools
     flow_scale: float = 1.0
+    #: RIFE's final warp positions kept in fp32 all the way (precise warp,
+    #: spike M0(x)). False only names engines built before it; DRBA has its own
+    precise_warp: bool = True
+
+    @property
+    def warp_fp32(self) -> bool:
+        """The script keeps the final warp in fp32: RIFE only (DRBA keeps its
+        own sampling positions in fp32 already)."""
+        return self.precise_warp and not is_drba(self.model)
 
     def folder_name(self) -> str:
         entry = model_entry(self.model)
@@ -239,6 +250,8 @@ class EngineKey:
         fields = asdict(self)
         if self.flow_scale == 1.0:
             del fields["flow_scale"]  # engines built before M0(q) keep their folders
+        if not self.warp_fp32:
+            del fields["precise_warp"]  # nor do DRBA engines and those before M0(x)
         digest = hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()[:12]
         flow = "" if self.flow_scale == 1.0 else f"-flow{self.flow_scale:g}"
         return f"{short}-{self.width}x{self.height}-{prec}{flow}-{digest}"
@@ -269,6 +282,7 @@ def script_settings(
         "model": entry[0],
         "onnx": entry[1],
         "flow_scale": key.flow_scale,
+        "precise_warp": key.warp_fp32,
         "fp16": key.fp16,
         "half_io": key.half_io,
         "streams": int(streams),

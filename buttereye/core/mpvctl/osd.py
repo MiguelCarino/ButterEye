@@ -63,7 +63,10 @@ def parts(snap: SessionSnapshot, items: Sequence[str]) -> list[str]:
         out.append(rates)
     if "engine" in items:
         if snap.backend is BackendId.RIFE_TRT:
-            out.append(f"GPU · RIFE{_model(snap.model)} TensorRT")
+            out.append(
+                f"GPU · RIFE{_model(snap.model)} TensorRT"
+                + (" + GPU frames at present" if snap.gpu_frames else "")
+            )
         elif snap.backend is BackendId.RIFE_NCNN:
             out.append(f"GPU · RIFE{_model(snap.model)} Vulkan")
         elif snap.backend is BackendId.MVGPU:
@@ -78,8 +81,6 @@ def parts(snap: SessionSnapshot, items: Sequence[str]) -> list[str]:
             size = f"full {src.width}×{src.height}"
         else:
             size = ""
-        if snap.flow_scale != 1.0:
-            size += " · half-res motion"
         if size:
             out.append(size.strip(" ·"))
     if "health" in items:

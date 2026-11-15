@@ -5,7 +5,7 @@ the picture after smoothing, the power preset, and whether per-file logs are
 kept to copy. Each change is saved at once, like the main window's choices
 (``[general] osd_seconds``, ``osd_items``, ``keep_logs``, ``upscaling``,
 ``picture``, ``lut``, ``deband*``, ``compare``, ``even_pacing``,
-``cadence_first``, ``preload``, ``preload_max_s``); a slider or a number box saves
+``cadence_first``, ``preload``, ``preload_max_s``, ``gpu_frames``); a slider or a number box saves
 once it has been still for ``SLIDER_SAVE_MS``, not at every step of a drag.
 
 Only what was changed here is written over the file as loaded, so a choice the
@@ -403,6 +403,27 @@ class SettingsPanel(QWidget):
         bl.addLayout(row)
         self.preload_max.valueChanged.connect(lambda _v: self._preload_max_changed())
         self._preload_text()
+        # experimental, the frames layer (core mpvctl.frames): shown only where it
+        # can work (Linux, a Wayland session, the layer installed)
+        self.gpu_frames = QCheckBox(self.tr("Make the last frames on the GPU (experimental)"), box)
+        self.gpu_frames.setObjectName("gpuFrames")
+        self.gpu_frames_note = self._note(
+            self.tr(
+                "When Match your display runs RIFE and motion vectors together (a 24 fps "
+                "film on a 144 Hz screen), RIFE makes every second frame and the rest are "
+                "made on the GPU as mpv shows them, which costs less. Applies to videos "
+                "started after you change it."
+            ),
+            box,
+        )
+        self.gpu_frames.setAccessibleName(a11y.plain(self.gpu_frames.text()))
+        self.gpu_frames.setAccessibleDescription(self.gpu_frames_note.text())
+        self.gpu_frames.toggled.connect(lambda on: self._set(gpu_frames=on))
+        bl.addWidget(self.gpu_frames)
+        bl.addWidget(self.gpu_frames_note)
+        available = osapi.frames_layer_status() is None
+        self.gpu_frames.setVisible(available)
+        self.gpu_frames_note.setVisible(available)
         lay.addWidget(box)
 
     def _preload_text(self) -> None:
@@ -502,6 +523,7 @@ class SettingsPanel(QWidget):
             self.preload.setChecked(g.preload)
             self.preload_max.setValue(round(g.preload_max_s))
             self.preload_max.setEnabled(g.preload)
+            self.gpu_frames.setChecked(g.gpu_frames)
             choice = power_choice(load.config.rules)
             if self.power.findData(choice) < 0:
                 self._add_cool()  # rules written on a Mac: show them as they are

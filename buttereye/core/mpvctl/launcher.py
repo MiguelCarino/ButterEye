@@ -360,8 +360,9 @@ def cap_log(path: Path, *, max_bytes: int = LOG_MAX_BYTES) -> bool:
 
 
 def remove_runtime_files(runtime_dir: Path, sid: str) -> None:
-    """Delete ``mpv-<sid>.sock`` and ``mpv-<sid>.vpy`` once that mpv is gone."""
-    for suffix in (".sock", ".vpy"):
+    """Delete ``mpv-<sid>.sock``, ``mpv-<sid>.vpy`` and the frames layer's
+    control block ``mpv-<sid>.frames`` once that mpv is gone."""
+    for suffix in (".sock", ".vpy", ".frames"):
         p = runtime_dir / f"mpv-{sid}{suffix}"
         with contextlib.suppress(OSError):
             st = os.lstat(p)

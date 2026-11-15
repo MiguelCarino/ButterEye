@@ -15,7 +15,7 @@ Schema v1 layout (keys are the ``types.py`` field names)::
                                     # upscaling, deband, deband_strength, deband_grain,
                                     # full_size, osd_*, keep_logs, lut, compare,
                                     # even_pacing, cadence_first, preload,
-                                    # preload_max_s
+                                    # preload_max_s, gpu_frames
     [general.picture]               # brightness, contrast, saturation, gamma, hue
     [render]                        # container = "mkv", audio = "copy", depth
     [render.encoder_by_vendor]      # vendor = "encoder"
@@ -40,6 +40,7 @@ Schema v1 layout (keys are the ``types.py`` field names)::
   ``upscaling = "standard"``, ``deband = false``, ``full_size = false``,
   ``deband_strength = "light"``, ``compare = "off"``, ``even_pacing = false``,
   ``cadence_first = false``, ``preload = true``, ``preload_max_s = 10.0``,
+  ``gpu_frames = false``,
   ``render.depth = "source"``, every ``[general.picture]``
   value of 0 (and the table, when all are 0), and a profile's ``content = "auto"``
   and ``aa = false`` (older configs have none of these keys, and stay
@@ -872,6 +873,9 @@ class _Reader:
                 "a number of seconds from {:g} to {:g}".format(*PRELOAD_RANGE),
                 10.0,
             ),
+            gpu_frames=self.get(
+                t, "gpu_frames", sec, "general.gpu_frames", _bool, "true or false", False
+            ),
         )
 
     def picture(self, t: Mapping[str, object] | None) -> PictureAdjust:
@@ -1370,6 +1374,8 @@ def to_document(cfg: Config) -> dict[str, object]:
         general["preload"] = False
     if g.preload_max_s != 10.0:
         general["preload_max_s"] = g.preload_max_s
+    if g.gpu_frames:
+        general["gpu_frames"] = True
     picture = {k: getattr(g.picture, k) for k in PICTURE_KEYS if getattr(g.picture, k) != 0}
     _merge(picture, picture_unknown)
     if picture:

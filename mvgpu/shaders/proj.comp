@@ -22,6 +22,12 @@ layout(std430, binding = 5) writeonly buffer Vout { vec2 vout[]; };
 // carried here from a source frame
 layout(std430, binding = 6) writeonly buffer Side { float vside[]; };
 layout(push_constant) uniform P { uint off; int w, h, sbw, sbh, sbs, bw, bh, reach, enable; float gdc, abs_thr, land; } p;
+// The brightness difference (gdc) from binding 7 instead of the push constant when
+// GDC_FROM_BUFFER (constant 2): the present layer measures it on the GPU. Off, as in
+// the plugin, nothing is read from the buffer.
+layout(constant_id = 2) const bool GDC_FROM_BUFFER = false;
+layout(std430, binding = 7) readonly buffer Gdc { float gdcv[]; };
+#define GDC (GDC_FROM_BUFFER ? gdcv[0] : p.gdc)
 float bil(bool from_a, vec2 q) {
     q = clamp(q, vec2(0.0), vec2(p.w - 1.001, p.h - 1.001));
     ivec2 i = ivec2(q); vec2 f = q - vec2(i);
@@ -79,7 +85,7 @@ void main() {
             for (int j = 0; j < p.sbs; ++j)
                 for (int i = 0; i < p.sbs; ++i) {
                     vec2 q = o + vec2(i, j);
-                    e += abs(bil(true, q - cand) - bil(false, q + cand) - p.gdc);
+                    e += abs(bil(true, q - cand) - bil(false, q + cand) - GDC);
                 }
             if (e / float(p.sbs * p.sbs) < p.abs_thr) u = cand;
         }

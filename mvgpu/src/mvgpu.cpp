@@ -13,7 +13,9 @@
 // pair and the frame after it are held too, with the vectors of their pairs:
 // what is covered or uncovered between the pair's frames is told apart by them.
 // A source frame whose _SceneChangeNext is set is repeated instead of
-// interpolated.
+// interpolated. The GPU work is the engine's (engine/engine.h), which the present
+// layer shares; this file is the VapourSynth glue, the plugin's own Vulkan device,
+// the uploads and the readback.
 
 #include <VSHelper4.h>
 #include <VapourSynth4.h>
@@ -33,16 +35,15 @@
 #include <string>
 #include <vector>
 
-#include "shaders.h"
+#include "engine/engine.h"
 
 namespace {
 
-constexpr int BLOCK = 8;
-constexpr int LEVELS = 4;
-constexpr int COARSE_RADIUS = 8;
-// candidates a finer level refines around: the parent block's vector, its 4
-// neighbours' and no motion (search.comp)
-constexpr int NPRED = 6;
+using mvgpu::Buffer;
+using mvgpu::check;
+using mvgpu::Engine;
+using mvgpu::Plane;
+using mvgpu::VkError;
 
 // VK_KHR_portability_enumeration reached the Vulkan headers in 1.3.212; a build
 // host with older vulkan-headers must still compile, and the name and the bit are
@@ -77,40 +78,22 @@ bool portability_offered() {
     return false;
 }
 
-// a failed Vulkan call; ``result`` tells a lost device from a transient failure
-struct VkError : std::runtime_error {
-    VkResult result;
-    VkError(const std::string& what, VkResult r) : std::runtime_error(what), result(r) {}
-};
-
-void check(VkResult r, const char* what) {
-    if (r != VK_SUCCESS) throw VkError(std::string(what) + " failed (" + std::to_string(r) + ")", r);
+// the engine's table from the loader the plugin links
+mvgpu::VkFns fill_from_loader() {
+    mvgpu::VkFns f;
+#define MVGPU_X(n) f.n = vk##n;
+    MVGPU_VK_FNS(MVGPU_X)
+#undef MVGPU_X
+    return f;
 }
 
-struct Buffer {
-    VkBuffer buf = VK_NULL_HANDLE;
-    VkDeviceMemory mem = VK_NULL_HANDLE;
-    VkDeviceSize size = 0;
-    void* map = nullptr;
-};
-
-struct Pipe {
-    VkPipeline pipe = VK_NULL_HANDLE;
-    VkPipelineLayout layout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
-    int bindings = 0;
-};
-
-struct Plane {
-    int w, h;
-    uint32_t float_off;  // in the float slot buffers
-    uint32_t raw_off;    // byte offset in the packed transfer buffers (4-aligned)
-};
-
+// The plugin's half: its own instance and device, the uploads, the one command
+// buffer it submits and waits for, and the readback ring. The GPU work itself is
+// the engine's (engine/engine.h).
 class Gpu {
 public:
     // whether the frames around the pair are wanted (MVGPU_TRI=1)
-    bool three_frames() const { return tri; }
+    bool three_frames() const { return tuning.tri; }
     Gpu(int w, int h, int bits, int device);
     ~Gpu();
     Gpu(const Gpu&) = delete;
@@ -125,7 +108,7 @@ public:
     // same shot, and so are the vectors of the pairs they close.
     struct Search { int a; bool follows; };
     int render(int a, float t, const std::vector<Search>& searches, bool has_prev, bool has_next);
-    static constexpr int SLOTS = 4;
+    static constexpr int SLOTS = Engine::SLOTS;
     // copy ring buffer r into dst and give the buffer back (no GPU lock needed)
     void deliver(int r, VSFrame* dst, const VSAPI* api);
     std::string name;
@@ -146,17 +129,15 @@ private:
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
-    VkDescriptorPool dpool = VK_NULL_HANDLE;
     VkPhysicalDeviceMemoryProperties memprops{};
+    VkPhysicalDeviceLimits limits{};
 
-    int w, h, bytes, bits;
-    std::array<Plane, 3> planes{};
-    uint32_t floats = 0, raw_bytes = 0;
-    std::array<int, LEVELS> lw{}, lh{}, bw{}, bh{};
-    std::array<uint32_t, LEVELS> loff{};
-    uint32_t pyr_floats = 0;
-
-    Buffer up, raw_in, raw_out, out, field;
+    int w, h, bits, bytes = 1;
+    const mvgpu::VkFns fns = fill_from_loader();
+    const mvgpu::Tuning tuning = mvgpu::Tuning::from_env();
+    std::unique_ptr<mvgpu::Memory> mem;
+    std::unique_ptr<Engine> eng;
+    Buffer up;
     // readback ring: a render lands in a free buffer; the caller copies it out
     // after the GPU lock is released, so copies of different frames overlap
     static constexpr int RING = 8;
@@ -164,239 +145,13 @@ private:
     std::array<bool, RING> busy{};
     std::mutex ring_lock;
     std::condition_variable ring_free;
-    std::array<Buffer, SLOTS> slot, pyr;
-    std::array<Buffer, LEVELS> vraw, vec;
-    Buffer vraw4, vec4;  // 4x4 refinement at full size
-    Buffer vsub;         // the final half-vectors as floats, refined to 1/4 px (subpel.comp)
-    // vectors searched from each source frame for the blocks the in-between
-    // vectors leave unexplained (uni.comp), and vsub with them carried to the
-    // in-between frame (proj.comp): what select.comp reads
-    // Those are kept for each of the last four pairs (by the slot of the pair's
-    // first frame): the render of a pair also reads the pair before and after
-    Buffer ufwd, ubwd;
-    std::array<Buffer, SLOTS> vfin, vsd;
-    std::array<VkDescriptorSet, SLOTS> ds_uni_f{}, ds_uni_b{}, ds_proj{};
-    void vectors(int a, bool temporal);
-    // MVGPU_TRI=1: the frame before the pair and the frame after it are read
-    // too. Off unless asked for: on drawn scenes it helps, on real fast motion
-    // it turns a soft smear into hard-edged flecks and the error against the
-    // real frame rises by a tenth (docs/spikes/m0t.md). Where the vectors of the
-    // pair before and the pair after differ by more than tri_pre px at a place,
-    // and neither they nor the vector chosen explain A and C over a patch
-    // (mean difference above tri_gate), the content is in one frame only: what
-    // A and the frame before agree on (within tri_thr, and tri_ratio of the
-    // other side's error) is about to be covered and is taken from A; what C
-    // and the frame after agree on was just uncovered and is taken from C. Not
-    // where the other motion explains the pixel, or one tri_reach px along the
-    // motion, within tri_fine (the object's soft edge). A neighbouring pair's
-    // vector is also tried where the best one leaves more than tri_bad.
-    // MVGPU_TRI_T="gate,thr,ratio,pre,bad,fine,reach"
-    bool tri = std::getenv("MVGPU_TRI") && std::string(std::getenv("MVGPU_TRI")) == "1";
-    // MVGPU_SHOW=1|2|3: draw the side taken, the mismatch or the vector's length (render.comp)
-    int show = std::getenv("MVGPU_SHOW") ? std::atoi(std::getenv("MVGPU_SHOW")) : 0;
-    // MVGPU_TRI_DBG=4: no neighbouring pair's vector; 8: no strips (for comparisons)
-    int tri_dbg = std::getenv("MVGPU_TRI_DBG") ? std::atoi(std::getenv("MVGPU_TRI_DBG")) : 0;
-    float tri_gate = 0.03f, tri_thr = 0.03f, tri_ratio = 0.5f, tri_pre = 0.75f, tri_bad = 0.03f, tri_fine = 0.02f, tri_reach = 3.0f;
-    // MVGPU_EDGE=1: a found object's vector is offered to the pixels around
-    // its blocks (select.comp). Off: where the source-frame search matched a bar
-    // to its neighbour, it draws the whole phantom bar (docs/spikes/m0t.md).
-    // MVGPU_EDGE_T="thr,act"
-    bool edge = std::getenv("MVGPU_EDGE") && std::string(std::getenv("MVGPU_EDGE")) == "1";
-    float edge_thr = 0.02f, edge_act = 0.03f;
-    // MVGPU_UNI=0: without them (for comparisons). The window is +-uni_radius px
-    // of motion; a block is searched when the frames differ there by uni_flag a
-    // pixel under the in-between vector, and found when a place matches within
-    // uni_abs a pixel and uni_rel of that difference; MVGPU_UNI_T="flag,abs,rel"
-    bool uni = !(std::getenv("MVGPU_UNI") && std::string(std::getenv("MVGPU_UNI")) == "0");
-    int uni_radius = 64;
-    float uni_flag = 0.04f, uni_abs = 0.02f, uni_rel = 0.4f;
-    // how far (px) from a found block's half-way centre an in-between block takes its vector
-    float uni_land = std::getenv("MVGPU_UNI_LAND") ? float(std::atof(std::getenv("MVGPU_UNI_LAND"))) : 4.0f;
-    int bw4 = 0, bh4 = 0;
-    // MVGPU_FINE=0: vectors per 8x8 block only (for comparisons)
-    bool fine = !(std::getenv("MVGPU_FINE") && std::string(std::getenv("MVGPU_FINE")) == "0");
-    std::array<VkDescriptorSet, SLOTS> ds_median4{};
-    std::array<VkDescriptorSet, SLOTS> ds_search4{}, ds_subpel{}, ds_subpel4{};
-    // MVGPU_SUBPEL=0: no 1/2 px refinement of the final motion (for comparisons)
-    int subpel_steps = std::getenv("MVGPU_SUBPEL") && std::string(std::getenv("MVGPU_SUBPEL")) == "0" ? 0 : 1;
-    // MVGPU_MEDIAN=0: the plain component median at the full-size levels too (for
-    // comparisons); otherwise a vector median kept only where it matches the block
-    // about as well: SAD within med_rel of the block's own plus med_abs a pixel
-    bool checked_median = !(std::getenv("MVGPU_MEDIAN") && std::string(std::getenv("MVGPU_MEDIAN")) == "0");
-    float med_rel = 0.5f, med_abs = 0.008f;
-    // The vectors of the pair before are tried as a candidate (0, as shipped:
-    // a little better on real footage, docs/spikes/m0t.md). A cost for leaving
-    // them, a pixel of the block for each pixel of difference up to 2
-    // (MVGPU_TEMPORAL=0.002), lost quality; negative turns them off
-    float tpen = std::getenv("MVGPU_TEMPORAL") ? float(std::atof(std::getenv("MVGPU_TEMPORAL"))) : 0.0f;
-    // the credit a match gets for the detail in what matched (search.comp), as a
-    // share of the patches' deviation; MVGPU_ACT overrides (tuning, 0 = off)
-    float act = std::getenv("MVGPU_ACT") ? float(std::atof(std::getenv("MVGPU_ACT"))) : 0.5f;
-
-    Pipe p_unpack, p_down2, p_search_coarse, p_search_fine, p_search_full, p_search4, p_median, p_subpel, p_uni,
-        p_proj, p_select, p_render, p_pack;
-    std::array<VkDescriptorSet, SLOTS> ds_select{};
-    // MVGPU_SELECT=0: the old bilinear block vectors (for comparisons)
-    bool select_vectors = !(std::getenv("MVGPU_SELECT") && std::string(std::getenv("MVGPU_SELECT")) == "0");
-    // mean |A - C| (0-1 luma) where blending starts to give way to the nearer
-    // frame, and where it has fully; MVGPU_OCC="lo,hi" overrides (tuning).
-    // Three times what they were (0.04, 0.12), and the fade below 2.5 times
-    // (0.02, 0.06): on 169 moments of real 50/60 fps footage both did more
-    // harm than good at the old values (worst areas 0.150 -> 0.180 with them
-    // out of the way), and nothing on the drawn scenes needed them
-    float occ_lo = 0.12f, occ_hi = 0.36f;
-    // mean mismatch over an area (render.comp) where the in-between frame fades
-    // to the plain blend; per-pixel margin a block vector needs over the smooth one
-    float fail_lo = 0.05f, fail_hi = 0.15f, sel_margin = 0.01f;
-    // each slot's mean luma (0-1): the pair's global brightness difference is
-    // taken out of every match (fades, flashes, a stage lighting up)
-    std::array<float, SLOTS> smean{};
-    std::array<VkDescriptorSet, SLOTS> ds_unpack{}, ds_down2{};
-    std::array<std::array<VkDescriptorSet, LEVELS>, SLOTS> ds_search{};  // [order][level]
-    std::array<std::array<VkDescriptorSet, LEVELS>, SLOTS> ds_median{};  // [order][level]
-    std::array<VkDescriptorSet, SLOTS> ds_render{};
-    VkDescriptorSet ds_pack{};
-
-    VkPhysicalDeviceLimits limits{};
 
     void init(int device);
     void destroy();
-    void check_limits() const;
-    void dispatch1d(uint32_t groups);
     void ensure_ok() const;
-    uint32_t find_mem(uint32_t bits, VkMemoryPropertyFlags want) const;
-    Buffer make(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props);
-    void free(Buffer& b);
-    Pipe pipeline(const uint32_t* code, size_t bytes, int bindings, uint32_t push, uint32_t wg = 0, uint32_t kids = 1);
-    VkDescriptorSet set(const Pipe& p, std::initializer_list<const Buffer*> bufs);
     void begin();
     void submit();
-    void barrier();
-    void push(const Pipe& p, VkDescriptorSet s, const void* pc, uint32_t size);
 };
-
-uint32_t Gpu::find_mem(uint32_t type_bits, VkMemoryPropertyFlags want) const {
-    // Host-visible buffers are staging: prefer system RAM. With Resizable BAR the
-    // first host-visible type is often VRAM mapped over PCIe, where CPU reads run
-    // at ~1 GB/s and writes at ~3 GB/s (measured: 22 ms to read one 4K frame).
-    bool host = want & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-    for (int pass = 0; pass < 2; ++pass)
-        for (uint32_t i = 0; i < memprops.memoryTypeCount; ++i) {
-            VkMemoryPropertyFlags f = memprops.memoryTypes[i].propertyFlags;
-            if (!(type_bits & (1u << i)) || (f & want) != want) continue;
-            if (host && pass == 0 && (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) continue;
-            return i;
-        }
-    // a readback buffer without a cached type: settle for uncached host memory
-    if (want & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
-        return find_mem(type_bits, want & ~VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-    throw std::runtime_error("no suitable GPU memory type");
-}
-
-Buffer Gpu::make(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props) {
-    Buffer b;
-    b.size = std::max<VkDeviceSize>(size, 16);
-    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bi.size = b.size;
-    bi.usage = usage;
-    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    check(vkCreateBuffer(dev, &bi, nullptr, &b.buf), "vkCreateBuffer");
-    try {
-        VkMemoryRequirements req;
-        vkGetBufferMemoryRequirements(dev, b.buf, &req);
-        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        ai.allocationSize = req.size;
-        ai.memoryTypeIndex = find_mem(req.memoryTypeBits, props);
-        check(vkAllocateMemory(dev, &ai, nullptr, &b.mem), "vkAllocateMemory");
-        check(vkBindBufferMemory(dev, b.buf, b.mem, 0), "vkBindBufferMemory");
-        if (props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
-            check(vkMapMemory(dev, b.mem, 0, VK_WHOLE_SIZE, 0, &b.map), "vkMapMemory");
-    } catch (...) {
-        free(b);
-        throw;
-    }
-    return b;
-}
-
-void Gpu::free(Buffer& b) {
-    if (b.map) vkUnmapMemory(dev, b.mem);
-    if (b.buf) vkDestroyBuffer(dev, b.buf, nullptr);
-    if (b.mem) vkFreeMemory(dev, b.mem, nullptr);
-    b = Buffer{};
-}
-
-Pipe Gpu::pipeline(const uint32_t* code, size_t nbytes, int bindings, uint32_t push, uint32_t wg, uint32_t kids) {
-    Pipe p;
-    p.bindings = bindings;
-    VkShaderModule mod = VK_NULL_HANDLE;
-    try {
-        std::vector<VkDescriptorSetLayoutBinding> b(bindings);
-        for (int i = 0; i < bindings; ++i) {
-            b[i] = {};
-            b[i].binding = i;
-            b[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            b[i].descriptorCount = 1;
-            b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        }
-        VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        dl.bindingCount = bindings;
-        dl.pBindings = b.data();
-        check(vkCreateDescriptorSetLayout(dev, &dl, nullptr, &p.dsl), "vkCreateDescriptorSetLayout");
-        VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, push};
-        VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-        pl.setLayoutCount = 1;
-        pl.pSetLayouts = &p.dsl;
-        pl.pushConstantRangeCount = 1;
-        pl.pPushConstantRanges = &pr;
-        check(vkCreatePipelineLayout(dev, &pl, nullptr, &p.layout), "vkCreatePipelineLayout");
-        VkShaderModuleCreateInfo sm{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-        sm.codeSize = nbytes;
-        sm.pCode = code;
-        check(vkCreateShaderModule(dev, &sm, nullptr, &mod), "vkCreateShaderModule");
-        // search.comp: constant 0 the group size, 1 the child blocks per group
-        const uint32_t data[2] = {wg, kids};
-        const VkSpecializationMapEntry entries[2] = {{0, 0, sizeof(uint32_t)}, {1, 4, sizeof(uint32_t)}};
-        VkSpecializationInfo spec{2, entries, sizeof(data), data};
-        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-        ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-        ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        ci.stage.module = mod;
-        ci.stage.pName = "main";
-        ci.stage.pSpecializationInfo = wg ? &spec : nullptr;  // 0: not search.comp
-        ci.layout = p.layout;
-        check(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr, &p.pipe), "vkCreateComputePipelines");
-    } catch (...) {
-        vkDestroyShaderModule(dev, mod, nullptr);  // null handles are ignored
-        vkDestroyPipelineLayout(dev, p.layout, nullptr);
-        vkDestroyDescriptorSetLayout(dev, p.dsl, nullptr);
-        throw;
-    }
-    vkDestroyShaderModule(dev, mod, nullptr);
-    return p;
-}
-
-VkDescriptorSet Gpu::set(const Pipe& p, std::initializer_list<const Buffer*> bufs) {
-    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool = dpool;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &p.dsl;
-    VkDescriptorSet s;
-    check(vkAllocateDescriptorSets(dev, &ai, &s), "vkAllocateDescriptorSets");
-    std::vector<VkDescriptorBufferInfo> infos;
-    infos.reserve(bufs.size());
-    for (const Buffer* b : bufs) infos.push_back({b->buf, 0, VK_WHOLE_SIZE});
-    std::vector<VkWriteDescriptorSet> w(infos.size());
-    for (size_t i = 0; i < infos.size(); ++i) {
-        w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        w[i].dstSet = s;
-        w[i].dstBinding = uint32_t(i);
-        w[i].descriptorCount = 1;
-        w[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        w[i].pBufferInfo = &infos[i];
-    }
-    vkUpdateDescriptorSets(dev, uint32_t(w.size()), w.data(), 0, nullptr);
-    return s;
-}
 
 Gpu::Gpu(int width, int height, int bitdepth, int device) : w(width), h(height), bits(bitdepth) {
     // a constructor that throws never runs ~Gpu(): release what init() made
@@ -408,46 +163,12 @@ Gpu::Gpu(int width, int height, int bitdepth, int device) : w(width), h(height),
     }
 }
 
-void Gpu::check_limits() const {
-    // the coarse search runs 512 invocations per group; 1-D passes use 256 x rows
-    auto need = [](bool ok, const std::string& what) {
-        if (!ok) throw std::runtime_error("GPU limit: " + what);
-    };
-    need(limits.maxComputeWorkGroupInvocations >= 512 && limits.maxComputeWorkGroupSize[0] >= 512 &&
-             limits.maxComputeWorkGroupSize[1] >= 16,
-         "compute work groups of 512 invocations are not supported");
-    // the largest storage buffer is the per-pixel vector field (16 bytes a pixel)
-    VkDeviceSize field_bytes = VkDeviceSize(w) * h * 16;
-    need(field_bytes <= limits.maxStorageBufferRange,
-         std::to_string(w) + "x" + std::to_string(h) + " needs storage buffers of " +
-             std::to_string(field_bytes >> 20) + " MiB; this GPU allows " +
-             std::to_string(limits.maxStorageBufferRange >> 20) + " MiB");
-    uint64_t samples = uint64_t(w) * h;
-    uint64_t groups = (samples + 255) / 256;
-    uint64_t gx = std::min<uint64_t>(groups, limits.maxComputeWorkGroupCount[0]);
-    need(gx > 0 && (groups + gx - 1) / gx <= limits.maxComputeWorkGroupCount[1],
-         "the frame is too large for this GPU's dispatch size");
-}
-
-void Gpu::dispatch1d(uint32_t groups) {
-    // 1-D passes as rows of at most maxComputeWorkGroupCount[0] groups (65535 on
-    // some drivers; 8K luma alone needs 129,600 groups of 256)
-    uint32_t gx = std::max<uint32_t>(1, std::min(groups, limits.maxComputeWorkGroupCount[0]));
-    vkCmdDispatch(cmd, gx, (groups + gx - 1) / gx, 1);
-}
-
 void Gpu::ensure_ok() const {
     if (!failed.empty()) throw std::runtime_error(failed);
 }
 
 void Gpu::init(int device) {
     bytes = bits > 8 ? 2 : 1;
-    if (const char* occ = std::getenv("MVGPU_OCC")) std::sscanf(occ, "%f,%f", &occ_lo, &occ_hi);
-    if (const char* sm = std::getenv("MVGPU_SELM")) sel_margin = float(std::atof(sm));
-    if (const char* fail = std::getenv("MVGPU_FAIL")) std::sscanf(fail, "%f,%f", &fail_lo, &fail_hi);
-    if (const char* ut = std::getenv("MVGPU_UNI_T")) std::sscanf(ut, "%f,%f,%f", &uni_flag, &uni_abs, &uni_rel);
-    if (const char* tt = std::getenv("MVGPU_TRI_T")) std::sscanf(tt, "%f,%f,%f,%f,%f,%f,%f", &tri_gate, &tri_thr, &tri_ratio, &tri_pre, &tri_bad, &tri_fine, &tri_reach);
-    if (const char* et = std::getenv("MVGPU_EDGE_T")) std::sscanf(et, "%f,%f", &edge_thr, &edge_act);
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "mvgpu";
     app.apiVersion = VK_API_VERSION_1_1;
@@ -503,7 +224,7 @@ void Gpu::init(int device) {
     vkGetPhysicalDeviceProperties(phys, &pp);
     name = pp.deviceName;
     limits = pp.limits;
-    check_limits();
+    Engine::check_limits(limits, w, h);
     vkGetPhysicalDeviceMemoryProperties(phys, &memprops);
     vkGetPhysicalDeviceQueueFamilyProperties(phys, &n, nullptr);
     std::vector<VkQueueFamilyProperties> fams(n);
@@ -534,105 +255,18 @@ void Gpu::init(int device) {
     VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     check(vkCreateFence(dev, &fi, nullptr, &fence), "vkCreateFence");
 
-    // layout: Y, U, V (4:2:0), float offsets and 4-byte aligned packed offsets
+    // the staging buffers come first, the engine's device buffers after them (the
+    // order the plugin has always allocated in)
+    mem = std::make_unique<mvgpu::Memory>(fns, dev, memprops);
     int cw = (w + 1) / 2, ch = (h + 1) / 2;
-    planes[0] = {w, h, 0, 0};
-    planes[1] = {cw, ch, uint32_t(w * h), 0};
-    planes[2] = {cw, ch, uint32_t(w * h + cw * ch), 0};
-    floats = uint32_t(w * h + 2 * cw * ch);
-    uint32_t off = 0;
-    for (auto& p : planes) {
-        p.raw_off = off;
-        off += (uint32_t(p.w * p.h * bytes) + 3u) & ~3u;
-    }
-    raw_bytes = off;
-    uint32_t po = 0;
-    for (int l = 0; l < LEVELS; ++l) {
-        lw[l] = l ? (lw[l - 1] + 1) / 2 : w;
-        lh[l] = l ? (lh[l - 1] + 1) / 2 : h;
-        bw[l] = (lw[l] + BLOCK - 1) / BLOCK;
-        bh[l] = (lh[l] + BLOCK - 1) / BLOCK;
-        loff[l] = po;
-        po += uint32_t(lw[l] * lh[l]);
-    }
-    pyr_floats = po;
-
-    const auto DEV = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    uint32_t raw_bytes = 0;
+    for (int i = 0; i < 3; ++i) raw_bytes += (uint32_t((i ? cw * ch : w * h) * bytes) + 3u) & ~3u;
     const auto HOST = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    const auto SB = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    up = make(raw_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+    up = mem->make(raw_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
     for (auto& d : down)
-        d = make(raw_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, HOST | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-    raw_in = make(raw_bytes, SB | VK_BUFFER_USAGE_TRANSFER_DST_BIT, DEV);
-    raw_out = make(raw_bytes, SB | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, DEV);
-    out = make(VkDeviceSize(floats) * 4, SB, DEV);
-    field = make(VkDeviceSize(w) * h * 16, SB, DEV);
-    for (int s = 0; s < SLOTS; ++s) {
-        slot[s] = make(VkDeviceSize(floats) * 4, SB, DEV);
-        pyr[s] = make(VkDeviceSize(pyr_floats) * 4, SB, DEV);
-    }
-    for (int l = 0; l < LEVELS; ++l) {
-        vraw[l] = make(VkDeviceSize(bw[l]) * bh[l] * 8, SB, DEV);
-        vec[l] = make(VkDeviceSize(bw[l]) * bh[l] * 8, SB, DEV);
-    }
-    bw4 = (w + 3) / 4;
-    bh4 = (h + 3) / 4;
-    vraw4 = make(VkDeviceSize(bw4) * bh4 * 8, SB, DEV);
-    vec4 = make(VkDeviceSize(bw4) * bh4 * 8, SB, DEV);
-    vsub = make(VkDeviceSize(std::max(bw4 * bh4, bw[0] * bh[0])) * 8, SB, DEV);
-    for (int s = 0; s < SLOTS; ++s) {
-        vfin[s] = make(VkDeviceSize(std::max(bw4 * bh4, bw[0] * bh[0])) * 8, SB, DEV);
-        vsd[s] = make(VkDeviceSize(std::max(bw4 * bh4, bw[0] * bh[0])) * 4, SB, DEV);
-    }
-    ufwd = make(VkDeviceSize(bw[0]) * bh[0] * 16, SB, DEV);
-    ubwd = make(VkDeviceSize(bw[0]) * bh[0] * 16, SB, DEV);
-
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 512};
-    VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    dp.maxSets = 128;
-    dp.poolSizeCount = 1;
-    dp.pPoolSizes = &ps;
-    check(vkCreateDescriptorPool(dev, &dp, nullptr, &dpool), "vkCreateDescriptorPool");
-
-    // group sizes: powers of two >= the 17*17, 5*3*3 and 5*5*5 candidates
-    p_unpack = pipeline(unpack_spv, sizeof(unpack_spv), 2, 20);
-    p_down2 = pipeline(down2_spv, sizeof(down2_spv), 1, 24);
-    p_search_coarse = pipeline(search_spv, sizeof(search_spv), 5, 64, 512);
-    p_search_fine = pipeline(search_spv, sizeof(search_spv), 5, 64, 64);
-    p_search_full = pipeline(search_spv, sizeof(search_spv), 5, 64, 256);
-    p_search4 = pipeline(search_spv, sizeof(search_spv), 5, 64, 256, 4);
-    p_median = pipeline(median_spv, sizeof(median_spv), 4, 44);
-    p_subpel = pipeline(subpel_spv, sizeof(subpel_spv), 4, 32);
-    p_uni = pipeline(uni_spv, sizeof(uni_spv), 4, 56);
-    p_proj = pipeline(proj_spv, sizeof(proj_spv), 7, 52);
-    p_select = pipeline(select_spv, sizeof(select_spv), 9, 92);
-    p_render = pipeline(render_spv, sizeof(render_spv), 4, 48);
-    p_pack = pipeline(pack_spv, sizeof(pack_spv), 2, 20);
-
-    for (int s = 0; s < SLOTS; ++s) {
-        const int c = (s + 1) % SLOTS, b = (s + SLOTS - 1) % SLOTS, n = (s + 2) % SLOTS;
-        ds_unpack[s] = set(p_unpack, {&raw_in, &slot[s]});
-        ds_down2[s] = set(p_down2, {&pyr[s]});
-        ds_subpel[s] = set(p_subpel, {&pyr[s], &pyr[c], &vec[0], &vsub});
-        ds_subpel4[s] = set(p_subpel, {&pyr[s], &pyr[c], &vec4, &vsub});
-        ds_select[s] = set(p_select, {&slot[s], &slot[c], &vfin[s], &field, &vsd[s], &slot[b], &slot[n], &vfin[b], &vfin[c]});
-        ds_uni_f[s] = set(p_uni, {&pyr[s], &pyr[c], &vsub, &ufwd});
-        ds_uni_b[s] = set(p_uni, {&pyr[s], &pyr[c], &vsub, &ubwd});
-        ds_proj[s] = set(p_proj, {&pyr[s], &pyr[c], &vsub, &ufwd, &ubwd, &vfin[s], &vsd[s]});
-        ds_search4[s] = set(p_search4, {&pyr[s], &pyr[c], &vec[0], &vraw4, &vec4});
-        ds_render[s] = set(p_render, {&slot[s], &slot[c], &field, &out});
-        for (int l = 0; l < LEVELS; ++l) {
-            const Pipe& sp = l == LEVELS - 1 ? p_search_coarse : l == 0 ? p_search_full : p_search_fine;
-            const Buffer& parent = l == LEVELS - 1 ? vec[l] : vec[l + 1];
-            ds_search[s][l] = set(sp, {&pyr[s], &pyr[c], &parent, &vraw[l], &vec[l]});
-        }
-    }
-    for (int s = 0; s < SLOTS; ++s) {
-        const int c = (s + 1) % SLOTS;
-        for (int l = 0; l < LEVELS; ++l) ds_median[s][l] = set(p_median, {&pyr[s], &pyr[c], &vraw[l], &vec[l]});
-        ds_median4[s] = set(p_median, {&pyr[s], &pyr[c], &vraw4, &vec4});
-    }
-    ds_pack = set(p_pack, {&out, &raw_out});
+        d = mem->make(raw_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, HOST | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    eng = std::make_unique<Engine>(fns, dev, memprops, limits, w, h, bits, tuning);
+    if (eng->raw_size() != raw_bytes) throw std::logic_error("mvgpu: plane layout mismatch");
 }
 
 Gpu::~Gpu() { destroy(); }
@@ -645,30 +279,12 @@ void Gpu::destroy() {
         return;
     }
     vkDeviceWaitIdle(dev);
-    for (Pipe* p : {&p_unpack, &p_down2, &p_search_coarse, &p_search_fine, &p_search_full, &p_search4, &p_median,
-                    &p_subpel, &p_uni, &p_proj, &p_select, &p_render, &p_pack}) {
-        vkDestroyPipeline(dev, p->pipe, nullptr);
-        vkDestroyPipelineLayout(dev, p->layout, nullptr);
-        vkDestroyDescriptorSetLayout(dev, p->dsl, nullptr);
+    eng.reset();
+    if (mem) {
+        mem->free(up);
+        for (auto& d : down) mem->free(d);
     }
-    vkDestroyDescriptorPool(dev, dpool, nullptr);
-    for (Buffer* b : {&up, &raw_in, &raw_out, &out, &field}) free(*b);
-    for (int i = 0; i < SLOTS; ++i) {
-        free(slot[i]);
-        free(pyr[i]);
-        free(vfin[i]);
-        free(vsd[i]);
-    }
-    for (auto& d : down) free(d);
-    for (int l = 0; l < LEVELS; ++l) {
-        free(vraw[l]);
-        free(vec[l]);
-    }
-    free(vraw4);
-    free(vec4);
-    free(vsub);
-    free(ufwd);
-    free(ubwd);
+    mem.reset();
     vkDestroyFence(dev, fence, nullptr);
     vkDestroyCommandPool(dev, pool, nullptr);
     vkDestroyDevice(dev, nullptr);
@@ -705,21 +321,6 @@ void Gpu::submit() {
     }
 }
 
-void Gpu::barrier() {
-    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
-    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0,
-                         nullptr, 0, nullptr);
-}
-
-void Gpu::push(const Pipe& p, VkDescriptorSet s, const void* pc, uint32_t size) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipe);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout, 0, 1, &s, 0, nullptr);
-    vkCmdPushConstants(cmd, p.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, size, pc);
-}
-
 using Clock = std::chrono::steady_clock;
 double ms(Clock::time_point a, Clock::time_point b) {
     return std::chrono::duration<double, std::milli>(b - a).count();
@@ -730,7 +331,7 @@ void Gpu::load(int s, const VSFrame* f, const VSAPI* api) {
     auto t0 = Clock::now();
     auto* dst = static_cast<uint8_t*>(up.map);
     for (int i = 0; i < 3; ++i) {
-        const Plane& p = planes[i];
+        const Plane& p = eng->plane(i);
         const uint8_t* src = api->getReadPtr(f, i);
         ptrdiff_t stride = api->getStride(f, i);
         size_t row = size_t(p.w) * bytes;
@@ -743,102 +344,19 @@ void Gpu::load(int s, const VSFrame* f, const VSAPI* api) {
                 for (int x = 0; x < p.w; x += 4, ++cnt)
                     sum += bytes == 1 ? r[x] : reinterpret_cast<const uint16_t*>(r)[x];
             }
-            smean[s] = float(sum / double(cnt) / double((1u << bits) - 1u));
+            eng->set_mean(s, float(sum / double(cnt) / double((1u << bits) - 1u)));
         }
     }
     auto t1 = Clock::now();
     begin();
-    VkBufferCopy cp{0, 0, raw_bytes};
-    vkCmdCopyBuffer(cmd, up.buf, raw_in.buf, 1, &cp);
-    barrier();
-    float scale = 1.0f / float((1u << bits) - 1u);
-    for (int i = 0; i < 3; ++i) {
-        const Plane& p = planes[i];
-        struct { uint32_t count, raw_off, out_off, bytes; float scale; } pc{
-            uint32_t(p.w * p.h), p.raw_off, p.float_off, uint32_t(bytes), scale};
-        push(p_unpack, ds_unpack[s], &pc, sizeof(pc));
-        dispatch1d((pc.count + 255) / 256);
-    }
-    barrier();
-    // pyramid level 0 is the luma plane: copy it, then halve
-    VkBufferCopy yc{0, VkDeviceSize(loff[0]) * 4, VkDeviceSize(w) * h * 4};
-    vkCmdCopyBuffer(cmd, slot[s].buf, pyr[s].buf, 1, &yc);
-    barrier();
-    for (int l = 1; l < LEVELS; ++l) {
-        struct { uint32_t src_off, dst_off; int32_t sw, sh, dw, dh; } pc{
-            loff[l - 1], loff[l], lw[l - 1], lh[l - 1], lw[l], lh[l]};
-        push(p_down2, ds_down2[s], &pc, sizeof(pc));
-        vkCmdDispatch(cmd, (lw[l] + 15) / 16, (lh[l] + 15) / 16, 1);
-        barrier();
-    }
+    VkBufferCopy cp{0, 0, eng->raw_size()};
+    vkCmdCopyBuffer(cmd, up.buf, eng->raw_input().buf, 1, &cp);
+    eng->barrier(cmd);
+    eng->record_load(cmd, s);
     submit();
     t_load_cpu += ms(t0, t1);
     t_load_gpu += ms(t1, Clock::now());
     ++n_load;
-}
-
-void Gpu::vectors(int a, bool follows) {
-    // the vector buffers still hold the pair before this one: its vectors are tried
-    const bool temporal = follows && tpen >= 0.0f;
-    const float gdc = smean[a] - smean[(a + 1) % SLOTS];  // A - C
-    for (int l = LEVELS - 1; l >= 0; --l) {
-        bool coarse = l == LEVELS - 1;
-        // level 0 (full size) stores the motion m = 2u: +-1 px of u is +-2 of m, around
-        // 4 x the parent's u
-        bool full = l == 0;
-        struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; float gdc, act; int32_t temporal; float tpen; } pc{
-            loff[l], lw[l], lh[l], bw[l], bh[l],
-            coarse ? 1 : bw[l + 1], coarse ? 1 : bh[l + 1], coarse ? COARSE_RADIUS : full ? 2 : 1,
-            coarse ? 1 : NPRED + (temporal ? 1 : 0),
-            BLOCK, full ? 4 : 2, full ? 1 : 0, gdc, act, temporal ? 1 : 0, tpen};
-        push(coarse ? p_search_coarse : full ? p_search_full : p_search_fine, ds_search[a][l], &pc, sizeof(pc));
-        vkCmdDispatch(cmd, bw[l], bh[l], 1);
-        barrier();
-        struct { uint32_t off; int32_t w, h, bw, bh, bs, half_units, mode; float rel, abs, gdc; } mc{
-            loff[l], lw[l], lh[l], bw[l], bh[l], BLOCK, full ? 1 : 0, full && checked_median ? 1 : 0, med_rel,
-            med_abs, gdc};
-        push(p_median, ds_median[a][l], &mc, sizeof(mc));
-        vkCmdDispatch(cmd, (bw[l] + 15) / 16, (bh[l] + 15) / 16, 1);
-        barrier();
-    }
-    if (fine) {  // 4x4 blocks refine +-2 (motion units) around their 8x8 block's vector (same level)
-        struct { uint32_t off; int32_t w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; float gdc, act; int32_t temporal; float tpen; } pc{
-            loff[0], w, h, bw4, bh4, bw[0], bh[0], 2, NPRED + (temporal ? 1 : 0), 4, 1, 1, gdc, act, temporal ? 1 : 0, tpen};
-        push(p_search4, ds_search4[a], &pc, sizeof(pc));
-        vkCmdDispatch(cmd, bw[0], bh[0], 1);  // a group per 8x8 block does its four 4x4 blocks
-        barrier();
-        struct { uint32_t off; int32_t w, h, bw, bh, bs, half_units, mode; float rel, abs, gdc; } mc{
-            loff[0], w, h, bw4, bh4, 4, 1, checked_median ? 1 : 0, med_rel, med_abs, gdc};
-        push(p_median, ds_median4[a], &mc, sizeof(mc));
-        vkCmdDispatch(cmd, (bw4 + 15) / 16, (bh4 + 15) / 16, 1);
-        barrier();
-    }
-    // the final motion as float half-vectors, +-1/4 px of u where that matches better
-    int sbw = fine ? bw4 : bw[0], sbh = fine ? bh4 : bh[0];
-    struct { uint32_t off; int32_t w, h, bw, bh, bs, steps; float gdc; } spc{
-        loff[0], w, h, sbw, sbh, fine ? 4 : BLOCK, subpel_steps, gdc};
-    push(p_subpel, fine ? ds_subpel4[a] : ds_subpel[a], &spc, sizeof(spc));
-    // a group per 8x8 block or per four 4x4 blocks, in rows of up to 1024 groups
-    uint32_t sg = uint32_t(sbw * sbh + (fine ? 3 : 0)) / (fine ? 4 : 1);
-    vkCmdDispatch(cmd, std::min(sg, 1024u), (sg + 1023) / 1024, 1);
-    barrier();
-    // what those vectors leave unexplained in each source frame is searched for
-    // from that frame, and carried to the in-between frame
-    int sbs = fine ? 4 : BLOCK;
-    if (uni) {
-        for (int dir = 0; dir < 2; ++dir) {
-            struct { uint32_t off; int32_t w, h, bw, bh, sbw, sbh, sbs, radius, dir; float gdc, flag, abs_thr, rel; } uc{
-                loff[0], w, h, bw[0], bh[0], sbw, sbh, sbs, uni_radius, dir, gdc, uni_flag, uni_abs, uni_rel};
-            push(p_uni, dir ? ds_uni_b[a] : ds_uni_f[a], &uc, sizeof(uc));
-            vkCmdDispatch(cmd, bw[0], bh[0], 1);
-        }
-        barrier();
-    }
-    struct { uint32_t off; int32_t w, h, sbw, sbh, sbs, bw, bh, reach, enable; float gdc, abs_thr, land; } jc{
-        loff[0], w, h, sbw, sbh, sbs, bw[0], bh[0], uni_radius / 16 + 1, uni ? 1 : 0, gdc, uni_abs * 1.5f, uni_land};
-    push(p_proj, ds_proj[a], &jc, sizeof(jc));
-    vkCmdDispatch(cmd, (sbw + 15) / 16, (sbh + 15) / 16, 1);
-    barrier();
 }
 
 int Gpu::render(int a, float t, const std::vector<Search>& searches, bool has_prev, bool has_next) {
@@ -869,43 +387,13 @@ int Gpu::render(int a, float t, const std::vector<Search>& searches, bool has_pr
             g->ring_free.notify_one();
         }
     } release{this, r};
-    const int c = (a + 1) % SLOTS;
-    const float gdc = smean[a] - smean[c];  // A - C
     auto t0 = Clock::now();
     begin();
-    for (const Search& s : searches) vectors(s.a, s.follows);
-    {
-        struct {
-            int32_t w, h, bw, bh; float t, lambda; int32_t smooth, bs; float margin, gdc;
-            int32_t tri, edge; float gdp, gdn, tri_gate, tri_thr, tri_ratio, tri_pre, tri_bad, edge_thr, edge_act, tri_fine, tri_reach;
-        } sc{w, h, fine ? bw4 : bw[0], fine ? bh4 : bh[0], t, 0.05f, select_vectors ? 0 : 1, fine ? 4 : BLOCK,
-             sel_margin, gdc, tri ? (has_prev ? 1 : 0) | (has_next ? 2 : 0) | tri_dbg : 0, edge ? 1 : 0,
-             smean[a] - smean[(a + SLOTS - 1) % SLOTS], smean[c] - smean[(a + 2) % SLOTS], tri_gate, tri_thr,
-             tri_ratio, tri_pre, tri_bad, edge_thr, edge_act, tri_fine, tri_reach};
-        push(p_select, ds_select[a], &sc, sizeof(sc));
-        vkCmdDispatch(cmd, (w + 15) / 16, (h + 15) / 16, 1);
-        barrier();
-    }
-    for (int i = 0; i < 3; ++i) {
-        const Plane& p = planes[i];
-        struct { uint32_t off; int32_t w, h, lw, lh, sub; float t, lo, hi, fail_lo, fail_hi; int32_t show; } pc{
-            p.float_off, p.w, p.h, w, h, i ? 2 : 1, t, occ_lo, occ_hi, fail_lo, fail_hi, show};
-        push(p_render, ds_render[a], &pc, sizeof(pc));
-        vkCmdDispatch(cmd, (p.w + 15) / 16, (p.h + 15) / 16, 1);
-    }
-    barrier();
-    float maxv = float((1u << bits) - 1u);
-    for (int i = 0; i < 3; ++i) {
-        const Plane& p = planes[i];
-        struct { uint32_t count, raw_off, in_off, bytes; float maxv; } pc{
-            uint32_t(p.w * p.h), p.raw_off, p.float_off, uint32_t(bytes), maxv};
-        uint32_t words = (pc.count * bytes + 3) / 4;
-        push(p_pack, ds_pack, &pc, sizeof(pc));
-        dispatch1d((words + 255) / 256);
-    }
-    barrier();
-    VkBufferCopy cp{0, 0, raw_bytes};
-    vkCmdCopyBuffer(cmd, raw_out.buf, down[r].buf, 1, &cp);
+    for (const Search& s : searches) eng->record_vectors(cmd, s.a, s.follows);
+    eng->record_select(cmd, a, t, has_prev, has_next);
+    eng->record_render(cmd, a, t);
+    VkBufferCopy cp{0, 0, eng->raw_size()};
+    vkCmdCopyBuffer(cmd, eng->raw_output().buf, down[r].buf, 1, &cp);
     // the fence makes device writes available to the device only: deliver()
     // reads down[r] on the host, so make the copy visible to host reads
     VkMemoryBarrier hb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -923,7 +411,7 @@ void Gpu::deliver(int r, VSFrame* dst, const VSAPI* api) {
     auto t1 = Clock::now();
     auto* src = static_cast<const uint8_t*>(down[r].map);
     for (int i = 0; i < 3; ++i) {
-        const Plane& p = planes[i];
+        const Plane& p = eng->plane(i);
         uint8_t* d = api->getWritePtr(dst, i);
         ptrdiff_t stride = api->getStride(dst, i);
         size_t row = size_t(p.w) * bytes;

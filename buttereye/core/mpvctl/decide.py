@@ -455,8 +455,9 @@ def choose_target(
     if display <= src:
         return TargetChoice(None, BypassReason.ALREADY_AT_RATE)
     if kind is TargetKind.DISPLAY:
-        if display / src <= DISPLAY_MULTIPLIER and fits(display):
-            return TargetChoice(display, None)
+        full = whole_multiple(src, display)
+        if full / src <= DISPLAY_MULTIPLIER and fits(full):
+            return TargetChoice(full, None)
         even = _even_division(src, display, fits)
         if even is not None:
             return TargetChoice(even, None)
@@ -498,11 +499,28 @@ def _even_division(
     display rate itself (k = 1), which the caller has already ruled out."""
     doubling = src * 2 * AUTO_DOUBLING_TOLERANCE
     k = 2
-    while (t := display / k) >= doubling:
+    while (rate := display / k) >= doubling:
+        t = whole_multiple(src, rate)
         if t / src <= MAX_MULTIPLIER and (fits is None or fits(t)):
             return t
         k += 1
     return None
+
+
+def whole_multiple(src: Fraction, rate: Fraction) -> Fraction:
+    """``rate``, or the whole multiple of ``src`` beside it when that is within
+    mpv's resample tolerance: 71.928 for 72 and 143.856 for 144 with a 23.976 fps
+    video. Every source frame is then shown as it is and one frame in n is new,
+    where 72 exactly would make every frame a new one; mpv plays the 0.1 % away
+    (``video-sync=display-resample``), as it does for the cascade's rates."""
+    if src <= 0:
+        return rate
+    n = round(rate / src)
+    if n >= 2:  # once is the source's own rate: nothing to make (59.94 on 60 Hz)
+        whole = src * n
+        if abs(whole - rate) <= rate * (DISPLAY_RESAMPLE_TOLERANCE - 1):
+            return whole
+    return rate
 
 
 def _even_from(
@@ -768,18 +786,6 @@ def smaller_size_notice(height: int) -> Msg:
     )
 
 
-#: TensorRT RIFE with its optical flow at half resolution (spike M0(q)): about
-#: 8-11 % faster at 4K (v4.26 spends most of its time in full-resolution layers),
-#: within ~0.5 dB of full flow; used only when full flow can't keep up and the
-#: frame is at least this large, before smoothing a smaller picture
-HALF_FLOW_GAIN = 1.08
-HALF_FLOW_MIN_PIXELS = 2560 * 1440
-
-
-def half_flow_notice() -> Msg:
-    return Msg("Estimating motion at half resolution so TensorRT can keep up at full size.")
-
-
 def full_size_notice() -> Msg:
     return Msg(
         "Smoothing at full size as you chose; this computer may not keep up, so some "
@@ -886,11 +892,22 @@ def _display_tier(
     if kind is not TargetKind.DISPLAY or t is None:
         return 0
     display = display_rate(display_hz)
-    if display is not None and t == display and display / src <= DISPLAY_MULTIPLIER:
+    if (
+        display is not None
+        and t in (display, whole_multiple(src, display))
+        and display / src <= DISPLAY_MULTIPLIER
+    ):
         return 0
     if display is not None and t < display and t >= src * 2 * AUTO_DOUBLING_TOLERANCE:
-        k = display / t
-        if k.denominator == 1 and t / src <= MAX_MULTIPLIER:
+        # a whole division, also as the whole multiple of the source beside it
+        # (71.928 for 144 / 2 with a 23.976 fps video)
+        k = round(display / t)
+        part = display / k if k >= 1 else None
+        if (
+            part is not None
+            and t in (part, whole_multiple(src, part))
+            and t / src <= MAX_MULTIPLIER
+        ):
             return 1
     if t == Fraction(60) and display is not None and src < t < display:
         return 2
@@ -1438,6 +1455,7 @@ __all__ = [
     "even_pacing_notice",
     "CASCADE_MIN_HEIGHT",
     "SCREEN_FIT_MAX_SHARE",
+    "whole_multiple",
     "screen_fit",
     "screen_size",
     "CASCADE_GAIN",

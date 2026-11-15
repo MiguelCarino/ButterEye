@@ -262,7 +262,7 @@ async def cmd_play(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
     await need(core, Feature.LIVE)
     file = Path(ns.file).expanduser().absolute()  # mpv runs elsewhere
     events = core.subscribe()
-    sid = await core.play(file, profile_id=ns.profile).result()
+    sid = await core.play(file, profile_id=ns.profile, gpu_frames=ns.gpu_frames).result()
     out.line(f"Playing {file.name} in mpv (session {sid}). Ctrl+C leaves mpv playing.")
     last = ""
     try:
@@ -276,7 +276,8 @@ async def cmd_play(core: ButterEye, ns: argparse.Namespace, out: Out) -> int:
                     text = (
                         f"{_rate(s.source.fps if s.source else None)} → "
                         f"{_rate(s.target_fps)} fps with {s.backend.value}"
-                        f" ({s.filter.value}, {s.health.value})"
+                        + (" and the GPU frames layer" if s.gpu_frames else "")
+                        + f" ({s.filter.value}, {s.health.value})"
                     )
                 else:
                     text = f"{s.filter.value}" + (f": {render(s.notice)}" if s.notice else "")
@@ -541,6 +542,13 @@ def build_parser() -> argparse.ArgumentParser:
     pl = sub.add_parser("play", parents=[common], help="play a video smoothly in mpv")
     pl.add_argument("file")
     pl.add_argument("--profile")
+    pl.add_argument(
+        "--gpu-frames",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="make the last frames on the GPU as mpv shows them (experimental; Linux, "
+        "Wayland); default: the gpu_frames setting",
+    )
     r = sub.add_parser("render", parents=[common], help="save a smooth copy of a video")
     r.add_argument("source")
     r.add_argument("-o", "--output")

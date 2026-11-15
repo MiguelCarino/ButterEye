@@ -56,6 +56,7 @@ from buttereye.core.api import (
     ConfigChanged,
     ConfigConflict,
     ConfigLoad,
+    ContentKind,
     DetachPolicy,
     DoctorReport,
     Event,
@@ -247,11 +248,13 @@ def simple_profile(
     *,
     trt: bool = False,
     hdr: Literal["skip", "passthrough"] = "skip",
+    content: ContentKind = ContentKind.AUTO,
 ) -> Profile:
     """The simple profile. ``trt``: experimental NVIDIA TensorRT is turned on and
     set up, so the GPU choices use it (live play falls back to RIFE-ncnn while
     an engine is being built or when TensorRT can't keep up). ``hdr``:
-    "passthrough" smooths HDR10 videos too (experimental, F7)."""
+    "passthrough" smooths HDR10 videos too (experimental, F7). ``content``: the
+    Video type choice; Auto lets ButterEye look at each video (2D or not)."""
     backend, model = SMOOTHNESS.get(smoothness, SMOOTHNESS[DEFAULT_SMOOTHNESS])
     if trt and smoothness in GPU_CHOICES:
         backend = BackendId.RIFE_TRT
@@ -266,6 +269,7 @@ def simple_profile(
         buffered_frames=None,
         concurrent_frames=None,
         hdr=hdr,
+        content=content,
         builtin=False,
     )
 
@@ -418,10 +422,16 @@ def engine_words(snap: SessionSnapshot) -> str:
             what = _t("MVTools on the CPU")
         what = " ".join(what.split())  # no double space without a model name
         parts = [what]
+        if snap.gpu_frames:
+            # the frames layer (experimental): RIFE makes every second frame
+            parts.append(_t("the last frames made on the GPU as mpv shows them"))
+        if snap.content is ContentKind.ANIMATION:
+            # found by looking at the video, or the user's own choice
+            parts.append(
+                _t("2D animation, detected") if snap.content_detected else _t("2D animation")
+            )
         if snap.mv_block:
             parts.append(_t("fast block mode"))
-        if snap.flow_scale != 1.0:
-            parts.append(_t("motion estimated at half resolution"))
         src = snap.source
         if snap.smooth_size is not None:
             w, h = snap.smooth_size
@@ -830,6 +840,7 @@ class SimpleWindow(QMainWindow):
         self._deband = False  # general.deband (§15.2)
         self._hdr: Literal["skip", "passthrough"] = "skip"  # simple profile hdr (F7)
         self._full_size = False  # general.full_size: never smaller to keep up
+        self._content = ContentKind.AUTO  # simple profile content: Video type
         self._keep_logs = True  # general.keep_logs: per-file logs to copy (opt-out)
         self._jobs: dict[JobId, RenderJobState] = {}
         self._job_rows: dict[JobId, JobRow] = {}
@@ -1031,11 +1042,27 @@ class SimpleWindow(QMainWindow):
         grid.addWidget(rlabel, 2, 0)
         grid.addWidget(self.resolution_combo, 2, 1)
         self.resolution_combo.currentIndexChanged.connect(lambda _i: self._on_choice_changed())
+        self.content_combo = QComboBox(body)
+        self.content_combo.setObjectName("contentCombo")
+        self._fill_content()
+        clabel, _ = a11y.labelled(
+            self.tr("&Video type"),
+            self.content_combo,
+            description=self.tr(
+                "Auto looks at each video: where drawings are held for two or three "
+                "frames it is smoothed as 2D animation, with held drawings re-timed. "
+                "Choose 2D animation or 3D or live action to decide it yourself."
+            ),
+        )
+        grid.addWidget(clabel, 2, 2)
+        grid.addWidget(self.content_combo, 2, 3)
+        self.content_combo.currentIndexChanged.connect(lambda _i: self._on_choice_changed())
         for combo in (
             self.target_combo,
             self.smooth_combo,
             self.picture_combo,
             self.resolution_combo,
+            self.content_combo,
         ):
             # as wide as the longest choice: a cut-off choice is unreadable
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
@@ -1111,6 +1138,7 @@ class SimpleWindow(QMainWindow):
         self.setTabOrder(self.target_combo, self.smooth_combo)
         self.setTabOrder(self.smooth_combo, self.picture_combo)
         self.setTabOrder(self.picture_combo, self.resolution_combo)
+        self.setTabOrder(self.resolution_combo, self.content_combo)
 
     def _zone(self, parent: QWidget, text: str, name: str, chooser: FileChooser | None) -> DropZone:
         unit = self.fontMetrics().height()
@@ -1238,6 +1266,37 @@ class SimpleWindow(QMainWindow):
         finally:
             self._updating = False
 
+    def _fill_content(self) -> None:
+        combo = self.content_combo
+        self._updating = True
+        try:
+            combo.clear()
+            combo.addItem(self.tr("Auto"), ContentKind.AUTO.value)
+            combo.addItem(self.tr("2D animation"), ContentKind.ANIMATION.value)
+            combo.addItem(self.tr("3D or live action"), ContentKind.LIVE.value)
+            combo.setItemData(
+                0,
+                self.tr("ButterEye looks at each video and treats hand-drawn animation as 2D."),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+            combo.setItemData(
+                1,
+                self.tr(
+                    "Hand-drawn animation: held drawings are re-timed, and motion "
+                    "vectors are used last."
+                ),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+            combo.setItemData(
+                2,
+                self.tr("Camera footage and 3D rendering: no frame is ever re-timed."),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+            index = combo.findData(self._content.value)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            self._updating = False
+
     def _fill_resolution(self) -> None:
         combo = self.resolution_combo
         self._updating = True
@@ -1302,7 +1361,13 @@ class SimpleWindow(QMainWindow):
         return self._target_key
 
     def profile(self) -> Profile:
-        return simple_profile(self.smoothness(), self.target(), trt=self._trt_on, hdr=self._hdr)
+        return simple_profile(
+            self.smoothness(),
+            self.target(),
+            trt=self._trt_on,
+            hdr=self._hdr,
+            content=self._content,
+        )
 
     def _show_config_choices(self, cfg: Config) -> None:
         self._upscaling = cfg.general.upscaling
@@ -1317,6 +1382,8 @@ class SimpleWindow(QMainWindow):
         self._target_key = target_key(prof.target)
         self._smooth_key = smoothness_key(prof)
         self._hdr = prof.hdr
+        self._content = prof.content
+        self._fill_content()
         self._fill_targets()
         self._fill_smoothness()
 
@@ -1329,6 +1396,10 @@ class SimpleWindow(QMainWindow):
             str(self.picture_combo.currentData() or "standard")
         )
         self._full_size = self.resolution_combo.currentData() == "full"
+        try:
+            self._content = ContentKind(str(self.content_combo.currentData()))
+        except ValueError:
+            self._content = ContentKind.AUTO
         self.persist()
 
     def _on_smooth_toggled(self, on: bool) -> None:

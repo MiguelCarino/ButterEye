@@ -88,5 +88,57 @@ a second decimal. A deeper frame queue does not help either (M0(u)).
   refresh. This is the next engine step for speed as well.
 - **The display side.** Variable refresh would show a late frame a few milliseconds
   late instead of a whole refresh late, and direct scanout would take the compositor's
-  own drawing out of the path. Both are desktop settings, off on this machine, and not
-  tried here.
+  own drawing out of the path. Both are desktop settings, off on this machine. Variable
+  refresh is measured below; direct scanout is not tried.
+
+## Variable refresh, measured (2026-11-14)
+
+The same 4K 24 fps video as above, smoothed to 144 fps by the cascade at 1080 lines,
+fullscreen on the second screen (2560 × 1080 at 144 Hz, variable range 50–144 Hz). Each
+round is 60 s of steady play with the screen's variable refresh off, then 60 s with it
+on for fullscreen windows (Hyprland 0.57, `vrr = 2` on that screen only).
+
+| round | refresh | dropped | late (mpv) | app's health, share of half-seconds "ok" |
+|---|---|---|---|---|
+| 1 | fixed | 88 | 116 | 58 % |
+| 1 | variable | 65 | 0 | 71 % |
+| 2 | fixed | 40 | 53 | 92 % |
+| 2 | variable | 0 | 23 | 100 % |
+| 3 | fixed | 18 | 29 | 98 % |
+| 3 | variable | 4 | 43 | 100 % |
+
+- **It helps.** Two of the three runs with variable refresh dropped nothing or almost
+  nothing, and the app's health stayed "ok" the whole minute; every fixed-refresh run
+  dropped 18–88 frames. The first variable run is the exception: the GPU peaked at 98 %
+  in it (54–62 % in every other run), so something else ran on the GPU then, and mpv
+  counted 928 mistimed frames there against 0–88 elsewhere. Three rounds is a small sample.
+- **mpv still counts late frames with it** (23 and 43): a frame that misses its refresh
+  is now shown a little late instead of a whole refresh late, and is no longer dropped.
+- **The monitor's menu decides whether the driver offers it.** The main screen
+  (3440 × 1440, its EDID advertises 48–180 Hz) was reported as not capable with
+  "Adaptive-Sync" on in its menu, with motion-blur reduction off, in SDR and after a
+  factory reset. It became capable only with "FreeSync Premium" on in its menu. The
+  driver reads this when the screen connects, so each menu change needs a power cycle.
+
+### The main screen (3440 × 1440, HDR)
+
+The same video and cascade, fullscreen on the main screen at 144 Hz, with the desktop in
+HDR (PQ output), RIFE on TensorRT at 144 fps. Same rounds as above.
+
+| round | refresh | dropped | late (mpv) | app's health, share of half-seconds "ok" |
+|---|---|---|---|---|
+| 1 | fixed | 30 | 45 | 100 % |
+| 1 | variable | 2 | 34 | 100 % |
+| 2 | fixed | 38 | 54 | 100 % |
+| 2 | variable | 3 | 28 | 100 % |
+| 3 | fixed | 18 | 34 | 100 % |
+| 3 | variable | 4 | 52 | 100 % |
+
+- **It helps here too, and steadily.** Every variable run dropped 2–4 frames a minute
+  against 18–38 with fixed refresh; the GPU was at 51–53 % mean (64–66 % peak) in every
+  run, so nothing else interfered this time.
+- **Always-on variable refresh flickers on this panel's desktop**; fullscreen only
+  (`vrr = 2`) does not, and is what the screen is set to.
+- **A Hyprland detail:** a screen rule that differs from the active one only in `vrr` is
+  skipped as already applied. It takes effect with a mode change (another refresh rate,
+  then back) or at the next start of the session.

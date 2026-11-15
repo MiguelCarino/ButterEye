@@ -32,11 +32,17 @@ fallback, rendered at any output rate. ButterEye uses it live where RIFE can't
 keep up (4K at high rates). Installed into ButterEye's private plugin
 directory (%{_libdir}/buttereye/vapoursynth); not autoloaded.
 
+The package also carries VK_LAYER_BUTTEREYE_frames, an explicit Vulkan
+layer built from the same engine that makes the last in-between frames when
+mpv presents them (experimental, Wayland). The Vulkan loader lists an
+explicit layer but never loads it by itself: only an mpv that ButterEye
+starts with its GPU frames setting on asks for it.
+
 %prep
 %autosetup -n %{name}-%{version}
 
 %build
-%meson -Dplugindir=%{_lib}/buttereye/vapoursynth
+%meson -Dplugindir=%{_lib}/buttereye/vapoursynth -Dlayer=enabled
 %meson_build
 
 %install
@@ -53,6 +59,24 @@ echo "NEEDED: $needed"
 echo "$needed" | grep -qx 'libvulkan.so.1'
 unexpected=$(echo "$needed" | grep -vxE 'libvulkan\.so\.1|libstdc\+\+\.so\.6|libm\.so\.6|libgcc_s\.so\.1|libc\.so\.6' || :)
 if [ -n "$unexpected" ]; then echo "unexpected libraries: $unexpected"; exit 1; fi
+# the frames layer: it exports the loader's negotiation entry point and never links
+# the loader (every call goes down the chain), only the C/C++ runtime
+layer=%{buildroot}%{_libdir}/buttereye/libVkLayer_buttereye_frames.so
+test -f "$layer"
+nm -D --defined-only "$layer" | grep -qw vkNegotiateLoaderLayerInterfaceVersion
+needed=$(objdump -p "$layer" | awk '$1 == "NEEDED" {print $2}' | sort)
+echo "layer NEEDED: $needed"
+unexpected=$(echo "$needed" | grep -vxE 'libstdc\+\+\.so\.6|libm\.so\.6|libgcc_s\.so\.1|libc\.so\.6' || :)
+if [ -n "$unexpected" ]; then echo "unexpected libraries in the layer: $unexpected"; exit 1; fi
+# its manifest: explicit (the loader's explicit_layer.d, no enable_environment, which
+# only an implicit layer has) and naming the installed library by its absolute path
+manifest=%{buildroot}%{_datadir}/vulkan/explicit_layer.d/VkLayer_buttereye_frames.json
+cat "$manifest"
+grep -q '"name": "VK_LAYER_BUTTEREYE_frames"' "$manifest"
+grep -qF '"library_path": "%{_libdir}/buttereye/libVkLayer_buttereye_frames.so"' "$manifest"
+if grep -q 'enable_environment' "$manifest"; then echo "the layer manifest must stay explicit"; exit 1; fi
+test ! -e %{buildroot}%{_datadir}/vulkan/implicit_layer.d
+test ! -e %{buildroot}%{_sysconfdir}/vulkan
 
 %files
 %license COPYING
@@ -60,6 +84,9 @@ if [ -n "$unexpected" ]; then echo "unexpected libraries: $unexpected"; exit 1; 
 %dir %{_libdir}/buttereye
 %dir %{_libdir}/buttereye/vapoursynth
 %{_libdir}/buttereye/vapoursynth/libmvgpu.so
+%{_libdir}/buttereye/libVkLayer_buttereye_frames.so
+# explicit_layer.d itself belongs to vulkan-loader, which libvulkan.so.1 pulls in
+%{_datadir}/vulkan/explicit_layer.d/VkLayer_buttereye_frames.json
 
 %changelog
 * Thu Oct 29 2026 The ButterEye contributors - 0.0.3-1

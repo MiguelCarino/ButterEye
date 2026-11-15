@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+//
+// VK_LAYER_BUTTEREYE_frames, stage S4: the app's image (a history image, R32_UINT with the
+// swapchain format's bits) to the engine's luma plane at source-equivalent scale.
+//
+// Each luma sample is the area average of the display pixels it covers inside the video
+// rectangle, so the engine searches at about the source's size whatever the window size.
+// Luma is taken from the encoded R'G'B' with the colour space's weights: BT.709 on an SDR
+// swapchain, BT.2020 on an HDR10 (PQ) one. On PQ each channel is first brought back to an
+// SDR-like scale (PQ to cd/m2, over the 203 cd/m2 of SDR white, then the BT.1886 2.4
+// gamma), so SDR video in an HDR10 swapchain (which uses only 0.58 of the PQ range) gives
+// the engine the same values as it would in SDR. The result is put on the video range
+// (16..235 of 255) the plugin's thresholds were tuned on.
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, r32ui) uniform readonly uimage2D img;
+layout(std430, set = 0, binding = 1) writeonly buffer Luma { float y[]; };
+
+layout(push_constant) uniform P {
+    int rx, ry, rw, rh;  // the video rectangle in the image
+    int sw, sh;          // the luma plane's size
+    uint bits;           // per colour channel: 8 or 10
+    uint red_low;        // 1: red is the channel at bit 0
+    uint pq;             // 1: HDR10 (PQ, BT.2020); 0: SDR (BT.709)
+} p;
+
+float pq_to_sdr(float e) {
+    // SMPTE ST 2084 to cd/m2, then over SDR white and back to a 2.4 gamma
+    const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;
+    float ep = pow(clamp(e, 0.0, 1.0), 1.0 / m2);
+    float lin = pow(max(ep - c1, 0.0) / (c2 - c3 * ep), 1.0 / m1) * 10000.0;
+    return pow(min(lin / 203.0, 1.0), 1.0 / 2.4);
+}
+
+float luma_at(int x, int y) {
+    uint v = imageLoad(img, ivec2(x, y)).x;
+    uint mask = (1u << p.bits) - 1u;
+    float lo = float(v & mask), mid = float((v >> p.bits) & mask), hi = float((v >> (2u * p.bits)) & mask);
+    float s = 1.0 / float(mask);
+    vec3 rgb = (p.red_low != 0u ? vec3(lo, mid, hi) : vec3(hi, mid, lo)) * s;
+    if (p.pq != 0u) {
+        rgb = vec3(pq_to_sdr(rgb.r), pq_to_sdr(rgb.g), pq_to_sdr(rgb.b));
+        return dot(rgb, vec3(0.2627, 0.6780, 0.0593));
+    }
+    return dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+}
+
+void main() {
+    int x = int(gl_GlobalInvocationID.x), yy = int(gl_GlobalInvocationID.y);
+    if (x >= p.sw || yy >= p.sh) return;
+    // the display pixels this sample covers: [x0, x1) x [y0, y1) in rectangle coordinates
+    float fx = float(p.rw) / float(p.sw), fy = float(p.rh) / float(p.sh);
+    float x0 = float(x) * fx, x1 = x0 + fx, y0 = float(yy) * fy, y1 = y0 + fy;
+    float acc = 0.0, wsum = 0.0;
+    for (int j = int(floor(y0)); j < int(ceil(y1)); ++j) {
+        float wy = min(y1, float(j + 1)) - max(y0, float(j));
+        if (wy <= 0.0) continue;
+        for (int i = int(floor(x0)); i < int(ceil(x1)); ++i) {
+            float wx = min(x1, float(i + 1)) - max(x0, float(i));
+            if (wx <= 0.0) continue;
+            acc += wx * wy * luma_at(p.rx + min(i, p.rw - 1), p.ry + min(j, p.rh - 1));
+            wsum += wx * wy;
+        }
+    }
+    y[uint(yy * p.sw + x)] = (16.0 + 219.0 * acc / wsum) / 255.0;
+}

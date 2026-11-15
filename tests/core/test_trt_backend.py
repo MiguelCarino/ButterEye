@@ -101,6 +101,45 @@ def test_engine_key_folder_changes_with_every_field() -> None:
     assert base.folder_name().startswith("v4_26-1920x1080-fp16-h-")
 
 
+def test_precise_warp_engines_get_folders_of_their_own() -> None:
+    # names from before precise warp (M0(x)): an engine built without it is
+    # never picked for a key with it, and keeps its folder for a key without
+    args = ("GPU-1", "615.71.09", "v16", "11.3.0")
+    old = {
+        trt.EngineKey(*args, M26, 1920, 1080): "v4_26-1920x1080-fp16-h-73cfa248899c",
+        trt.EngineKey(*args, M26, 2560, 1440, flow_scale=0.5):
+            "v4_26-2560x1440-fp16-h-flow0.5-1d174eb7af97",
+        trt.EngineKey(*args, "drba-v1", 1920, 1080): "drba_v1-1920x1080-fp16-h-0208d59d28cf",
+    }  # fmt: skip
+    for key, name in old.items():
+        assert key.precise_warp
+        assert dataclasses.replace(key, precise_warp=False).folder_name() == name
+        if trt.is_drba(key.model):  # DRBA keeps its own fp32 positions: same engine
+            assert not key.warp_fp32 and key.folder_name() == name
+        else:
+            assert key.warp_fp32 and key.folder_name() != name
+            assert key.folder_name().startswith(name.rsplit("-", 1)[0] + "-")
+
+
+def test_script_settings_carry_precise_warp(tmp_path: Path) -> None:
+    key = trt.EngineKey("GPU-1", "615", "v16", "11.3.0", M26, 1920, 1080)
+    get = trt.script_settings
+    assert get(_inst(tmp_path), key, tmp_path, streams=2, build=True)["precise_warp"] is True
+    old = dataclasses.replace(key, precise_warp=False)
+    assert get(_inst(tmp_path), old, tmp_path, streams=2, build=True)["precise_warp"] is False
+    drba = dataclasses.replace(key, model="drba-v1")
+    assert get(_inst(tmp_path), drba, tmp_path, streams=2, build=True)["precise_warp"] is False
+
+
+def test_template_sets_precise_warp_for_rife_only() -> None:
+    body = generator.template_text()
+    body = body[body.index("def _rife_trt(") :]
+    line = "_FP16['warp'] = not drba and bool(trt.get('precise_warp'))"
+    # before any engine is asked for: plain, cascade and hold fill share it
+    assert line in body and body.index(line) < body.index("def pairs(")
+    assert body.index(line) < body.index("vsmlrt.RIFE(")
+
+
 def test_ready_needs_marker_and_engine(tmp_path: Path) -> None:
     assert not trt.is_ready(tmp_path)
     (tmp_path / "a.engine").write_bytes(b"")

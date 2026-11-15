@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+//
+// VK_LAYER_BUTTEREYE_frames, stage S3: the blend. Frame m of the k-1 in-between frames
+// (z = m - 1) is the app's previous image and its current one mixed at t = m/k.
+//
+// Every swapchain format the layer handles holds one pixel in 32 bits, so the layer's
+// images are R32_UINT and the swapchain images are copied in and out bit for bit
+// (vkCmdCopyImage between size-compatible formats). The shader reads the packed bits
+// itself: three colour channels of `bits` bits (8 or 10) from bit 0 up, then alpha.
+// Nothing is converted, so a _SRGB, an HDR10 or a plain UNORM image is mixed on the
+// encoded values it holds, and a pixel that is the same in both images comes out
+// with exactly the same bits. Which of the low and high channels is red only matters
+// for the marker (`red_low`).
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, r32ui) uniform readonly uimage2D prev_img;
+layout(set = 0, binding = 1, r32ui) uniform readonly uimage2D cur_img;
+layout(set = 0, binding = 2, r32ui) uniform writeonly uimage2DArray out_img;
+
+layout(push_constant) uniform Params {
+    uint bits;      // bits per colour channel: 8 or 10
+    uint red_low;   // 1: red is the channel at bit 0 (R8G8B8A8, A2B10G10R10); 0: blue is
+    uint k;         // in-between frame m sits at t = m / k
+    uint show;      // 1: a marker square on every frame this shader makes
+    uint width;
+    uint height;
+} p;
+
+// the marker: a square near the top left corner; m = 1 red, 2 blue, 3 green, at half level
+const int kMarkerAt = 24;
+const int kMarkerSize = 96;
+
+uint mix_channel(uint a, uint c, uint m) {
+    return (a * (p.k - m) + c * m + p.k / 2u) / p.k;
+}
+
+void main() {
+    const ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+    if (xy.x >= int(p.width) || xy.y >= int(p.height)) return;
+    const uint m = gl_GlobalInvocationID.z + 1u;
+    const uint a = imageLoad(prev_img, xy).x;
+    const uint c = imageLoad(cur_img, xy).x;
+    const uint cb = p.bits;
+    const uint mask = (1u << cb) - 1u;
+    const uint ab = 32u - 3u * cb;  // alpha bits: 8 or 2
+    const uint amask = (1u << ab) - 1u;
+    uint o = 0u;
+    for (uint i = 0u; i < 3u; ++i) {
+        const uint s = i * cb;
+        o |= mix_channel((a >> s) & mask, (c >> s) & mask, m) << s;
+    }
+    const uint sa = 3u * cb;
+    o |= mix_channel((a >> sa) & amask, (c >> sa) & amask, m) << sa;
+    if (p.show != 0u && xy.x >= kMarkerAt && xy.x < kMarkerAt + kMarkerSize && xy.y >= kMarkerAt &&
+        xy.y < kMarkerAt + kMarkerSize) {
+        const uint level = (mask + 1u) / 2u;
+        const uint r = m == 1u ? level : 0u;
+        const uint g = m == 3u ? level : 0u;
+        const uint b = m == 2u ? level : 0u;
+        const uint low = p.red_low != 0u ? r : b;
+        const uint high = p.red_low != 0u ? b : r;
+        o = low | (g << cb) | (high << (2u * cb)) | (amask << sa);
+    }
+    imageStore(out_img, ivec3(xy, int(gl_GlobalInvocationID.z)), uvec4(o, 0u, 0u, 0u));
+}

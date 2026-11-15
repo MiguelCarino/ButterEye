@@ -23,6 +23,14 @@ layout(push_constant) uniform P {
     int w, h, bw, bh; float t, lambda; int smooth_vec, bs; float margin, gdc;
     int tri, edge; float gdp, gdn, tri_gate, tri_thr, tri_ratio, tri_pre, tri_bad, edge_thr, edge_act, tri_fine, tri_reach;
 } p;
+// The brightness difference (gdc) from binding 9 instead of the push constant when
+// GDC_FROM_BUFFER (constant 2): the present layer measures it on the GPU. Off, as in
+// the plugin, nothing is read from the buffer. Its order: gdc, gdp, gdn.
+layout(constant_id = 2) const bool GDC_FROM_BUFFER = false;
+layout(std430, binding = 9) readonly buffer Gdc { float gdcv[]; };
+#define GDC (GDC_FROM_BUFFER ? gdcv[0] : p.gdc)
+#define GDP (GDC_FROM_BUFFER ? gdcv[1] : p.gdp)
+#define GDN (GDC_FROM_BUFFER ? gdcv[2] : p.gdn)
 // which: 0 A, 1 C, 2 the frame before A, 3 the frame after C
 float bilf(int which, vec2 q) {
     q = clamp(q, vec2(0.0), vec2(p.w - 1.001, p.h - 1.001));
@@ -40,7 +48,7 @@ float pair_err(vec2 here, vec2 v) {
     float e = 0.0;
     for (int k = 0; k < 5; ++k) {
         vec2 q = here + vec2(cross5[k]);
-        e += abs(bil(true, q - 2.0 * p.t * v) - bil(false, q + 2.0 * (1.0 - p.t) * v) - p.gdc);
+        e += abs(bil(true, q - 2.0 * p.t * v) - bil(false, q + 2.0 * (1.0 - p.t) * v) - GDC);
     }
     return e / 5.0;
 }
@@ -74,7 +82,7 @@ void main() {
             float e = 0.0;
             for (int k = 0; k < 5; ++k) {
                 vec2 q = here + vec2(cross5[k]);
-                e += abs(bil(true, q - 2.0 * p.t * v) - bil(false, q + 2.0 * (1.0 - p.t) * v) - p.gdc);
+                e += abs(bil(true, q - 2.0 * p.t * v) - bil(false, q + 2.0 * (1.0 - p.t) * v) - GDC);
             }
             // prefer the pixel's own block and its nearest neighbours
             vec2 d = (vec2(b) * float(p.bs) + 0.5 * float(p.bs - 1) - here) / 8.0;
@@ -89,7 +97,7 @@ void main() {
     float se = 0.0;
     for (int k = 0; k < 5; ++k) {
         vec2 q = here + vec2(cross5[k]);
-        se += abs(bil(true, q - 2.0 * p.t * smoothv) - bil(false, q + 2.0 * (1.0 - p.t) * smoothv) - p.gdc);
+        se += abs(bil(true, q - 2.0 * p.t * smoothv) - bil(false, q + 2.0 * (1.0 - p.t) * smoothv) - GDC);
     }
     if (!(best + 5.0 * p.margin < se)) { bestv = smoothv; best_err = se / 5.0; }
     // The edge of an object proj.comp found. Its blocks that are part object,
@@ -143,11 +151,11 @@ void main() {
                     vec2 an = q - 2.0 * p.t * vn, cn = q + 2.0 * (1.0 - p.t) * vn;
                     vec2 aq = q - 2.0 * p.t * vq, cq = q + 2.0 * (1.0 - p.t) * vq;
                     float c_n = bilf(1, cn), a_q = bilf(0, aq);
-                    sb += abs(bilf(0, q - 2.0 * p.t * bestv) - bilf(1, q + 2.0 * (1.0 - p.t) * bestv) - p.gdc);
-                    sn += abs(bilf(0, an) - c_n - p.gdc);
-                    sq += abs(a_q - bilf(1, cq) - p.gdc);
-                    en += abs(c_n - bilf(3, cn + 2.0 * vn) - p.gdn);
-                    eq += abs(a_q - bilf(2, aq - 2.0 * vq) - p.gdp);
+                    sb += abs(bilf(0, q - 2.0 * p.t * bestv) - bilf(1, q + 2.0 * (1.0 - p.t) * bestv) - GDC);
+                    sn += abs(bilf(0, an) - c_n - GDC);
+                    sq += abs(a_q - bilf(1, cq) - GDC);
+                    en += abs(c_n - bilf(3, cn + 2.0 * vn) - GDN);
+                    eq += abs(a_q - bilf(2, aq - 2.0 * vq) - GDP);
                 }
             sb /= 25.0; sn /= 25.0; sq /= 25.0; en /= 25.0; eq /= 25.0;
             if (min(sn, sq) > p.tri_gate && sb > p.tri_gate && (p.tri & 8) == 0) {
@@ -165,7 +173,7 @@ void main() {
                     float eo = 3.4e38;
                     for (int k = -1; k <= 1; ++k) {
                         vec2 q = here + p.tri_reach * float(k) * dir;
-                        eo = min(eo, abs(bil(true, q - 2.0 * p.t * other) - bil(false, q + 2.0 * (1.0 - p.t) * other) - p.gdc));
+                        eo = min(eo, abs(bil(true, q - 2.0 * p.t * other) - bil(false, q + 2.0 * (1.0 - p.t) * other) - GDC));
                     }
                     if (eo >= p.tri_fine) {
                         // all or nothing: a part of the blend under this vector

@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+//
+// VK_LAYER_BUTTEREYE_frames, stage S4: the scene-cut test on the GPU, so the layer needs no
+// readback. d is the mean |A - C| over the engine's quarter-size luma (pyramid level 2, on
+// the video range, as ButterEye's script measures it on a quarter-size picture). A cut:
+// d over `hard`, or d over `lo` and over `ratio` times the largest d of the pairs before
+// (at least `floor`). The script also looks at the pairs after a cut and asks MVTools; the
+// layer has only the pairs before, so this is the script's rule without those two parts.
+// The first pair of a run (after a start, a pause, a seek) has no pairs before it: only
+// `hard` applies there, as nothing says its d is unusual.
+// One group. state[0] = d, state[1] = 1.0 on a cut, state[2..5] the last four d (a ring).
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer A { float a[]; };
+layout(std430, set = 0, binding = 1) readonly buffer C { float c[]; };
+layout(std430, set = 0, binding = 2) buffer State { float state[]; };
+
+layout(push_constant) uniform P {
+    uint off;      // level 2's offset in both pyramids
+    int w, h;      // level 2's size
+    int ring;      // where this d goes in the ring (0..3)
+    int valid;     // how many ring entries hold earlier pairs of this run (0..4)
+    float hard, lo, ratio, floor_;
+    int force;     // 1: a cut whatever d is (a test knob)
+} p;
+
+shared float s[256];
+
+void main() {
+    uint t = gl_LocalInvocationID.x;
+    uint n = uint(p.w * p.h);
+    float acc = 0.0;
+    for (uint i = t; i < n; i += 256u) acc += abs(a[p.off + i] - c[p.off + i]);
+    s[t] = acc;
+    barrier();
+    for (uint k = 128u; k > 0u; k >>= 1) {
+        if (t < k) s[t] += s[t + k];
+        barrier();
+    }
+    if (t == 0u) {
+        float d = s[0] / float(n);
+        float around = p.floor_;
+        for (int i = 0; i < p.valid; ++i) around = max(around, state[2 + i]);
+        bool cut = p.force != 0 || d > p.hard || (p.valid > 0 && d > p.lo && d > p.ratio * around);
+        state[0] = d;
+        state[1] = cut ? 1.0 : 0.0;
+        state[2 + p.ring] = d;
+    }
+}

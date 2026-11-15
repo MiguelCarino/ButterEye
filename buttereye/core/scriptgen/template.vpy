@@ -553,13 +553,27 @@ def _fp16_model(network_path, target_network_path, fp16=False, bf16=False,
     keep = [n.name for n in model.graph.node if n.op_type == 'Cast']
     if _FP16.get('grid'):
         keep += _grid_nodes(model)
+    if _FP16.get('warp'):
+        keep += _warp_nodes(model)
+    for p in model.metadata_props:  # a patched model names its own
+        if p.key == _FP32_NODES:
+            keep += [x for x in p.value.split(',') if x]
     model = convert_float_to_float16(model, keep_io_types=output_format != 1,
                                      node_block_list=keep)
+    if _FP16.get('warp'):
+        _fp32_links(model, set(keep))
     onnx.save(model, target_network_path)
 
 
-#: 'grid': keep the arithmetic of sampling positions in full precision (DRBA)
+#: 'grid': keep the arithmetic of sampling positions in full precision (DRBA).
+#: 'warp': the same for RIFE's final warp, the one the picture is drawn with,
+#: with no stop at half precision on the way (precise warp, docs/spikes/m0x.md)
 _FP16 = {}
+#: model metadata: nodes a patched model needs kept in full precision
+_FP32_NODES = 'buttereye.fp32_nodes'
+#: the network's own layers: where a walk back from a warp's positions ends
+_GRID_STOP = frozenset(('Conv', 'ConvTranspose', 'DepthToSpace', 'Resize', 'Sigmoid',
+                        'LeakyRelu', 'GridSample', 'Pad', 'Shape'))
 
 
 def _grid_nodes(model):
@@ -568,8 +582,6 @@ def _grid_nodes(model):
     # 1920 wide lands up to a pixel off, and the picture comes out torn
     # (measured against PyTorch at fp32: worst pixel 26 levels off, 12 with
     # these nodes kept; what is left is the flow itself at half precision)
-    stop = {'Conv', 'ConvTranspose', 'DepthToSpace', 'Resize', 'Sigmoid', 'LeakyRelu',
-            'GridSample', 'Pad', 'Shape'}
     by_output = {o: n for n in model.graph.node for o in n.output}
     names, todo, seen = [], [], set()
     for n in model.graph.node:
@@ -578,12 +590,115 @@ def _grid_nodes(model):
             todo.append(n.input[1])
     while todo:
         n = by_output.get(todo.pop())
-        if n is None or n.name in seen or n.op_type in stop:
+        if n is None or n.name in seen or n.op_type in _GRID_STOP:
             continue
         seen.add(n.name)
         names.append(n.name)
         todo.extend(n.input)
     return names
+
+
+def _warp_nodes(model):
+    # The final warp (the one the output picture is drawn with) and the nodes
+    # that work out where it reads. The walk stops at a tensor the network
+    # computed that other nodes read too: the flow sum the earlier warps and
+    # the last block read stays in fp16 (keeping it cost 0.6 ms at 1080p and
+    # scored the same). What does not depend on the picture is followed: the
+    # base grid and the divisor, built from the frame size (spike M0(x)).
+    g = model.graph
+    by_output = {o: n for n in g.node for o in n.output}
+    users = {}
+    for n in g.node:
+        for x in n.input:
+            users[x] = users.get(x, 0) + 1
+    data = {i.name for i in g.input}
+    for n in g.node:  # in topological order, as ONNX keeps them
+        if n.op_type != 'Shape' and any(x in data for x in n.input):
+            data.update(n.output)
+    names, todo, seen = [], [], set()
+    for n in _final_warps(model, by_output):
+        names.append(n.name)
+        todo.append(n.input[1])
+    while todo:
+        x = todo.pop()
+        n = by_output.get(x)
+        if (n is None or n.name in seen or n.op_type in _GRID_STOP
+                or (x in data and users.get(x, 0) > 1)):
+            continue
+        seen.add(n.name)
+        names.append(n.name)
+        todo.extend(n.input)
+    return names
+
+
+def _final_warps(model, by_output):
+    # The GridSample the output picture is read from: back from the graph
+    # output through the blend and the crop, never into the network
+    found, todo, seen = [], [o.name for o in model.graph.output], set()
+    while todo:
+        n = by_output.get(todo.pop())
+        if n is None or n.name in seen:
+            continue
+        seen.add(n.name)
+        if n.op_type == 'GridSample':
+            found.append(n)
+        elif n.op_type == 'Pad' or n.op_type not in _GRID_STOP:
+            todo.extend(x for x in n.input if x)
+    if not found:
+        raise vs.Error('ButterEye: unexpected RIFE graph (no final warp)')
+    return found
+
+
+def _fp32_links(model, keep):
+    # convert_float_to_float16 casts a kept node's output to half precision
+    # once and back to full precision for each kept user, wherever the output
+    # has more than one user. In RIFE that is the base grid every warp adds
+    # the flow to and the flow divisor: a half float near 1 is 1/2048 apart, so
+    # the grid alone put the final warp up to 0.23 px off at 1920 wide (0.47 px
+    # at 3840). Kept users read the full-precision output directly; users in
+    # half precision keep their cast.
+    from onnx import TensorProto
+
+    g = model.graph
+    by_output = {o: n for n in g.node for o in n.output}
+    users = {}
+    for n in g.node:
+        for x in n.input:
+            users.setdefault(x, []).append(n)
+
+    def to(n):
+        return next((a.i for a in n.attribute if a.name == 'to'), None)
+
+    rename, drop = {}, set()
+    for c in g.node:
+        if c.op_type != 'Cast' or to(c) != TensorProto.FLOAT16:
+            continue
+        src = by_output.get(c.input[0])
+        if src is None or src.name not in keep or src.op_type == 'Cast':
+            continue
+        for u in users.get(c.output[0], ()):
+            if u.op_type == 'Cast' and to(u) == TensorProto.FLOAT:
+                rename[u.output[0]] = c.input[0]
+                drop.add(u.name)
+    if any(o.name in rename for o in g.output):
+        raise vs.Error('ButterEye: unexpected RIFE graph (output cast)')
+    for n in g.node:
+        for i, x in enumerate(n.input):
+            if x in rename:
+                n.input[i] = rename[x]
+    gone = [n for n in g.node if n.name in drop]
+    used = {x for n in g.node if n.name not in drop for x in n.input}
+    used.update(o.name for o in g.output)
+    gone += [n for n in g.node if n.op_type == 'Cast' and n.name not in drop
+             and n.output[0] not in used and by_output.get(n.input[0]) is not None
+             and to(n) == TensorProto.FLOAT16]
+    for n in gone:
+        g.node.remove(n)
+    dead = {o for n in gone for o in n.output}
+    infos = [v for v in g.value_info if v.name not in dead]
+    del g.value_info[:]
+    g.value_info.extend(infos)
+    return len(drop)
 
 
 # RIFE IFNet flow blocks (v4.x, vs-mlrt v2 export): down-resize factors and
@@ -597,6 +712,7 @@ def _scale_flow(model, k):
     # full size (Practical-RIFE's 'scale'; spike M0(q)). vs-mlrt patches its v1
     # exports the same way and refuses v4.7+; the v2 export of v4.26 has the
     # same structure. Any constant that isn't exactly as expected stops here.
+    # Live playback no longer asks for it (spike M0(x)); the benchmark does.
     from onnx.numpy_helper import from_array, to_array
 
     g = model.graph
@@ -648,7 +764,65 @@ def _scale_flow(model, k):
         raise vs.Error('ButterEye: unexpected RIFE graph (flow rescale)')
     for _, n in found:
         rewrite(private(next(x for x in n.input if x in const)), lambda a: (a * k).astype(a.dtype))
+    # The input is padded to a multiple of 64 so that the coarsest block's
+    # picture (1/16, then its own two halvings) comes out whole. At k that
+    # picture is k/16 of the frame: pad to 64/k (1080 lines -> 1152 at 0.5, not
+    # 1088, which the first block returned 1152 lines for and failed to build)
+    pad = _PAD_MULTIPLE / k
+    if pad != int(pad):
+        raise vs.Error('ButterEye: flow scale %g is not supported' % k)
+    for c in _pad_multiples(g, const):
+        rewrite(private(c.output[0]), lambda a: (a * 0 + int(pad)).astype(a.dtype))
     return model
+
+
+#: what the RIFE export pads its input to (its own constants, checked)
+_PAD_MULTIPLE = 64
+
+
+def _pad_multiples(g, const):
+    # The constants of the input padding, (m - h % m) % m for the height and
+    # the width: Mod(Gather(Shape(input)), m), Sub(m, that), Mod(that, m)
+    from onnx.numpy_helper import to_array
+
+    prod = {o: n for n in g.node for o in n.output}
+    users = {}
+    for n in g.node:
+        for x in n.input:
+            users.setdefault(x, []).append(n)
+
+    def made(name, op):
+        n = prod.get(name)
+        return n if n is not None and n.op_type == op else None
+
+    def value(name):
+        if name not in const:
+            return None
+        a = to_array(const[name].attribute[0].t)
+        return a.reshape(-1)[0] if a.size == 1 else None
+
+    def only(name, op):
+        us = users.get(name, [])
+        return us[0] if len(us) == 1 and us[0].op_type == op else None
+
+    found = []
+    for m1 in g.node:
+        gather = made(m1.input[0], 'Gather') if m1.op_type == 'Mod' else None
+        shape = made(gather.input[0], 'Shape') if gather is not None else None
+        if shape is None or shape.input[0] != g.input[0].name:
+            continue
+        sub = only(m1.output[0], 'Sub')
+        m2 = only(sub.output[0], 'Mod') if sub is not None else None
+        if (m2 is None or list(sub.input[1:]) != [m1.output[0]]
+                or m2.input[0] != sub.output[0]):
+            raise vs.Error('ButterEye: unexpected RIFE graph (input pad)')
+        names = (m1.input[1], sub.input[0], m2.input[1])
+        if any(value(x) != _PAD_MULTIPLE for x in names):
+            raise vs.Error('ButterEye: unexpected RIFE graph (input pad multiples)')
+        found += [const[x] for x in names]
+    if len(found) != 6:
+        raise vs.Error('ButterEye: unexpected RIFE graph (input pad)')
+    return found
 
 
 def _flow_models(trt):
@@ -766,6 +940,9 @@ def _rife_trt(clip, cfg, props, target):
     vsmlrt.trtexec_path = trt['trtexec']
     vsmlrt.models_path = trt['models_dir'] if drba else _flow_models(trt)
     vsmlrt.convert_model = _fp16_model
+    # RIFE's final warp in fp32 (plain, cascade and hold fill share the engine).
+    # An engine built without it lives in a folder of its own (EngineKey)
+    _FP16['warp'] = not drba and bool(trt.get('precise_warp'))
     matrix = _matrix(cfg, clip, props)
     rng = _range(cfg, props)
     loc = _chromaloc(cfg, props)

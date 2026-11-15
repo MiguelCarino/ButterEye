@@ -3,3 +3,11 @@
 option('glslang', type: 'string', value: 'glslang', description: 'GLSL to SPIR-V compiler')
 option('plugindir', type: 'string', value: 'lib64/buttereye/vapoursynth',
        description: 'where the plugin is installed (ButterEye loads it by path)')
+option('layer', type: 'feature', value: 'disabled',
+       description: 'also build VK_LAYER_BUTTEREYE_frames (Linux, explicit Vulkan layer; off by default)')
+option('layerdir', type: 'string', value: '',
+       description: 'where the frames layer library is installed (empty: <libdir>/buttereye)')
+option('layer_manifestdir', type: 'string', value: '',
+       description: 'where its manifest is installed (empty: <datadir>/vulkan/explicit_layer.d, a folder the Vulkan loader reads explicit layers from)')
+option('layer_library_path', type: 'combo', choices: ['absolute', 'relative'], value: 'absolute',
+       description: 'how the installed manifest names the library: its absolute path (a package), or a path relative to the manifest (a tree that moves, such as the AppImage)')

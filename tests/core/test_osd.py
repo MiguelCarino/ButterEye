@@ -25,7 +25,6 @@ def _active() -> object:
         target_fps=Fraction(60),
         source=dataclasses.replace(snap.source, fps=Fraction(24), width=3840, height=2160),
         smooth_size=(1920, 1080),
-        flow_scale=0.5,
     )
 
 
@@ -33,7 +32,7 @@ def test_parts_follow_the_chosen_items() -> None:
     snap = _active()
     assert osd.parts(snap, ("rates", "engine")) == ["24 → 60 fps", "GPU · RIFE v4.26 TensorRT"]  # type: ignore[arg-type]
     full = osd.parts(snap, ("rates", "engine", "size", "health"))  # type: ignore[arg-type]
-    assert full[2] == "at 1920×1080 · half-res motion" and full[3] == "frames OK"
+    assert full[2] == "at 1920×1080" and full[3] == "frames OK"
     cpu = dataclasses.replace(
         snap, backend=BackendId.MVTOOLS, mv_block=True, health=Health.DROPPING
     )  # type: ignore[type-var]

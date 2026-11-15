@@ -12,3 +12,4 @@
 #include "select.h"
 #include "render.h"
 #include "pack.h"
+#include "mean.h"

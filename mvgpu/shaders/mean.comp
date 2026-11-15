@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+// The mean luma of a slot, on the GPU, and the brightness differences (gdc) the
+// matching shaders read with GDC_FROM_BUFFER. Used where there is no CPU copy of
+// the frame (the present layer); the plugin measures the mean on the CPU instead.
+// Like the plugin's mean it takes every 4th pixel of every 4th row.
+//   mode 0: a group per sampled row: that row's sum into rows[]
+//   mode 1: one group: the rows' sum over the sample count into means[slot]
+//   mode 2: one invocation: gdcv = (means[a] - means[c], means[a] - means[b],
+//           means[c] - means[n]) for the pair (a, c), b before it, n after it
+#version 450
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Luma { float y[]; };  // the slot's planes, luma first
+layout(std430, binding = 1) buffer Rows { float rows[]; };
+layout(std430, binding = 2) buffer Means { float means[]; };
+layout(std430, binding = 3) writeonly buffer Gdc { float gdcv[]; };
+layout(push_constant) uniform P { int w, h, mode, slot, a, c, b, n; } p;
+shared float s[256];
+void main() {
+    uint t = gl_LocalInvocationID.x;
+    if (p.mode == 2) {
+        if (t == 0u) {
+            gdcv[0] = means[p.a] - means[p.c];
+            gdcv[1] = means[p.a] - means[p.b];
+            gdcv[2] = means[p.c] - means[p.n];
+        }
+        return;
+    }
+    int nrows = (p.h + 3) / 4;
+    float acc = 0.0;
+    if (p.mode == 0) {
+        uint base = gl_WorkGroupID.x * 4u * uint(p.w);
+        for (int x = int(t) * 4; x < p.w; x += 1024) acc += y[base + uint(x)];
+    } else {
+        for (int i = int(t); i < nrows; i += 256) acc += rows[i];
+    }
+    s[t] = acc;
+    barrier();
+    for (uint k = 128u; k > 0u; k >>= 1) {
+        if (t < k) s[t] += s[t + k];
+        barrier();
+    }
+    if (t == 0u) {
+        if (p.mode == 0)
+            rows[gl_WorkGroupID.x] = s[0];
+        else
+            means[p.slot] = s[0] / float(nrows * ((p.w + 3) / 4));
+    }
+}

@@ -1,0 +1,14 @@
+{
+    "file_format_version": "1.2.0",
+    "layer": {
+        "name": "VK_LAYER_BUTTEREYE_frames",
+        "type": "INSTANCE",
+        "library_path": "@LIBRARY_PATH@",
+        "api_version": "@API_VERSION@",
+        "implementation_version": "1",
+        "description": "ButterEye: in-between frames at present time (explicit; ButterEye turns it on)",
+        "functions": {
+            "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"
+        }
+    }
+}

@@ -274,3 +274,46 @@ def test_template_runs_mvgpu_after_the_rife_engine() -> None:
     build = text[text.index("def build():") :]
     assert build.index("_rife_trt(clip, cfg, props, target)") < build.index("_cascade(out, cfg")
     assert "cfg.get('cascade_fps') and backend in ('rife-ncnn', 'rife-trt')" in build
+
+
+def test_an_ntsc_rate_takes_whole_multiples_without_a_cascade_too() -> None:
+    """23.976 fps on 144 Hz with RIFE alone (a 2D profile has no cascade): 72 exactly
+    would make every frame a new one, 71.928 is three per film frame, and mpv plays
+    the 0.1 % away. The same for the display rate itself."""
+    three = decide.choose_target(NTSC, 144.0, TargetKind.DISPLAY, sustainable_fps=100.0)
+    assert three.target == NTSC * 3 and three.bypass is None
+    six = decide.choose_target(NTSC, 144.0, TargetKind.DISPLAY, sustainable_fps=1000.0)
+    assert six.target == NTSC * 6
+    assert decide.whole_multiple(NTSC, Fraction(72)) == NTSC * 3
+    assert decide.whole_multiple(F24, Fraction(72)) == 72
+    assert decide.whole_multiple(NTSC, Fraction(60)) == 60  # 2.5 steps: nothing whole beside it
+    assert decide.whole_multiple(Fraction(25), Fraction(72)) == 72  # 75 is 4 % off: left alone
+
+
+def test_a_screen_at_the_videos_own_rate_is_not_a_whole_multiple() -> None:
+    # 59.94 on 60 Hz, 23.976 on a 24 Hz TV: once is the source itself, nothing to make
+    assert decide.whole_multiple(Fraction(60000, 1001), Fraction(60)) == 60
+    assert decide.whole_multiple(NTSC, Fraction(24)) == 24
+    for src, hz in ((Fraction(60000, 1001), 60.0), (NTSC, 24.0), (Fraction(30000, 1001), 30.0)):
+        tc = decide.choose_target(src, hz, TargetKind.DISPLAY)
+        assert tc.target is None or tc.target > src
+
+
+def test_whole_multiple_targets_keep_their_display_tier() -> None:
+    # 143.856 is "the display rate" and 71.928 "a whole division" for a 23.976 fps
+    # video on 144 Hz, so GPU motion vectors still take over from a RIFE that only
+    # reaches 2x, as they do for 24 fps
+    tiers = [
+        decide._display_tier(t, NTSC, 144.0, TargetKind.DISPLAY)
+        for t in (NTSC * 6, NTSC * 3, NTSC * 2)
+    ]
+    assert tiers == [0, 1, 1]
+    for src in (NTSC, F24):
+        options = [
+            decide.EngineOption(BackendId.RIFE_TRT, 60.0),
+            decide.EngineOption(BackendId.MVGPU, 300.0),
+        ]
+        pick = decide.pick_engine(
+            options, src, 144.0, TargetKind.DISPLAY, auto=True, rife_proof=False
+        )
+        assert pick.backend is BackendId.MVGPU and pick.target.target == src * 6

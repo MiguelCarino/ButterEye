@@ -248,7 +248,7 @@ async def test_session_4k_uses_mvgpu_at_full_size_before_a_smaller_picture(
     # 2x of 24 is 48, which a 60 Hz screen can't pace evenly: the measured cap
     # covers 60, so every frame gets one refresh (decide._even_from)
     assert snap.backend is BackendId.MVGPU and snap.target_fps == 60
-    assert snap.smooth_size is None and snap.flow_scale == 1.0 and snap.notice is None
+    assert snap.smooth_size is None and snap.notice is None
     (ud,) = _filters(s)
     assert ud["backend"] == "mvgpu" and "size" not in ud
     assert ud["gpu_id"] == 1  # the RTX 4090's Vulkan index

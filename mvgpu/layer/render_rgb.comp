@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The ButterEye contributors
+//
+// VK_LAYER_BUTTEREYE_frames, stage S4: the motion-compensated in-between frame at t, on the
+// app's RGB images at display size, from the engine's per-pixel field at source scale.
+//
+// The decisions are render.comp's (mvgpu/shaders), applied to three colour channels at once:
+// out = (1-t) A(x - 2t u) + t C(x + 2(1-t) u) with Catmull-Rom taps, the nearer or the
+// covering/uncovering frame where even the best vector leaves A and C apart, the side
+// proj.comp and select.comp found, and a fade to the plain blend where the vectors fail
+// over an area. The field is per source-scale pixel: each display pixel takes the field of
+// the source pixel it falls in, with the vector scaled by display/source.
+//
+// Exact paths, on the integer values as blend.comp mixes them (so a pixel that is the same
+// in A and C keeps its bits):
+//  - outside the video rectangle;
+//  - the static-pixel rule: where A and C agree within `still` at the pixel and its four
+//    neighbours, nothing moves there (static subtitles, OSD, letterbox). Not where the
+//    vector's two samples agree with each other and not with the pixel: then something
+//    passes over it between A and C (a thin line, a small fast object), which the rule
+//    would erase;
+//  - after a cut (cut.comp), where the frame is A, as the plugin repeats the frame before a cut.
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, r32ui) uniform readonly uimage2D prev_img;
+layout(set = 0, binding = 1, r32ui) uniform readonly uimage2D cur_img;
+layout(set = 0, binding = 2, r32ui) uniform writeonly uimage2DArray out_img;
+layout(std430, set = 0, binding = 3) readonly buffer F { vec4 field[]; };
+layout(std430, set = 0, binding = 4) readonly buffer State { float state[]; };
+
+layout(push_constant) uniform P {
+    int rx, ry, rw, rh;  // the video rectangle
+    int sw, sh;          // the field's size (source scale)
+    int width, height;   // the images
+    uint bits, red_low;
+    uint k, m;           // this frame is m of k (t = m / k), in layer m - 1 of out_img
+    float lo, hi, fail_lo, fail_hi;
+    float still;         // the static-pixel rule's limit, a share of full scale (0: off)
+    uint show;           // 1: the marker square
+} p;
+
+uint mask() { return (1u << p.bits) - 1u; }
+
+vec4 unpack(uint v) {
+    uint mk = mask();
+    uint ab = 32u - 3u * p.bits;
+    float s = 1.0 / float(mk);
+    return vec4(float(v & mk), float((v >> p.bits) & mk), float((v >> (2u * p.bits)) & mk),
+                float(v >> (3u * p.bits))) * vec4(s, s, s, 1.0 / float((1u << ab) - 1u));
+}
+
+// the three colour channels in packed order (red is whichever the format has there)
+vec3 tap(bool from_a, int x, int y) {
+    ivec2 q = ivec2(clamp(x, p.rx, p.rx + p.rw - 1), clamp(y, p.ry, p.ry + p.rh - 1));
+    return unpack(from_a ? imageLoad(prev_img, q).x : imageLoad(cur_img, q).x).xyz;
+}
+
+vec4 cr(float f) {
+    float f2 = f * f, f3 = f2 * f;
+    return vec4(-0.5 * f3 + f2 - 0.5 * f, 1.5 * f3 - 2.5 * f2 + 1.0, -1.5 * f3 + 2.0 * f2 + 0.5 * f,
+                0.5 * f3 - 0.5 * f2);
+}
+
+vec3 sample_at(bool from_a, vec2 q) {
+    q = clamp(q, vec2(p.rx, p.ry), vec2(p.rx + p.rw - 1, p.ry + p.rh - 1));
+    vec2 b = floor(q), f = q - b;
+    ivec2 i = ivec2(b);
+    vec4 wx = cr(f.x), wy = cr(f.y);
+    vec3 s = vec3(0.0);
+    for (int j = 0; j < 4; ++j) {
+        vec3 r = vec3(0.0);
+        for (int k = 0; k < 4; ++k) r += wx[k] * tap(from_a, i.x - 1 + k, i.y - 1 + j);
+        s += wy[j] * r;
+    }
+    return s;
+}
+
+uint mix_channel(uint a, uint c) { return (a * (p.k - p.m) + c * p.m + p.k / 2u) / p.k; }
+
+uint int_mix(uint a, uint c) {
+    uint mk = mask(), o = 0u;
+    for (uint i = 0u; i < 3u; ++i) {
+        uint s = i * p.bits;
+        o |= mix_channel((a >> s) & mk, (c >> s) & mk) << s;
+    }
+    uint sa = 3u * p.bits;
+    return o | (mix_channel(a >> sa, c >> sa) << sa);
+}
+
+bool same(ivec2 q, uint lim) {
+    q = clamp(q, ivec2(0), ivec2(p.width - 1, p.height - 1));
+    uint a = imageLoad(prev_img, q).x, c = imageLoad(cur_img, q).x, mk = mask();
+    for (uint i = 0u; i < 3u; ++i) {
+        uint s = i * p.bits;
+        uint x = (a >> s) & mk, y = (c >> s) & mk;
+        if (max(x, y) - min(x, y) > lim) return false;
+    }
+    return true;
+}
+
+void main() {
+    ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+    if (xy.x >= p.width || xy.y >= p.height) return;
+    ivec3 dst = ivec3(xy, int(p.m) - 1);
+    uint mk = mask();
+    if (p.show != 0u && xy.x >= 24 && xy.x < 120 && xy.y >= 24 && xy.y < 120) {
+        // the marker, as blend.comp draws it: m = 1 red, 2 blue, 3 green, at half level
+        uint level = (mk + 1u) / 2u;
+        uint r = p.m == 1u ? level : 0u, g = p.m == 3u ? level : 0u, b = p.m == 2u ? level : 0u;
+        uint lowc = p.red_low != 0u ? r : b, highc = p.red_low != 0u ? b : r;
+        uint ab = 32u - 3u * p.bits;
+        imageStore(out_img, dst, uvec4(lowc | (g << p.bits) | (highc << (2u * p.bits)) |
+                                       (((1u << ab) - 1u) << (3u * p.bits)), 0u, 0u, 0u));
+        return;
+    }
+    uint av = imageLoad(prev_img, xy).x, cv = imageLoad(cur_img, xy).x;
+    if (state[1] > 0.5) {
+        imageStore(out_img, dst, uvec4(av, 0u, 0u, 0u));
+        return;
+    }
+    bool inside = xy.x >= p.rx && xy.y >= p.ry && xy.x < p.rx + p.rw && xy.y < p.ry + p.rh;
+    if (!inside) {
+        imageStore(out_img, dst, uvec4(int_mix(av, cv), 0u, 0u, 0u));
+        return;
+    }
+    float t = float(p.m) / float(p.k);
+    vec2 scale = vec2(float(p.rw) / float(p.sw), float(p.rh) / float(p.sh));
+    // the source pixel this display pixel falls in
+    ivec2 l = min(ivec2((vec2(xy - ivec2(p.rx, p.ry)) + 0.5) / scale), ivec2(p.sw - 1, p.sh - 1));
+    vec4 fv = field[l.y * p.sw + l.x];
+    vec2 u = fv.xy * scale;
+    float mismatch = fv.z;
+    vec2 here = vec2(xy);
+    vec3 sa = sample_at(true, here - 2.0 * t * u), sc = sample_at(false, here + 2.0 * (1.0 - t) * u);
+    vec4 a4 = unpack(av), c4 = unpack(cv);
+    if (p.still > 0.0) {
+        uint lim = uint(p.still * float(mk) + 0.5);
+        vec3 ds = abs(sa - sc), dp = abs(0.5 * (sa + sc) - a4.xyz);
+        bool passes = max(ds.x, max(ds.y, ds.z)) < 0.03 && max(dp.x, max(dp.y, dp.z)) > 0.03;
+        if (!passes && same(xy, lim) && same(xy + ivec2(1, 0), lim) && same(xy - ivec2(1, 0), lim) &&
+            same(xy + ivec2(0, 1), lim) && same(xy - ivec2(0, 1), lim)) {
+            imageStore(out_img, dst, uvec4(int_mix(av, cv), 0u, 0u, 0u));
+            return;
+        }
+    }
+    vec3 blend = (1.0 - t) * sa + t * sc;
+    const int R = 4;
+    float div = field[l.y * p.sw + min(l.x + R, p.sw - 1)].x - field[l.y * p.sw + max(l.x - R, 0)].x
+              + field[min(l.y + R, p.sh - 1) * p.sw + l.x].y - field[max(l.y - R, 0) * p.sw + l.x].y;
+    vec3 one = div < -0.25 ? sa : div > 0.25 ? sc : (t <= 0.5 ? sa : sc);
+    vec3 res = mix(blend, one, smoothstep(p.lo, p.hi, mismatch));
+    float side = fv.w;
+    res = mix(res, side > 0.0 ? sc : sa, min(abs(side), 1.0));
+    float area = 0.0;
+    for (int j = -2; j <= 2; ++j)
+        for (int i = -2; i <= 2; ++i) {
+            ivec2 q = clamp(l + 4 * ivec2(i, j), ivec2(0), ivec2(p.sw - 1, p.sh - 1));
+            area += field[q.y * p.sw + q.x].z;
+        }
+    vec3 plain = (1.0 - t) * a4.xyz + t * c4.xyz;
+    vec3 o = mix(res, plain, smoothstep(p.fail_lo, p.fail_hi, area / 25.0));
+    uvec3 q = uvec3(clamp(o, 0.0, 1.0) * float(mk) + 0.5);
+    uint alpha = mix_channel(av >> (3u * p.bits), cv >> (3u * p.bits));
+    imageStore(out_img, dst, uvec4(q.x | (q.y << p.bits) | (q.z << (2u * p.bits)) | (alpha << (3u * p.bits)),
+                                   0u, 0u, 0u));
+}

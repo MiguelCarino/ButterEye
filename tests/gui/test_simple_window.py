@@ -177,13 +177,11 @@ def test_row_view_plain_words() -> None:
         active,
         backend=BackendId.RIFE_TRT,
         model="rife-v4.22_lite_ensembleFalse",
-        flow_scale=0.5,
         smooth_size=(1280, 720),
         source=dataclasses.replace(active.source, hdr_class=HdrClass.HDR10),
     )
     assert sw.row_view(trt).engine == (
-        "RIFE v4.22 lite on the GPU with TensorRT, motion estimated at half resolution, "
-        "smoothed at 1280 × 720, scaled up, HDR10"
+        "RIFE v4.22 lite on the GPU with TensorRT, smoothed at 1280 × 720, scaled up, HDR10"
     )
     # the screen's size is not a step down, and the row does not call it one
     fit = dataclasses.replace(active, smooth_size=(2560, 1440), smooth_at_screen=True)
@@ -1087,6 +1085,29 @@ def test_resolution_choice_saves_full_size(make_simple: Make, qtbot: Any) -> Non
     assert label.text() == "&Resolution"
 
 
+def test_video_type_choice_saves_the_profiles_content(make_simple: Make, qtbot: Any) -> None:
+    """Auto (ButterEye looks at each video), 2D animation, 3D or live action."""
+    win = make_simple("all_ready")
+    combo = win.content_combo
+    assert [combo.itemData(i) for i in range(combo.count())] == ["auto", "animation", "live"]
+    assert [combo.itemText(i) for i in range(combo.count())] == [
+        "Auto",
+        "2D animation",
+        "3D or live action",
+    ]
+    assert combo.currentData() == "auto"
+    label = next(w for w in win.findChildren(QLabel) if w.buddy() is combo)
+    assert label.text() == "&Video type"
+    for key in ("animation", "live", "auto"):
+        before = len(calls(win, "save_config"))
+        pick(combo, key)
+        qtbot.waitUntil(lambda b=before: len(calls(win, "save_config")) > b, timeout=5000)
+        prof = sw.find_simple(saved(win))
+        assert prof is not None and prof.content.value == key
+    # every other choice is kept when only the video type changes
+    assert sw.find_simple(saved(win)) == win.profile()
+
+
 def test_picture_keys_round_trip() -> None:
     for key in sw.PICTURE_CHOICES:
         assert sw.picture_key(*sw.picture_settings(key)) == key
@@ -1196,3 +1217,10 @@ def test_speed_test_waits_while_a_video_plays(make_simple: Make, qtbot: Any) -> 
     in_core(qtbot, win.bridge, lambda c: c.fake_set_session(gone))
     qtbot.waitUntil(lambda: bool(calls(win, "bench")), timeout=5000)
     assert calls(win, "bench")[0].args[0] == sw.FIRST_BENCH
+
+
+def test_a_row_says_when_the_gpu_frames_layer_makes_the_last_frames() -> None:
+    snap = dataclasses.replace(sc.session(0), backend=BackendId.RIFE_TRT, gpu_frames=True)
+    assert "the last frames made on the GPU as mpv shows them" in sw.engine_words(snap)
+    plain = dataclasses.replace(snap, gpu_frames=False)
+    assert "on the GPU as mpv shows them" not in sw.engine_words(plain)

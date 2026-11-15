@@ -598,6 +598,11 @@ class GeneralSettings:
     #: most ``preload_max_s`` (PRELOAD_RANGE). Only for mpv ButterEye starts
     preload: bool = True
     preload_max_s: float = 10.0
+    #: experimental, Linux on Wayland with the frames layer installed: where
+    #: "Match your display" runs a cascade, VapourSynth makes only its first
+    #: stage (RIFE to twice the source rate) and a Vulkan layer under mpv makes
+    #: the last frames on the GPU as mpv presents them (``mpvctl.frames``)
+    gpu_frames: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -833,10 +838,8 @@ class SessionSnapshot:
     restore_pending: tuple[str, ...]  # attach settings to restore (§4.3)
     ended: bool
     #: what the running filter does (GUI rows say it): the size RIFE/MVTools work
-    #: at (None = the video's own), RIFE TensorRT's flow resolution (M0(q)) and
-    #: MVTools' block mode (M0(p))
+    #: at (None = the video's own) and MVTools' block mode (M0(p))
     smooth_size: tuple[int, int] | None = None
-    flow_scale: float = 1.0
     mv_block: bool = False
     #: ``smooth_size`` is the screen's own size, taken because the video is larger
     #: than the screen (nothing is lost), not a step down to keep up
@@ -844,9 +847,19 @@ class SessionSnapshot:
     #: ``health`` is DROPPING because the screen showed frames late (the output
     #: missed refreshes), not because smoothing fell behind: nothing to step down
     drops_at_screen: bool = False
+    #: what the video is smoothed as: ANIMATION (hand-drawn 2D: its own engine
+    #: order, held drawings re-timed) or LIVE when the profile says so, AUTO
+    #: otherwise. ``content_detected``: ANIMATION was found by looking at the
+    #: video (an Auto profile, ``mpvctl.content``), not chosen
+    content: ContentKind = ContentKind.AUTO
+    content_detected: bool = False
     #: how mpv ended (once ``ended``): its exit code, negative = killed by that
     #: signal (a crash); None while it runs or when ButterEye only let it go
     exit_code: int | None = None
+    #: the frames layer makes the last in-between frames on the GPU as mpv
+    #: presents them (``[general] gpu_frames``, experimental): the filter makes
+    #: twice the source rate and the screen gets ``target_fps``
+    gpu_frames: bool = False
 
 
 @dataclass(frozen=True, slots=True)

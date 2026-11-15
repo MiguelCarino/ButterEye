@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import re
 import stat
@@ -64,6 +65,8 @@ OBSERVABLE: frozenset[str] = frozenset(
         "seeking",
         "path",
         "video-frame-info",
+        # layer mode: the user's own changes while its delay is in (mpvctl.frames)
+        "audio-delay",
     }
 )
 #: Properties ButterEye may set, each with the only values it may set them to
@@ -111,8 +114,15 @@ TSCALE_CHOICES: frozenset[str] = frozenset(
 _PLAIN_WRITABLE: frozenset[str] = frozenset(
     {"hwdec", "hr-seek-framedrop", "interpolation", "deband"}
 )
+#: the frames layer (``mpvctl.frames``): ``display-fps-override`` is 0 (off) or a
+#: real refresh / k inside this range; ``audio-delay`` is the user's own value
+#: plus the layer's delay, in seconds, inside this range
+DISPLAY_FPS_OVERRIDE_RANGE = (1.0, 1000.0)
+AUDIO_DELAY_RANGE = (-60.0, 60.0)
 WRITABLE: frozenset[str] = (
-    _PLAIN_WRITABLE | frozenset(INT_RANGES) | frozenset({"tscale", "lut", "glsl-shaders"})
+    _PLAIN_WRITABLE
+    | frozenset(INT_RANGES)
+    | frozenset({"tscale", "lut", "glsl-shaders", "display-fps-override", "audio-delay"})
 )
 
 #: Properties ButterEye may read once: everything it may set (so that it can put
@@ -143,6 +153,11 @@ READABLE: frozenset[str] = (
             # how far the demuxer has read ahead
             "estimated-vf-fps",
             "demuxer-cache-duration",
+            # the file's length: where the content probe takes its samples
+            "duration",
+            # layer mode: what to put back when it ends
+            "display-fps-override",
+            "audio-delay",
         }
     )
 )
@@ -193,7 +208,9 @@ def writable_value(name: str, value: object) -> bool:
       (``profiles.luts.is_lut_path``);
     - ``glsl-shaders``: a list of bundled shaders only (``shaders.ALLOWED``),
       ``[]`` included. ``change-list`` is still the way to add or remove one
-      without touching the user's own; this is for putting a list back.
+      without touching the user's own; this is for putting a list back;
+    - ``display-fps-override``: 0 or a rate in ``DISPLAY_FPS_OVERRIDE_RANGE``;
+      ``audio-delay``: seconds in ``AUDIO_DELAY_RANGE`` (layer mode only).
     """
     if name in _PLAIN_WRITABLE:
         return isinstance(value, (str, bool))
@@ -207,7 +224,22 @@ def writable_value(name: str, value: object) -> bool:
     if name == "glsl-shaders":
         allowed = _shader_paths()
         return isinstance(value, list) and all(isinstance(v, str) and v in allowed for v in value)
+    if name == "display-fps-override":
+        v = _number(value)
+        lo, hi = DISPLAY_FPS_OVERRIDE_RANGE
+        return v is not None and (v == 0 or lo <= v <= hi)
+    if name == "audio-delay":
+        v = _number(value)
+        lo, hi = AUDIO_DELAY_RANGE
+        return v is not None and lo <= v <= hi
     return False
+
+
+def _number(value: object) -> float | None:
+    """``value`` as a float if it is a finite int or float (never a bool)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) else None
 
 
 def check_command(args: Sequence[object]) -> None:
@@ -544,6 +576,8 @@ __all__ = [
     "READABLE",
     "TSCALE_CHOICES",
     "WRITABLE",
+    "AUDIO_DELAY_RANGE",
+    "DISPLAY_FPS_OVERRIDE_RANGE",
     "CommandRefused",
     "MpvError",
     "IpcClosed",

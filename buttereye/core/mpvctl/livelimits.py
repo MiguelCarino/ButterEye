@@ -65,6 +65,10 @@ FLOOR = 0.2
 #: factor could only go down. A version 3 record can't say whether it was made
 #: hot; version 4 records say (``thermal``, ``battery``, ``low_power``).
 VERSION = 4
+#: the last field of every key (``LimitKey.text``). TensorRT RIFE with its flow
+#: at half scale (keys ending ``|0.5``) is no longer chosen (spike M0(x): the
+#: next smaller picture is better and faster); ``load`` drops such records
+FULL_FLOW = "1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,12 +78,13 @@ class LimitKey:
     model: str | None
     width: int  # the size smoothing runs at
     height: int
-    flow: float = 1.0  # TensorRT RIFE flow scale
 
     def text(self) -> str:
+        # the last field was TensorRT RIFE's flow scale; only full flow ("1") is
+        # left, kept so records learned before keep their keys (``load``)
         return (
             f"{self.gpu or '-'}|{self.backend}|{self.model or '-'}|"
-            f"{self.width}x{self.height}|{self.flow:g}"
+            f"{self.width}x{self.height}|{FULL_FLOW}"
         )
 
 
@@ -111,6 +116,8 @@ def load(path: Path, *, now: float | None = None) -> dict[str, dict[str, float]]
     for k, v in data.items():
         if not (isinstance(k, str) and isinstance(v, dict)):
             continue
+        if k.count("|") == 4 and k.rsplit("|", 1)[1] != FULL_FLOW:
+            continue  # a half-flow engine's record: nothing reads it now
         f, when = v.get("factor"), v.get("when")
         if v.get("v") != VERSION:
             continue
@@ -200,6 +207,7 @@ __all__ = [
     "FAIR_MAX_AGE_S",
     "FILE",
     "FLOOR",
+    "FULL_FLOW",
     "MARGIN",
     "MAX_AGE_S",
     "RECOVER_AGE_S",

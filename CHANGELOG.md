@@ -13,7 +13,19 @@ longer makes ButterEye shrink the picture or change engine.
 
 ### Fixed
 
-- **Frames the screen shows late are no longer blamed on smoothing.** On a
+- **RIFE on TensorRT draws fine detail where it belongs.** The engines worked
+  out where to take each pixel from in half precision, so fine detail landed
+  up to a quarter of a pixel off (half a pixel at 4K) and textures went soft.
+  That last step now runs in full precision: +1.2 dB on 164 real 1080p moments,
+  6 % less error, about 0.1 ms more per frame, and no more frames late in play
+  (docs/spikes/m0x.md). On the public benchmark TensorRT RIFE now scores like
+  the Vulkan RIFE of the same model. Each RIFE engine is built again once, the
+  first time a video of its size plays (25–50 s, smoothing runs on the Vulkan
+  engine meanwhile).
+- **RIFE with motion at half resolution could not build at 1080 or 1440
+  lines.** The padding rule did not match the smaller motion picture. Fixed for
+  the spike tools that still use it (playback no longer does, see below).
+ On a
   144 Hz screen about one frame a second can be shown late: the screen misses
   a refresh while the graphics card is busy, and mpv then drops the next frame
   although smoothing delivered it on time. It happens to the plain player too
@@ -44,6 +56,12 @@ longer makes ButterEye shrink the picture or change engine.
 
 ### Improved
 
+- **No more "motion at half resolution" step.** When RIFE on TensorRT could not
+  keep up at full size, ButterEye first let it estimate motion at half
+  resolution. Measured on open 1440p and 4K footage, that scored clearly worse
+  than smoothing the next smaller picture and letting mpv scale it up, at about
+  twice the cost (docs/spikes/m0x.md). ButterEye now goes straight to the
+  smaller picture. Speed limits remembered for the old step are dropped.
 - **A video larger than your screen is smoothed at the screen's size.** A 4K
   film on a 3440×1440 screen is shown at 2560×1440 whatever ButterEye does, so
   smoothing it at 4K was work nobody could see. ButterEye now starts from what
@@ -70,7 +88,9 @@ longer makes ButterEye shrink the picture or change engine.
   display rate at the video's size (a 4K film on a 144 Hz screen), ButterEye
   used to fall back to 60 fps, which a 144 Hz screen cannot show evenly. It
   now takes the highest even division of the display rate that it can make:
-  72 fps on 144 Hz, each frame shown for exactly two refreshes.
+  72 fps on 144 Hz, each frame shown for exactly two refreshes. A 23.976 fps
+  video takes 71.928: three frames for each film frame, with the 0.1 % played
+  away by mpv, where 72 exactly would have made every frame a new one.
 - **GPU motion vectors (mvgpu):** rolling credits and subtitles on a plain
   background, thin lines and small flat shapes no longer vanish or smear in
   in-between frames. A match between two patches is now worth what matched
@@ -114,6 +134,37 @@ longer makes ButterEye shrink the picture or change engine.
   output late (the filter or the decoder) or refreshes the display side missed.
 
 ### Added
+
+- **The last frames made on the graphics card (experimental, off by default;
+  Settings → Even motion, `buttereye play --gpu-frames`).** For film on a fast
+  screen ButterEye already lets RIFE make every second frame and GPU motion
+  vectors the rest. With this on, mpv plays RIFE's frames at 48 fps and
+  ButterEye's own Vulkan layer makes the remaining frames as mpv puts each one
+  on the screen, from the pictures already on the card: nothing goes back
+  through the CPU. In 3 × 60 s runs on a 144 Hz screen, a 1080p and a 4K film
+  dropped no frames either way, while mpv needed about half the GPU time and
+  18–20 % less CPU; the picture scores like GPU motion vectors in the usual
+  path. Linux on Wayland with mpv on Vulkan only; sound is moved 14 ms later to
+  match the picture (added to your own audio delay; a file you quit meanwhile
+  resumes 14 ms late without this setting).
+  If the layer does not take over, ButterEye plays as before and says so
+  (docs/spikes/m0z.md).
+- **A public picture-quality benchmark** (docs/benchmark.md,
+  `tools/perf/public_bench.py`): every engine scored against real in-between
+  frames from openly licensed high-frame-rate footage, downloaded and checked by
+  hash, run through ButterEye's own playback script. Anyone with the same
+  footage gets the same numbers.
+- **2D animation is recognised by itself, and a Video type choice.** Hand-drawn
+  animation holds each drawing for two or three frames; camera footage and 3D
+  change on every frame. With Video type on *Auto* (the default), ButterEye
+  looks at each video for about a second and, where it finds held drawings in
+  12 % or more of the moving frame pairs, smooths it with the 2D rules: RIFE
+  first, motion vectors last, no cascade, held drawings re-timed. The row then
+  says "2D animation, detected". *2D animation* and *3D or live action* decide
+  it yourself, and that choice always wins. On 19 videos it treated 18 as
+  intended (eight of nine 2D titles found, no live-action or 3D title taken
+  for 2D; docs/spikes/m0w.md); a 2D film animated on almost every frame is not
+  found. The answer is remembered without the file's name.
 
 - **DRBA models for 2D animation on TensorRT** (experimental, optional).
   `contrib/build-drba.sh` downloads DistilDRBA (MIT), exports it to ONNX and

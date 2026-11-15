@@ -14,6 +14,12 @@ layout(std430, binding = 1) readonly buffer PyrC { float pc[]; };
 layout(std430, binding = 2) readonly buffer Src { ivec2 src[]; };
 layout(std430, binding = 3) writeonly buffer Dst { ivec2 dst[]; };
 layout(push_constant) uniform P { uint off; int w, h, bw, bh, bs, half_units, mode; float rel, abs_tol, gdc; } p;
+// The brightness difference (gdc) from binding 4 instead of the push constant when
+// GDC_FROM_BUFFER (constant 2): the present layer measures it on the GPU. Off, as in
+// the plugin, nothing is read from the buffer.
+layout(constant_id = 2) const bool GDC_FROM_BUFFER = false;
+layout(std430, binding = 4) readonly buffer Gdc { float gdcv[]; };
+#define GDC (GDC_FROM_BUFFER ? gdcv[0] : p.gdc)
 float px_a(int x, int y) { x = clamp(x, 0, p.w - 1); y = clamp(y, 0, p.h - 1); return pa[p.off + uint(y * p.w + x)]; }
 float px_c(int x, int y) { x = clamp(x, 0, p.w - 1); y = clamp(y, 0, p.h - 1); return pc[p.off + uint(y * p.w + x)]; }
 // SAD over the block and half a block around it: a 4x4 block's own vector is
@@ -26,7 +32,7 @@ float sad(int bx, int by, ivec2 u) {
     ivec2 ua = p.half_units != 0 ? u >> 1 : u, uc = p.half_units != 0 ? u - ua : u;  // as search.comp
     for (int j = 0; j < n; ++j)
         for (int i = 0; i < n; ++i)
-            s += abs(px_a(x0 + i - ua.x, y0 + j - ua.y) - px_c(x0 + i + uc.x, y0 + j + uc.y) - p.gdc);
+            s += abs(px_a(x0 + i - ua.x, y0 + j - ua.y) - px_c(x0 + i + uc.x, y0 + j + uc.y) - GDC);
     return s;
 }
 int med9(int v[9]) {

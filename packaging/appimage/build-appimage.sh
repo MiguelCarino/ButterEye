@@ -35,6 +35,12 @@
 #                                    something needs that is not the host's
 #        vapoursynth/                mvtools.so, libmvgpu.so, libffms2.so (not
 #                                    autoloaded)
+#        lib/buttereye/, share/vulkan/explicit_layer.d/
+#                                    the frames layer (mvgpu/layer) and its
+#                                    manifest, which names it relative to itself;
+#                                    an explicit layer, so it loads only in an mpv
+#                                    ButterEye starts with it turned on (and points
+#                                    at this folder with VK_ADD_LAYER_PATH)
 #        licenses/, buttereye-install.json, buttereye.desktop, buttereye.svg
 #   3. closure and check (stage.py): every library outside host-libs.txt is in
 #      the AppDir and found through RUNPATH, never through LD_LIBRARY_PATH
@@ -493,7 +499,8 @@ readelf -dW "$mvtools_so" | grep -q 'Shared library: \[libfftw3f.so.3\]' \
 mg=$work/src/mvgpu-build
 echo "==> mvgpu (this repository)"
 logged mvgpu-setup meson setup "$mg" "$repo/mvgpu" --prefix="$deps" --libdir=lib \
-    -Dbuildtype=release -Dglslang="$deps/bin/glslang" -Dplugindir=lib/buttereye/vapoursynth
+    -Dbuildtype=release -Dglslang="$deps/bin/glslang" -Dplugindir=lib/buttereye/vapoursynth \
+    -Dlayer=enabled -Dlayer_library_path=relative
 logged mvgpu-build ninja -C "$mg" -j"$jobs" install
 mvgpu_ver=$(meson introspect "$mg" --projectinfo \
     | "$hostpy" -I -c 'import json, sys; print(json.load(sys.stdin)["version"])')
@@ -505,6 +512,24 @@ grep -qx 'libvulkan.so.1' <<<"$mvgpu_needed" \
     || { echo "libmvgpu.so does not link libvulkan.so.1" >&2; exit 1; }
 if grep -vxE 'libvulkan\.so\.1|libstdc\+\+\.so\.6|libm\.so\.6|libgcc_s\.so\.1|libc\.so\.6' <<<"$mvgpu_needed"; then
     echo "libmvgpu.so links more than the Vulkan loader and the C/C++ runtime (above)" >&2
+    exit 1
+fi
+# the frames layer: only the loader's entry point, and never the loader itself (it
+# calls Vulkan through the chain the loader hands it); its manifest names the
+# library relative to itself (../../../lib/buttereye/), as in the AppDir below
+layer_so=$deps/lib/buttereye/libVkLayer_buttereye_frames.so
+layer_json=$deps/share/vulkan/explicit_layer.d/VkLayer_buttereye_frames.json
+nm -D --defined-only "$layer_so" | grep -q ' vkNegotiateLoaderLayerInterfaceVersion$' \
+    || { echo "the frames layer does not export vkNegotiateLoaderLayerInterfaceVersion" >&2; exit 1; }
+if readelf -dW "$layer_so" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' \
+        | grep -vxE 'libstdc\+\+\.so\.6|libm\.so\.6|libgcc_s\.so\.1|libc\.so\.6'; then
+    echo "the frames layer links more than the C/C++ runtime (above)" >&2
+    exit 1
+fi
+grep -qF '"library_path": "../../../lib/buttereye/libVkLayer_buttereye_frames.so"' "$layer_json" \
+    || { echo "the frames layer manifest does not name ../../../lib/buttereye/" >&2; exit 1; }
+if grep -q enable_environment "$layer_json"; then
+    echo "the frames layer manifest must stay explicit" >&2
     exit 1
 fi
 
@@ -553,7 +578,11 @@ done
 cp "$mvtools_so" "$appdir/vapoursynth/mvtools.so"
 cp "$mvgpu_so" "$appdir/vapoursynth/libmvgpu.so"
 cp "$s/libffms2.so" "$appdir/vapoursynth/libffms2.so"
-strip --strip-unneeded "$appdir"/bin/* "$appdir"/lib/*.so* "$appdir"/vapoursynth/*.so
+mkdir -p "$appdir/lib/buttereye" "$appdir/share/vulkan/explicit_layer.d"
+cp "$layer_so" "$appdir/lib/buttereye/"
+cp "$layer_json" "$appdir/share/vulkan/explicit_layer.d/"
+strip --strip-unneeded "$appdir"/bin/* "$appdir"/lib/*.so* "$appdir"/vapoursynth/*.so \
+    "$appdir/lib/buttereye/libVkLayer_buttereye_frames.so"
 # RUNPATHs of what was built here: mpv also finds VSScript in the wheel's folder
 vsrel=python/lib/python$pymm/site-packages/vapoursynth
 patchelf --set-rpath "\$ORIGIN/../lib:\$ORIGIN/../$vsrel" "$appdir/bin/mpv"

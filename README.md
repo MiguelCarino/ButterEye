@@ -284,6 +284,11 @@ file. There are four choices:
   ~1.7 ms of GPU per 4K frame); *less banding* turns on mpv's own debanding (no
   measurable GPU cost). Shaders and a `deband=yes` from your own `mpv.conf` stay as they
   are.
+- **Video type** — *Auto*, *2D animation* or *3D or live action*. Auto looks at each
+  video for about a second: hand-drawn animation holds each drawing for two or three
+  frames, and where ButterEye finds that, it smooths the video with its 2D rules (RIFE
+  first, motion vectors last, held drawings re-timed) and the row says "2D animation,
+  detected". The other two choices decide it yourself.
 
 To keep CPU and GPU load down, live CPU smoothing (MVTools) searches at full-pixel
 precision (`pel=1`) from 720p up, switches to its faster block mode when it can't
@@ -303,8 +308,9 @@ for mvgpu.
 
 **TensorRT** (NVIDIA, experimental): once `contrib/build-vstrt.sh` has set it up, ButterEye
 uses it (4–5× the Vulkan engine on the same GPU) unless you turn it off; there's no separate
-switch to flip. At 4K, when it falls just short, it estimates motion at half resolution
-(spike M0(q)) before it would smooth a smaller picture.
+switch to flip. When it falls short at full size, it smooths a smaller picture and
+mpv scales it up (estimating motion at half resolution instead scored worse and cost about
+twice as much, spike M0(x)).
 
 **DRBA for 2D animation** (TensorRT, experimental, optional): `contrib/build-drba.sh` sets
 up the DistilDRBA models. They treat animation differently from RIFE: what moves on every
@@ -313,6 +319,19 @@ was drawn at, with no bending between poses. That is a look, not more smoothness
 held drawings re-timed moves the character evenly), so nothing takes it on its own: a
 profile asks for it with `backend = "rife-trt"` and `model = "drba-v1"` (or
 `"drba-v2_lite"`).
+
+**The last frames on the GPU** (experimental, off by default; Details → Settings → Even
+motion, or `buttereye play --gpu-frames`): for film on a fast screen, mpv plays RIFE's
+frames at twice the film's rate and ButterEye's own Vulkan layer
+(`VK_LAYER_BUTTEREYE_frames`, shipped in `buttereye-vs-mvgpu`) makes the rest with GPU
+motion vectors as each picture goes to the screen, so those frames never pass through the
+CPU. Same smoothness as the usual path, with about half of mpv's GPU time (spike M0(z)).
+Linux on Wayland with mpv on Vulkan only. The layer is explicit: it loads only into an mpv
+ButterEye starts with this on.
+
+**Picture-quality benchmark**: [docs/benchmark.md](docs/benchmark.md) scores every engine
+against real in-between frames of openly licensed high-frame-rate footage, with the
+commands to reproduce it.
 
 **On-screen info**: when smoothing starts or changes, mpv shows one small line for a second
 (rates, CPU or GPU and the method). Details → Settings sets how long (or off, or always)

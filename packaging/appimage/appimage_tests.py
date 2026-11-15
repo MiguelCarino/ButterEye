@@ -28,6 +28,9 @@ ffprobe on the results, and for the static library check.
   mvgpu        vapoursynth/libmvgpu.so exports VapourSynthPluginInit2 and loads
                in the AppImage's VapourSynth as the mvgpu namespace; with a
                Vulkan device on the host, Interpolate doubles a short clip
+  frames-layer the frames layer's manifest is in share/vulkan/explicit_layer.d,
+               explicit, and names lib/buttereye/libVkLayer_buttereye_frames.so
+               relative to itself; that library exports the loader's entry point
   libs         every library each ELF file needs (ldd on this host) and every
                library the running mpv and GUI processes have mapped
                (/proc/<pid>/maps) is inside the AppImage, on host-libs.txt, or a
@@ -538,6 +541,33 @@ def t_mvgpu() -> str:
     assert m is not None
     check(m.group(2) == "48", f"mvgpu output at {m.group(2)} fps")
     return f"loads with VapourSynthPluginInit2; Interpolate gave {m.group(1)} frames at 48 fps"
+
+
+@test
+def t_frames_layer() -> str:
+    manifest = TREE / "share" / "vulkan" / "explicit_layer.d" / "VkLayer_buttereye_frames.json"
+    check(manifest.is_file(), f"{manifest} is missing")
+    layer = json.loads(manifest.read_text(encoding="utf-8")).get("layer", {})
+    check(layer.get("name") == "VK_LAYER_BUTTEREYE_frames", f"layer name {layer.get('name')}")
+    # explicit: only an implicit layer's manifest has these
+    check("enable_environment" not in layer and "disable_environment" not in layer,
+          "the frames layer manifest is not explicit")  # fmt: skip
+    lib = str(layer.get("library_path", ""))
+    check(bool(lib) and not lib.startswith("/"), f"library_path {lib!r} is not relative")
+    so = (manifest.parent / lib).resolve()
+    want = (TREE / "lib" / "buttereye" / "libVkLayer_buttereye_frames.so").resolve()
+    check(so == want, f"library_path {lib!r} points at {so}, not {want}")
+    check(so.is_file(), f"{so} is missing")
+    script = (
+        "import ctypes, sys\n"
+        "assert hasattr(ctypes.CDLL(sys.argv[1]), 'vkNegotiateLoaderLayerInterfaceVersion')\n"
+        "print('exported')\n"
+    )
+    done = run([str(TREE / "python" / "bin" / "python3.14"), "-I", "-B", "-c", script, str(so)],
+               timeout=60, name="frames-layer")  # fmt: skip
+    check(done.returncode == 0 and "exported" in done.stdout,
+          f"exit {done.returncode}: {done.stderr[-800:]}")  # fmt: skip
+    return f"explicit manifest, library_path {lib}, vkNegotiateLoaderLayerInterfaceVersion exported"
 
 
 @test

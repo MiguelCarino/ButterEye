@@ -62,6 +62,7 @@ def test_every_new_control_has_a_name(panel: Any) -> None:
         panel.compare,
         panel.even_pacing,
         panel.cadence_first,
+        panel.gpu_frames,
         panel.preload,
         panel.preload_max,
         panel.power,
@@ -134,6 +135,18 @@ def test_even_pacing_and_cadence_first_are_saved(panel: Any, qtbot: Any) -> None
     panel.cadence_first.setChecked(True)
     g = _saved_after(qtbot, panel, n).general
     assert (g.cadence_first, g.even_pacing) == (True, True)
+
+
+def test_gpu_frames_is_saved_and_shown_only_where_it_can_work(panel: Any, qtbot: Any) -> None:
+    from buttereye.core import osapi
+
+    shown = osapi.frames_layer_status() is None
+    assert panel.gpu_frames.isVisibleTo(panel) is shown
+    assert panel.gpu_frames_note.isVisibleTo(panel) is shown
+    assert not panel.gpu_frames.isChecked()  # off as shipped
+    n = len(_calls(panel.bridge))
+    panel.gpu_frames.setChecked(True)
+    assert _saved_after(qtbot, panel, n).general.gpu_frames is True
 
 
 def test_start_videos_smooth_and_its_limit_are_saved(panel: Any, qtbot: Any) -> None:

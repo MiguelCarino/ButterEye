@@ -140,6 +140,7 @@ def _rich_config() -> Config:
             compare="split",
             even_pacing=True,
             cadence_first=True,
+            gpu_frames=True,
         ),
         profiles=profiles,
         rules=rules,

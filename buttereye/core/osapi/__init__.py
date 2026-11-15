@@ -81,6 +81,7 @@ import asyncio
 import contextlib
 import hashlib
 import importlib.util
+import json
 import logging
 import ntpath
 import os
@@ -95,6 +96,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -1751,7 +1753,112 @@ def activity(reason: str) -> Iterator[int | None]:
         end_activity(token)
 
 
+# ======================================================================= the frames layer (Linux)
+#: The explicit Vulkan layer that makes the last in-between frames when mpv
+#: presents them (``mvgpu/layer``, docs/spikes/m0z.md): its name and the file
+#: name of its manifest. Explicit: it loads only in an mpv ButterEye starts with
+#: it turned on (``mpvctl.frames.layer_env``).
+FRAMES_LAYER = "VK_LAYER_BUTTEREYE_frames"
+FRAMES_MANIFEST = "VkLayer_buttereye_frames.json"
+_LAYER_SUBDIR = Path("vulkan") / "explicit_layer.d"
+
+
+@dataclass(frozen=True, slots=True)
+class FramesLayer:
+    """A manifest of the frames layer the Vulkan loader can load. ``add_path``:
+    the folder mpv must be given in ``VK_ADD_LAYER_PATH`` (the AppImage's own),
+    None when the loader finds it by itself."""
+
+    manifest: Path
+    add_path: Path | None
+
+
+def _split_dirs(value: str | None, default: str) -> list[Path]:
+    text = value if value else default
+    return [Path(p) for p in text.split(":") if p]
+
+
+def frames_layer_dirs(env: Mapping[str, str]) -> tuple[tuple[Path, bool], ...]:
+    """The folders the Vulkan loader reads explicit layer manifests from on
+    Linux, in its order (LoaderLayerInterface.md), each with whether mpv needs
+    ``VK_ADD_LAYER_PATH`` for it. ``VK_LAYER_PATH`` replaces the standard
+    folders; ``VK_ADD_LAYER_PATH`` comes first. Both reach mpv unchanged, since
+    it inherits ButterEye's environment. The AppImage's own folder comes last
+    and needs the variable."""
+    home = env.get("HOME", "")
+    out: list[tuple[Path, bool]] = [
+        (p, False) for p in _split_dirs(env.get("VK_ADD_LAYER_PATH"), "")
+    ]
+    if env.get("VK_LAYER_PATH"):
+        out += [(p, False) for p in _split_dirs(env.get("VK_LAYER_PATH"), "")]
+    else:
+        config_home = env.get("XDG_CONFIG_HOME") or (f"{home}/.config" if home else "")
+        data_home = env.get("XDG_DATA_HOME") or (f"{home}/.local/share" if home else "")
+        bases = (
+            ([Path(config_home)] if config_home else [])
+            + _split_dirs(env.get("XDG_CONFIG_DIRS"), "/etc/xdg")
+            + [Path("/etc")]
+            + ([Path(data_home)] if data_home else [])
+            + _split_dirs(env.get("XDG_DATA_DIRS"), "/usr/local/share:/usr/share")
+        )
+        out += [(b / _LAYER_SUBDIR, False) for b in bases]
+    if LINUX_APP is not None:
+        out.append((LINUX_APP / "share" / _LAYER_SUBDIR, True))
+    return tuple(out)
+
+
+def _frames_manifest_ok(path: Path) -> bool:
+    """``path`` is the frames layer's manifest and its library is there."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError, ValueError:
+        return False
+    layer = data.get("layer") if isinstance(data, dict) else None
+    if not isinstance(layer, dict) or layer.get("name") != FRAMES_LAYER:
+        return False
+    lib = layer.get("library_path")
+    if not isinstance(lib, str) or not lib:
+        return False
+    if "/" not in lib:
+        return True  # a bare name: the loader asks the dynamic linker, as for any layer
+    target = Path(lib) if lib.startswith("/") else path.parent / lib
+    return target.is_file()
+
+
+def frames_layer(env: Mapping[str, str] | None = None) -> FramesLayer | None:
+    """The frames layer's manifest as the loader in mpv would find it, or None
+    (not installed, or not Linux)."""
+    if sys.platform != "linux":
+        return None
+    env = os.environ if env is None else env
+    for folder, needs_add in frames_layer_dirs(env):
+        manifest = folder / FRAMES_MANIFEST
+        if _frames_manifest_ok(manifest):
+            return FramesLayer(manifest, folder if needs_add else None)
+    return None
+
+
+def frames_layer_status(env: Mapping[str, str] | None = None) -> str | None:
+    """Why the frames layer can't be used here, or None when it can: ``"platform"``
+    (it is Linux only), ``"wayland"`` (mpv's Vulkan Wayland output needs a
+    Wayland session) or ``"layer"`` (its manifest was not found)."""
+    if sys.platform != "linux":
+        return "platform"
+    env = os.environ if env is None else env
+    if not env.get("WAYLAND_DISPLAY"):
+        return "wayland"
+    if frames_layer(env) is None:
+        return "layer"
+    return None
+
+
 __all__ = [
+    "FRAMES_LAYER",
+    "FRAMES_MANIFEST",
+    "FramesLayer",
+    "frames_layer",
+    "frames_layer_dirs",
+    "frames_layer_status",
     "APP_BIN",
     "APP_PROGRAMS",
     "APP_TOOLS",

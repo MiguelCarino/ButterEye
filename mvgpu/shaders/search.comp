@@ -27,6 +27,12 @@ layout(std430, binding = 4) readonly buffer Prev { ivec2 prev[]; };
 // is the same level with larger blocks (the 4x4 refinement of the 8x8 vectors),
 // 4 for the first motion (half = 1) level under a half-vector (half = 0) parent
 layout(push_constant) uniform P { uint off; int w, h, bw, bh, pw, ph, radius, npred, bs, pscale, half_units; float gdc, act; int temporal; float tpen; } p;
+// The brightness difference (gdc) from binding 5 instead of the push constant when
+// GDC_FROM_BUFFER (constant 2): the present layer measures it on the GPU. Off, as in
+// the plugin, nothing is read from the buffer.
+layout(constant_id = 2) const bool GDC_FROM_BUFFER = false;
+layout(std430, binding = 5) readonly buffer Gdc { float gdcv[]; };
+#define GDC (GDC_FROM_BUFFER ? gdcv[0] : p.gdc)
 // KIDS = 4: one workgroup per parent block does its 2x2 child blocks (the 4x4
 // refinement), which share the parent's candidate list: a quarter of the groups
 layout(constant_id = 1) const int KIDS = 1;
@@ -85,7 +91,7 @@ void main() {
             for (int j = 0; j < p.bs; ++j)
                 for (int i = 0; i < p.bs; ++i) {
                     float va = px_a(x0 + i - ua.x, y0 + j - ua.y), vc = px_c(x0 + i + uc.x, y0 + j + uc.y);
-                    s += abs(va - vc - p.gdc);
+                    s += abs(va - vc - GDC);
                     sa += va; saa += va * va; sc += vc; scc += vc * vc;
                 }
             float n = float(p.bs * p.bs);

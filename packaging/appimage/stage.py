@@ -437,7 +437,10 @@ AppImage, holds the Corresponding Source of every part of it:
                               this AppImage, and its helpers),
                               packaging/plugins/ (MVTools' patch) and mvgpu/,
                               ButterEye's own GPU plugin, mvgpu {mvgpu}
-                              (AGPL-3.0-or-later): vapoursynth/libmvgpu.so
+                              (AGPL-3.0-or-later): vapoursynth/libmvgpu.so, and
+                              its frames layer (mvgpu/layer):
+                              lib/buttereye/libVkLayer_buttereye_frames.so with
+                              share/vulkan/explicit_layer.d/
   ffmpeg-{ffmpeg}.tar.xz       FFmpeg {ffmpeg}, built with --enable-gpl (libx264,
                               libx265) and NVIDIA's NVDEC and NVENC:
                               bin/ffmpeg, bin/ffprobe, lib/libav*.so, lib/libsw*.so

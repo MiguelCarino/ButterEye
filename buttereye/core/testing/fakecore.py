@@ -490,8 +490,13 @@ class FakeCore(ButterEye):
         self._maybe_fail("discover")
         return tuple(self._candidates.values())
 
-    def play(self, file: Path, *, profile_id: str | None = None) -> Operation[SessionId]:
-        self._rec("play", file, profile_id=profile_id)
+    def play(
+        self, file: Path, *, profile_id: str | None = None, gpu_frames: bool | None = None
+    ) -> Operation[SessionId]:
+        if gpu_frames is None:
+            self._rec("play", file, profile_id=profile_id)
+        else:
+            self._rec("play", file, profile_id=profile_id, gpu_frames=gpu_frames)
         self._gate(Feature.LIVE)
         if _URL.match(os.fspath(file)):
             raise ButterEyeError(
@@ -512,12 +517,14 @@ class FakeCore(ButterEye):
             )
             self._sessions[sid] = snap
             self._bus.publish(SessionAdded(snap))
-            self._spawn(self._activate_later(sid), name=f"fake-activate-{sid}")
+            self._spawn(
+                self._activate_later(sid, gpu_frames=bool(gpu_frames)), name=f"fake-activate-{sid}"
+            )
             return sid
 
         return self._fake_op(OpKind.PLAY, body)
 
-    async def _activate_later(self, sid: SessionId) -> None:
+    async def _activate_later(self, sid: SessionId, *, gpu_frames: bool = False) -> None:
         await asyncio.sleep(self.fake_scenario.op_step_s * 2)
         active = _sc.session(0)
         if sid in self._sessions and not self._sessions[sid].ended:
@@ -529,6 +536,7 @@ class FakeCore(ButterEye):
                 backend=active.backend,
                 model=active.model,
                 gen=1,
+                gpu_frames=gpu_frames,
             )
 
     async def attach(self, cid: CandidateId, *, profile_id: str | None = None) -> SessionId:

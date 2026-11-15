@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -257,33 +258,32 @@ def test_pinned_tensorrt_that_cannot_keep_up_falls_back_to_ncnn_first() -> None:
 
 
 @pytest.mark.parametrize(
-    ("trt_cap", "flow", "smaller"),
+    ("trt_cap", "smaller"),
     [
-        (50.0, 1.0, False),  # full flow keeps up at 4K 2x: never half
-        (46.0, 0.5, False),  # 46 x 1.08 = 49.7 >= 48: half flow at full size (M0(q))
-        (40.0, 1.0, True),  # even half flow can't: a smaller picture, as before
+        (50.0, False),  # full size keeps up at 4K 2x
+        # just short at full size: once half flow (M0(q)), now the smaller picture,
+        # which is better and faster than half flow (spike M0(x))
+        (46.0, True),
+        (40.0, True),  # far short: a smaller picture, as before
     ],
 )
-async def test_half_flow_before_a_smaller_picture(
+async def test_no_half_flow_step_before_a_smaller_picture(
     tmp_path: Path,
     bench_history: list[BenchResult],
     no_xid: Any,
     fake_trt: TrtFake,
     monkeypatch: pytest.MonkeyPatch,
     trt_cap: float,
-    flow: float,
     smaller: bool,
 ) -> None:
     from buttereye.core.mpvctl import session as live
 
     bench_history.append(_result(_trt_m(260.0), _ncnn_m(65.0)))
 
-    async def caps(
-        self: Any, backend: BackendId, model: Any, f: Any, cfg: Any, *, flow_scale: float = 1.0
-    ) -> float:
+    # no flow_scale keyword: the session must not ask for a reduced-flow cap
+    async def caps(self: Any, backend: BackendId, model: Any, f: Any, cfg: Any) -> float:
         full = {BackendId.RIFE_TRT: trt_cap, BackendId.RIFE_NCNN: 14.0}.get(backend, 30.0)
-        gain = decide.HALF_FLOW_GAIN if flow_scale != 1.0 else 1.0
-        return full * gain * (3840 * 2160) / (f.width * f.height)  # smaller sizes run faster
+        return full * (3840 * 2160) / (f.width * f.height)  # smaller sizes run faster
 
     monkeypatch.setattr(live._Session, "sustainable_fps", caps)
     ctx = FakeCtx(_paths(tmp_path), _opted(_simple(BackendId.RIFE_TRT)))
@@ -293,14 +293,50 @@ async def test_half_flow_before_a_smaller_picture(
     await _settle(ctx)
     assert fake_trt.builds, "an engine build was started"
     key = fake_trt.builds[-1]
-    assert key.flow_scale == flow
+    assert key.flow_scale == 1.0
+    assert "-flow" not in trt.engine_dir(ctx.paths, key).name
     assert ((key.width, key.height) != (3840, 2160)) is smaller
-    if flow != 1.0:
-        assert "-flow0.5-" in trt.engine_dir(ctx.paths, key).name
     # once the engine is built, the running filter reports what it does
     await s.apply(raise_on_fail=False)
     await _settle(ctx)
     snap = s.snapshot()
-    if snap.backend is BackendId.RIFE_TRT:
-        assert snap.flow_scale == flow
-        assert (snap.smooth_size is not None) is smaller
+    assert snap.backend is BackendId.RIFE_TRT
+    assert (snap.smooth_size is not None) is smaller
+    assert snap.notice is None or "half resolution" not in snap.notice.key
+
+
+async def test_remembered_half_flow_limits_do_not_break_a_session(
+    tmp_path: Path, bench_history: list[BenchResult], no_xid: Any, fake_trt: TrtFake
+) -> None:
+    """A live-limits store from before (a TensorRT record with half flow, key
+    ending ``|0.5``, next to a full-flow one) loads, the half-flow record has no
+    effect, the full-flow one still does, and playback goes on."""
+    from buttereye.core.mpvctl import livelimits
+    from tests.test_live_decisions import _facts
+
+    bench_history.append(_result(_trt_m(260.0), _ncnn_m(65.0)))
+    ctx = FakeCtx(_paths(tmp_path), _opted(_simple(BackendId.RIFE_TRT)))
+    s = _session(ctx, tmp_path)
+    cfg = ctx.config()
+    facts = _facts(3840, 2160)
+    clean = await s.sustainable_fps(BackendId.RIFE_TRT, M26, facts, cfg)
+    clean_small = await s.sustainable_fps(BackendId.RIFE_TRT, M26, _facts(2560, 1440), cfg)
+    assert clean is not None and clean_small is not None
+    big = s.limit_key(BackendId.RIFE_TRT, M26, (3840, 2160), s.gpu_device(cfg)).text()
+    small = s.limit_key(BackendId.RIFE_TRT, M26, (2560, 1440), s.gpu_device(cfg)).text()
+    half = big[: -len(livelimits.FULL_FLOW)] + "0.5"
+    path = ctx.paths.state_dir / livelimits.FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    path.write_text(json.dumps({
+        half: {"factor": 0.2, "when": now, "v": livelimits.VERSION},
+        small: {"factor": 0.5, "when": now, "v": livelimits.VERSION},
+    }))  # fmt: skip
+    s2 = _session(FakeCtx(_paths(tmp_path), _opted(_simple(BackendId.RIFE_TRT))), tmp_path)
+    assert half not in s2.live_limits() and small in s2.live_limits()
+    assert await s2.sustainable_fps(BackendId.RIFE_TRT, M26, facts, cfg) == pytest.approx(clean)
+    small_cap = await s2.sustainable_fps(BackendId.RIFE_TRT, M26, _facts(2560, 1440), cfg)
+    assert small_cap == pytest.approx(clean_small * 0.5)
+    _load(s2, fps=24.0, w=3840, h=2160)
+    await s2.apply(raise_on_fail=False)
+    await _settle(s2.ctx)

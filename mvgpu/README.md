@@ -92,6 +92,30 @@ Errors are clean VapourSynth errors, never a hang: the GPU must allow 512-invoca
 groups and a storage buffer of 16 bytes a pixel ("GPU limit: …" otherwise); a failed render
 gives its readback buffer back, and after a lost device every later frame fails at once.
 
+The GPU work lives in `src/engine/` and the plugin (`src/mvgpu.cpp`) is the VapourSynth glue
+on top: its own instance and device, the uploads, one command buffer submitted and waited
+for, the readback ring. The engine records into command buffers it is handed
+(`record_load`, `record_vectors`, `record_select`, `record_render`) and calls Vulkan only
+through a function table (`src/engine/vkfns.h`): the plugin fills it from the loader, the
+present layer (`layer/`, `-Dlayer=enabled`, Linux only) from the next layer in the chain.
+For the layer, which has no CPU copy of a frame, the engine can also reduce each frame's
+mean luma on the GPU (`mean.comp`) and the matching shaders then read the brightness
+difference from a buffer (specialization constant `GDC_FROM_BUFFER`); the plugin keeps the
+CPU mean and push constants, and gives the same bytes as before the split. With
+`-Dlayer=enabled` the build also makes `engine-check`, which runs the engine both ways on
+drawn frames and checks that they agree.
+
+The present layer can make motion-compensated in-between frames with this engine
+(`BUTTEREYE_FRAMES_MODE=mc`, a test mode for now; `layer/mc.h`): inside mpv's present it
+takes mpv's image, turns it into luma at about the source's size over the video rectangle
+(`layer/ingest.comp`; BT.709 weights on an SDR swapchain, BT.2020 on an HDR10 one, with PQ
+brought back to an SDR scale first), runs `record_pyramid`, `record_vectors` and
+`record_select` as the plugin does, tests for a cut on the GPU (`layer/cut.comp`) and draws
+the in-between frames on mpv's RGB images at display size (`layer/render_rgb.comp`, the
+decisions of `render.comp`). `frames-test` (`tools/frames_test.cpp`) runs the same code on
+image files without a window, and `tools/frames_truth.py` plugs it into
+`tools/perf/truth.py` as `--reference`.
+
 ## Package and use in ButterEye
 
 The COPR package is **`buttereye-vs-mvgpu`** (`packaging/plugins/buttereye-vs-mvgpu.spec`,

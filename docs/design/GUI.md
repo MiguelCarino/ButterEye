@@ -466,6 +466,7 @@ class GeneralSettings:
     cadence_first: bool = False  # "Match your display": even pacing before size
     preload: bool = False  # "Start videos smooth": hold the first picture until smoothing is ready
     preload_max_s: float = 10.0  # the longest hold, 2-30 s
+    gpu_frames: bool = False  # experimental: the frames layer makes a cascade's last frames (mpvctl.frames)
 
 
 @dataclass(frozen=True, slots=True)
@@ -701,10 +702,8 @@ class SessionSnapshot:
     restore_pending: tuple[str, ...]  # attach settings to restore (§4.3)
     ended: bool
     #: what the running filter does (GUI rows say it): the size RIFE/MVTools work
-    #: at (None = the video's own), RIFE TensorRT's flow resolution (M0(q)) and
-    #: MVTools' block mode (M0(p))
+    #: at (None = the video's own) and MVTools' block mode (M0(p))
     smooth_size: tuple[int, int] | None = None
-    flow_scale: float = 1.0
     mv_block: bool = False
     #: `smooth_size` is the screen's own size, taken because the video is larger than
     #: the screen (nothing is lost), not a step down to keep up (SCOPE §4.11)
@@ -712,9 +711,18 @@ class SessionSnapshot:
     #: `health` is DROPPING because the screen showed frames late (the output missed
     #: refreshes), not because smoothing fell behind: nothing to step down (SCOPE §4.11)
     drops_at_screen: bool = False
+    #: what the video is smoothed as: ANIMATION (hand-drawn 2D) or LIVE when the
+    #: profile says so, AUTO otherwise; `content_detected`: ANIMATION was found
+    #: by looking at the video (an Auto profile, `mpvctl.content`), not chosen
+    content: ContentKind = ContentKind.AUTO
+    content_detected: bool = False
     #: how mpv ended (once ``ended``): its exit code, negative = killed by that
     #: signal (a crash); None while it runs or when ButterEye only let it go
     exit_code: int | None = None
+    #: the frames layer makes the last in-between frames on the GPU as mpv presents
+    #: them (`[general] gpu_frames`, experimental, `mpvctl.frames`): the filter makes
+    #: twice the source rate and the screen gets `target_fps`
+    gpu_frames: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1220,7 +1228,7 @@ class ButterEye:
 
     # live (F2–F4, F8, §4.3, §4.10, §4.11)                                       Feature.LIVE/ATTACH/DISCOVER/ORPHANS
     async def discover(self) -> tuple[InstanceCandidate, ...]: ...          # refused ones included, with reason
-    def play(self, file: Path, *, profile_id: str | None = None) -> Operation[SessionId]: ...  # --input-ipc-server
+    def play(self, file: Path, *, profile_id: str | None = None, gpu_frames: bool | None = None) -> Operation[SessionId]: ...  # --input-ipc-server; gpu_frames None = [general] gpu_frames
     async def attach(self, cid: CandidateId, *, profile_id: str | None = None) -> SessionId: ...
     async def detach(self, sid: SessionId, policy: DetachPolicy = DetachPolicy.KEEP_FILTER) -> None: ...
     async def set_interpolation(self, sid: SessionId, enabled: bool, *, force: bool = False) -> SessionSnapshot: ...
@@ -1845,7 +1853,7 @@ Cancellation reaches a provider as `asyncio.CancelledError` at its current `awai
 ### 11.4 U10 — `buttereye/core/mpvctl/session.py` (exact signatures)
 
 ```python
-async def play(ctx: ProviderContext, file: Path, *, profile_id: str | None, op: OpContext) -> SessionId
+async def play(ctx: ProviderContext, file: Path, *, profile_id: str | None, op: OpContext, gpu_frames: bool | None = None) -> SessionId
 async def sessions(ctx: ProviderContext) -> tuple[SessionSnapshot, ...]
 async def set_interpolation(ctx: ProviderContext, sid: SessionId, enabled: bool, *, force: bool = False) -> SessionSnapshot
 async def detach(ctx: ProviderContext, sid: SessionId, policy: DetachPolicy) -> None
@@ -1957,6 +1965,19 @@ Field report (RTX 4090, 3440×1440 @ 180 Hz, Hyprland): live playback kept stall
 
 7. **Live correction (2026-10-11).** The speed test runs a generated 8-bit clip; a real film can cost more (4K HDR10 decode, 10-bit conversion and display share the GPU). When the engine running was *Automatic's* choice (not a pinned engine, not "smooth at full size") and the detector reports at least `session.HEAVY_DROP = 15 %` of frames dropped for `HEAVY_HOLD_S = 10 s`, the session records that this engine (and model, size, flow scale) is slower on this GPU than estimated (`mpvctl.livelimits`, `<state>/live-limits.json`, kept 30 days: factor = old × frames kept × 0.9, never under 0.2), emits `Notice` "{engine} couldn't keep up at {w} × {h}, so ButterEye switched to what can.", and decides again: the next engine or size that fits, else unsmoothed. Every later estimate for that key is multiplied by the factor, so reopening the film does not repeat the mistake. A pinned engine keeps the drop-frames step-down offer, as before. *Amended 2026-10-16:* drops of at least `IMPLAUSIBLE_DROP = 90 %` change nothing (a GPU engine that had kept up went to 95–101 %: a hidden window, another program on the GPU; every replacement would drop as much). Nothing is learned, and the engine and size are only replaced for the current file (`Session.video_limits`, cleared at the next file), when a GPU engine drops while ButterEye builds a TensorRT engine (or within `HEAVY_HOLD_S` after one ended), and when Automatic's engine drops at least `STEADY_DROP = 4 %` for `STEADY_HOLD_S = 30 s` (below the heavy threshold; often other programs' CPU load). Records from before (version 2) are ignored once.
 
+### 11.10 The frames layer (experimental, 2026-11-14)
+
+`[general] gpu_frames` (default false), `buttereye play --gpu-frames` / `--no-gpu-frames` (this video only; the facade's `play(..., gpu_frames=None)` follows the setting), and the Details → Settings checkbox "Make the last frames on the GPU (experimental)", shown only when `osapi.frames_layer_status()` is None: Linux, a Wayland session (`WAYLAND_DISPLAY`), and the layer's manifest `VkLayer_buttereye_frames.json` found where the Vulkan loader looks for explicit layers (`VK_ADD_LAYER_PATH`, `VK_LAYER_PATH`, the XDG config and data folders, `/etc`; the AppImage's own `share/vulkan/explicit_layer.d` through `VK_ADD_LAYER_PATH`). Docs: docs/spikes/m0z.md; module `mpvctl/frames.py`.
+
+- **At spawn** (only `play()`, never an mpv ButterEye attaches to): the control block `mpv-<sid>.frames` (256 bytes, 0600, in the runtime folder, layout of `mvgpu/layer/shm.cpp`) is created before mpv starts and named in `BUTTEREYE_FRAMES_SHM`; mpv gets `--gpu-api=vulkan --gpu-context=waylandvk` and an environment with `VK_LOADER_LAYERS_ENABLE` += `VK_LAYER_BUTTEREYE_frames`, `VK_LAYER_NV_present` taken out of `VK_INSTANCE_LAYERS` and put in `VK_LOADER_LAYERS_DISABLE` (other layers stay), `NVPRESENT_ENABLE_SMOOTH_MOTION` removed, `BUTTEREYE_FRAMES_KMAX=3`, `BUTTEREYE_FRAMES=off` (k comes from the block), `BUTTEREYE_FRAMES_MODE=mc`. These are fixed for that mpv's life, so a file that does not qualify plays as today's decision but with the layer passing its presents through (and the swapchain's three extra images). Where the setting is on but the layer can't work, mpv starts as before and `Notice` says why.
+- **Layer mode** applies when apply() decides a cascade (`decide.cascade_target`: n ≥ 2, not 2D animation, TensorRT RIFE; §11.9) and k = n ≤ 3. The filter then makes only the first stage: `target_fps` = mid (twice the source), no `cascade_fps`, and verify() and the drop detector use mid. After the gen is verified: the block gets k, mode mc, the video rectangle from `osd-dimensions` and the height RIFE works at; then `display-fps-override` = real refresh / k is set over IPC; then `audio-delay` = the user's own value + (k − 1) refreshes (the layer's hold; the refresh the layer measured when it agrees with the decided rate). `audio-delay` stays in `watch-later-options`, so the user's own offset is always saved: mpv writes the resume file inside its quit command, before ButterEye could take the add off, so `frames.AudioLedger` (`<state>/frames-audio.json`, keyed by a hash of the path, at most 256 entries) remembers the value layer mode left for a file and the add inside it, and the next engage on that file recognises it instead of adding twice. A file quit in layer mode therefore resumes about 14 ms late when played without ButterEye, until layer mode plays it again. The snapshot keeps `target_fps` = the display rate and gets `gpu_frames=True`; the row adds "the last frames made on the GPU as mpv shows them" and the notice is "RIFE makes every second frame and the GPU makes the rest as mpv shows them (experimental)."
+- **The real rate.** While the override is set, mpv answers `display-fps` with it; the session keeps the rate it decided at (`real_hz`) and never stores mpv's value in `props`, so nothing re-decides from it.
+- **Events.** pause, seeking, `seek` and `playback-restart` bump the block's event counter (that present passes through and the layer's history starts again).
+- **Screen change.** A change of `display-names`, or a refresh the layer reports that changes during layer mode by more than 0.5 Hz to a rate that is not `real_hz`, leaves layer mode (the layer reads a swapchain's refresh once, when it is made, and a swapchain made during a move can keep the other screen's value, so a value that disagrees from the start is not taken as a move) (override back to the user's own or 0 first, then k = 1, then the audio delay put back (only when mpv still holds the value layer mode left: the next file's own value is left alone), then `display-fps` read again) and decides again after `display_debounce_s`.
+- **Health.** In layer mode the "at the screen" side of the drop verdict counts the layer's missed refreshes (summed over mpv's swapchains, whose counters start from 0) instead of `vo-delayed-frame-count`.
+- **Fallback.** After `frames_check_s` (3 s) of playback, the layer must have written its counters and sent at least half of mpv's presents down its own path; then the same over every `frames_window_s` (5 s) of playback. A window in which mpv presented nothing (a hidden window) is not judged. Otherwise layer mode ends for the session (`frames_failed`), `Notice` "The GPU frames layer did not start, so smoothing runs as before." and the next tick decides again: today's cascade in VapourSynth.
+- **Leaving** happens before a gen that does not use the layer, on every filter removal (off, rollback, another file, the filter removed in mpv) and on detach (nobody would follow the screen or the seeks; the filter keeps making twice the source rate). An mpv that does not answer keeps the layer state until it does.
+
 ## 12. Simple window (2026-10-07 redesign)
 
 Owner feedback: the multi-page window "looks like a clone of existing proprietary tools; it should be its own thing, aiming to be simpler." The owner chose (1) one small window: drop or open a video and it plays smooth, one **Smooth motion** switch and one **Smoothness** choice, everything else silent, a **Details** area for system information and licences; (2) the user picks the **Target**: "Double (2×)", "60 fps" or "Your display (N Hz)".
@@ -2016,13 +2037,15 @@ Every Now playing and Saving copies row has **Copy log** (accessible name "Copy 
 
 **Resolution**: "Lower if needed" (default) or "Always full size", stored as `[general] full_size`. With full size on, a video the speed test says can't be smoothed at its own size is smoothed there anyway (uncapped, like Smooth anyway) instead of at a smaller size or in MVTools' block mode; the row says "Smoothing at full size as you chose; this computer may not keep up, so some frames may drop." With "Lower if needed", a video larger than the screen its window is on is smoothed at the screen's size before anything else is weighed (SCOPE §4.11): that loses nothing, so the row says "smoothed at your screen's size, W × H" and no notice is shown; "Always full size" keeps the video's own size there too.
 
+**Video type**: "Auto" (default), "2D animation" or "3D or live action", stored as the simple profile's `content` (`auto`, `animation`, `live`). With Auto, ButterEye looks at each video (SCOPE §4.11, docs/spikes/m0w.md) and smooths hand-drawn animation with the 2D rules; the detail line then says "2D animation, detected" (from the snapshot's `content` and `content_detected`). The other two choices are taken as they are, and the line says "2D animation" for the first and nothing for the second.
+
 ### 12.1.4 The speed test runs once per hardware (2026-10-10)
 
 The automatic speed test (`FIRST_BENCH`) runs when no stored result was measured on a GPU that is in the computer now (`current_results`: the result's Vulkan UUID against the doctor report's devices; CPU-only results on a machine without a GPU). The TensorRT measurement runs once when no such result has a TensorRT measurement. Results live in `bench.json` and survive restarts and app updates; a new graphics card has a new UUID and is measured. Engines are cached separately per GPU, driver, TensorRT/vstrt version, model, size and flow scale (§4.6), so they are built once too.
 
 ### 12.1.3 What a row says (2026-10-10)
 
-The detail line names what is smoothing the video and how: "24 → 48 fps · RIFE v4.26 on the GPU with TensorRT, motion estimated at half resolution, full size 3840 × 1616, HDR10" (engine and model, or "GPU motion vectors" for mvgpu, MVTools' fast block mode, half-resolution flow, the size it works at, "smoothed at W × H, scaled up" when smaller, "smoothed at your screen's size, W × H" when the video is larger than its screen, HDR10), from the snapshot's `backend`, `model`, `smooth_size`, `smooth_at_screen`, `flow_scale`, `mv_block` and `source`. When the video isn't smoothed the badge says "Not smoothed" and the reason line starts "Not smoothed:" with the cause and what to change (Target, Smoothness, Always full size, Smooth HDR, Resume, Copy log). A button that can't act for the row (Pause on an unsmoothed video) is hidden, not greyed out.
+The detail line names what is smoothing the video and how: "24 → 48 fps · RIFE v4.26 on the GPU with TensorRT, full size 3840 × 1616, HDR10" (engine and model, or "GPU motion vectors" for mvgpu, MVTools' fast block mode, half-resolution flow, the size it works at, "smoothed at W × H, scaled up" when smaller, "smoothed at your screen's size, W × H" when the video is larger than its screen, HDR10), from the snapshot's `backend`, `model`, `smooth_size`, `smooth_at_screen`, `flow_scale`, `mv_block` and `source`. When the video isn't smoothed the badge says "Not smoothed" and the reason line starts "Not smoothed:" with the cause and what to change (Target, Smoothness, Always full size, Smooth HDR, Resume, Copy log). A button that can't act for the row (Pause on an unsmoothed video) is hidden, not greyed out.
 
 ### 12.3 Carino Systems branding (2026-10-10)
 

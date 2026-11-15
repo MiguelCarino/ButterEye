@@ -613,7 +613,11 @@ class ButterEye:
         fn = self._need(Feature.DISCOVER, LIVE_DISCOVER)
         return tuple(await fn(self._ctx))
 
-    def play(self, file: Path, *, profile_id: str | None = None) -> Operation[SessionId]:
+    def play(
+        self, file: Path, *, profile_id: str | None = None, gpu_frames: bool | None = None
+    ) -> Operation[SessionId]:
+        """``gpu_frames``: the frames layer on or off for this video (experimental,
+        ``mpvctl.frames``); None follows ``[general] gpu_frames``."""
         fn = self._need(Feature.LIVE, LIVE_PLAY)
         if _URL.match(os.fspath(file)):
             raise ButterEyeError(
@@ -622,7 +626,12 @@ class ButterEye:
             )
 
         async def body(op: OpContext) -> SessionId:
-            return cast(SessionId, await fn(self._ctx, file, profile_id=profile_id, op=op))
+            if gpu_frames is None:  # a provider without the keyword keeps working
+                return cast(SessionId, await fn(self._ctx, file, profile_id=profile_id, op=op))
+            return cast(
+                SessionId,
+                await fn(self._ctx, file, profile_id=profile_id, op=op, gpu_frames=gpu_frames),
+            )
 
         return self._op(OpKind.PLAY, body)
 

@@ -18,7 +18,8 @@ barely moves for it, and a soft blend scores well there while looking bad.
 ``mean`` is the mean block SSIM and ``psnr`` luma PSNR.
 
 Runs in the system Python (VapourSynth and numpy), GPU engines included; no
-model is loaded unless ``--engines`` names rife. Nothing is downloaded.
+model is loaded unless ``--engines`` names rife. Nothing is downloaded here;
+``public_bench.py`` fetches open footage and scores engines with these metrics.
 
 Usage:
   truth.py [--engines blend,mvgpu,mvtools,rife] [--cases pan,occlusion,...]
@@ -27,6 +28,8 @@ Usage:
 
 ``trt-<model>`` runs a RIFE model through TensorRT as playback does, for every
 ``rife_v<model>.onnx`` under ``--trt-models`` (``trt-4.26``, ``trt-4.25_heavy``).
+``trt-<model>-pw`` keeps the final warp in fp32 as playback does since spike
+M0(x) ("precise warp"); ``trt-<model>`` is the engine from before it.
 The first run at a frame size builds the engine, which takes minutes.
 
 ``--reference FILE.py`` adds an engine of your own for comparison: a Python file
@@ -245,6 +248,19 @@ def _real_truths(lumas: list[Any]) -> list[tuple[int, Any]]:
     return [(1, lumas[1]), (3, lumas[3])]
 
 
+def set_key(path: Path) -> tuple[str, int, float, str]:
+    """Sort key of a kept moment file: ``clip2@3.5.npz`` before ``clip10@1.0.npz``,
+    and names such as ``bbb@1234.npz`` by their number after the ``@``."""
+    name, _, at = path.stem.partition("@")
+    head = name.rstrip("0123456789")
+    digits = name[len(head) :]
+    try:
+        when = float(at)
+    except ValueError:
+        when = math.inf
+    return head, int(digits) if digits else -1, when, path.name
+
+
 def score(np: Any, got: Any, truth: Any) -> dict[str, float]:
     s = block_ssim(np, got, truth)
     mse = float(np.mean((got.astype(np.float64) - truth.astype(np.float64)) ** 2))
@@ -252,6 +268,7 @@ def score(np: Any, got: Any, truth: Any) -> dict[str, float]:
         "worst": round(float(np.sort(s)[: max(4, s.size // 400)].mean()), 4),
         "mean": round(float(s.mean()), 4),
         "psnr": round(10 * math.log10(255.0 * 255.0 / mse), 2) if mse > 0 else 99.0,
+        "mse": round(mse, 4),
     }
 
 
@@ -306,6 +323,17 @@ def _grid_nodes(model: Any) -> list[str]:
         names.append(n.name)
         todo.extend(n.input)
     return names
+
+
+def _template_fp16(**fp16: bool) -> Callable[..., None]:
+    """template.vpy's own ``_fp16_model`` with these ``_FP16`` settings, read from
+    the repo's template (not a copy): ``warp=True`` is the app's RIFE engine."""
+    template = Path(__file__).resolve().parents[2] / "buttereye/core/scriptgen/template.vpy"
+    ns: dict[str, Any] = {}
+    text = template.read_text(encoding="utf-8").replace("build().set_output()", "")
+    exec(compile(text, os.fspath(template), "exec"), ns)  # noqa: S102
+    ns["_FP16"].update(fp16)
+    return ns["_fp16_model"]  # type: ignore[no-any-return]
 
 
 def _vsmlrt(core: Any, vs: Any, args: argparse.Namespace) -> Any:
@@ -378,14 +406,19 @@ def engines(core: Any, vs: Any, args: argparse.Namespace) -> dict[str, Callable[
 
         return run
 
-    def trt(stem: str) -> Callable[[Any], Any]:
+    def trt(stem: str, precise: bool = False) -> Callable[[Any], Any]:
         def run(clip: Any) -> Any:
             vsmlrt = _vsmlrt(core, vs, args)
+            folder = args.trt_engines
+            if precise:  # the app's conversion, final warp in fp32 (spike M0(x))
+                vsmlrt.convert_model = _template_fp16(warp=True)
+                folder = args.trt_engines / "precise-warp"  # same file names otherwise
+                folder.mkdir(parents=True, exist_ok=True)
             rgb = core.resize.Spline36(
                 clip, format=vs.RGBS, matrix_in_s="709", range_in_s="limited"
             )
             backend = vsmlrt.Backend.TRT(fp16=True, num_streams=1,
-                                         engine_folder=os.fspath(args.trt_engines))  # fmt: skip
+                                         engine_folder=os.fspath(folder))  # fmt: skip
             member = "v" + stem.replace(".", "_")
             out = vsmlrt.RIFE(rgb, multi=2, model=vsmlrt.RIFEModel[member], backend=backend,
                               _implementation=2)  # fmt: skip
@@ -425,6 +458,7 @@ def engines(core: Any, vs: Any, args: argparse.Namespace) -> dict[str, Callable[
     for onnx in sorted((args.trt_models / "rife_v2").glob("rife_v*.onnx")):
         stem = onnx.stem.removeprefix("rife_v")
         table["trt-" + stem] = trt(stem)
+        table["trt-" + stem + "-pw"] = trt(stem, precise=True)
     for onnx in sorted((args.trt_models / "drba").glob("drba_*.onnx")):
         table[onnx.stem.replace("_", "-", 1)] = drba(onnx)
     if args.reference:
@@ -576,9 +610,7 @@ def main() -> int:
                     args.save_set / f"clip{i + 1}@{t}.npz", y=planes[0], u=planes[1], v=planes[2]
                 )
     if args.set is not None:
-        for path in sorted(
-            args.set.glob("*.npz"), key=lambda q: (int(q.name[4:].split("@")[0]), q.name)
-        ):
+        for path in sorted(args.set.glob("*.npz"), key=set_key):
             d = np.load(path)
             frames = [(d["y"][k], d["u"][k], d["v"][k]) for k in range(d["y"].shape[0])]
             src = as_clip(core, vs, np, frames[0::2])

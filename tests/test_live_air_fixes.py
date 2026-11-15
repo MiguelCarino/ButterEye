@@ -388,7 +388,7 @@ async def test_a_clean_run_raises_a_lowered_estimate(
     bench_history.append(_air())
     ctx, s = await _air_running(tmp_path)
     assert s.backend is BackendId.MVGPU
-    key = s.limit_key(BackendId.MVGPU, None, (1920, 1080), 1.0, s.gpu_device(ctx.cfg))
+    key = s.limit_key(BackendId.MVGPU, None, (1920, 1080), s.gpu_device(ctx.cfg))
     limits = s.live_limits()
     livelimits.record(ctx.paths.state_dir / livelimits.FILE, limits, key, 0.81)
     s.detector.flowing = True
