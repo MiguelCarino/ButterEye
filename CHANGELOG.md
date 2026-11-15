@@ -16,6 +16,12 @@ start of a video no longer makes ButterEye shrink the picture or change engine.
 New and experimental: the last frames made on the graphics card as each picture
 goes to the screen, and a public picture-quality benchmark.
 
+### Changed
+
+- **The Mac app needs macOS 27.2 or newer** (it said 27 before). It is built on
+  macOS 27.2, and macOS will not open an app, or load a plugin, built for a newer
+  version than the one it runs.
+
 ### Fixed
 
 - **RIFE on TensorRT draws fine detail where it belongs.** The engines worked

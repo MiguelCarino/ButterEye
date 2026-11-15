@@ -181,7 +181,7 @@
       <p id="macStep2"><strong>2. Allow it once.</strong> ButterEye isn't notarised by Apple, so macOS refuses to open it until you clear the download mark. In Terminal:</p>
       <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$</span> <span class="cmd" id="maccmd">xattr -dr com.apple.quarantine /Applications/ButterEye.app</span></code></div><button type="button" class="copy-btn term-copy" id="maccopy" aria-label="Copy the Terminal command">Copy</button></div>
       <p><strong>3. Start ButterEye</strong> from Applications and drop a video on it. If anything is still marked, ButterEye's System page says so and shows the same command.</p>
-      <p class="small">macOS 27 or newer, Apple silicon (M1 or newer). This first macOS build is experimental: it has been measured on one Mac, not yet on others. <a id="macsums" href="https://github.com/MiguelCarino/ButterEye/releases/latest">Checksums and source code</a>.</p>
+      <p class="small">macOS 27.2 or newer, Apple silicon (M1 or newer). This first macOS build is experimental: it has been measured on one Mac, not yet on others. <a id="macsums" href="https://github.com/MiguelCarino/ButterEye/releases/latest">Checksums and source code</a>.</p>
     </div>
   </dialog>
 
@@ -197,7 +197,7 @@
       <p>It is for people who watch their own video files in mpv on a desktop or laptop computer.</p>
       <p>It is not a video player: the video plays in mpv, which ButterEye starts and controls, and it never edits your <code>mpv.conf</code>. It does not work with browsers or streaming services.</p>
       <p>It does not upload anything. It has no telemetry and no update checks; its logs and speed-test results stay on your computer.</p>
-      <p>Fedora 44 and 45 are the supported systems. The AppImage for other Linux, the Windows installer (Windows 10 version 1903 or newer, 64-bit) and the Mac app (Apple silicon, macOS 27 or newer) are experimental.</p>
+      <p>Fedora 44 and 45 are the supported systems. The AppImage for other Linux, the Windows installer (Windows 10 version 1903 or newer, 64-bit) and the Mac app (Apple silicon, macOS 27.2 or newer) are experimental.</p>
       <p>Smoothing on the graphics card needs a GPU with Vulkan; without one, ButterEye smooths on the CPU with MVTools. It is free software under the AGPL-3.0-or-later.</p>
     </div>
   </dialog>

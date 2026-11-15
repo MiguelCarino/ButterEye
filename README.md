@@ -78,7 +78,7 @@ to end, and every window opens and draws through Qt's real Mac platform
 photographed, though, never yet driven by a person on a Mac.
 **From 0.0.3 there is an experimental download: `ButterEye-<version>-macos-arm64.dmg`**,
 a self-contained `ButterEye.app` (its own Python, Qt, VapourSynth, mpv, FFmpeg, MVTools,
-RIFE, mvgpu and MoltenVK — no Homebrew needed) for Apple Silicon and macOS 27 or newer,
+RIFE, mvgpu and MoltenVK — no Homebrew needed) for Apple Silicon and macOS 27.2 or newer,
 measured on that one Mac (see [Installing the macOS app](#installing-the-macos-app)).
 The other route — Homebrew's `mpv`, `vapoursynth`, `vapoursynth-mvtools`, `ffms2`,
 `ffmpeg`, `molten-vk`, `vulkan-loader` plus a build from `packaging/macos/` — still
@@ -114,7 +114,7 @@ are the supported way and bring the GPU plugins.
 
 ### Installing the macOS app
 
-Experimental, Apple Silicon only, macOS 27 or newer. The app is **not signed by an
+Experimental, Apple Silicon only, macOS 27.2 or newer. The app is **not signed by an
 Apple Developer ID and not notarised** (it carries only an ad-hoc signature), so macOS
 blocks it the first time; this is the one step to get past that:
 
