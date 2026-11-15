@@ -7,11 +7,11 @@
 # buttereye-vs-rife-ncnn, buttereye-rife-ncnn-models).
 
 %global pypi_name buttereye
-%global pypi_version 0.0.7
+%global pypi_version 0.0.8
 %global app_id io.github.buttereye.ButterEye
 
 Name:           buttereye
-Version:        0.0.7
+Version:        0.0.8
 Release:        1%{?dist}
 Summary:        Smoother motion for the videos you play in mpv
 # ButterEye: AGPL-3.0-or-later (generated scripts and configs carry the §7
@@ -46,7 +46,7 @@ Requires:       redhat-display-fonts
 Requires:       buttereye-vs-mvtools
 Recommends:     buttereye-vs-rife-ncnn >= 9.33-3
 # the live engine where RIFE can't keep up (4K at high rates)
-Recommends:     buttereye-vs-mvgpu >= 0.0.3
+Recommends:     buttereye-vs-mvgpu >= 0.0.4
 Recommends:     buttereye-rife-ncnn-models
 Recommends:     mkvtoolnix
 Recommends:     ffms2
@@ -111,6 +111,10 @@ EOF
 %{_datadir}/icons/hicolor/scalable/apps/%{app_id}.svg
 
 %changelog
+* Sat Nov 14 2026 The ButterEye contributors - 0.0.8-1
+- 0.0.8 (see CHANGELOG.md): sharper RIFE on TensorRT, 2D animation recognised
+  with a Video type choice, smoothing at the screen's size, Fedora 45 fixed,
+  last frames made on the graphics card (experimental), public benchmark
 * Thu Oct 29 2026 The ButterEye contributors - 0.0.7-1
 - 0.0.7 (see CHANGELOG.md): start videos smooth, colour depth kept, fewer
   false scene cuts, smooth copies of files with non-ASCII names

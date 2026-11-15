@@ -32,6 +32,12 @@
     <binary>buttereye-gui</binary>
   </provides>
   <releases>
+    <release version="0.0.8" date="2026-11-14" type="stable">
+      <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.8</url>
+      <description>
+        <p>RIFE on TensorRT draws fine detail sharper. 2D animation is recognised by itself, with a Video type choice to override it. A video larger than your screen is smoothed at the screen's size, and film plays at a fast screen's full rate with RIFE's picture. Smoothing works again on Fedora 45, and text and thin lines no longer vanish with GPU motion vectors. New and experimental: the last frames made on the graphics card as each picture goes to the screen, and a public picture-quality benchmark.</p>
+      </description>
+    </release>
     <release version="0.0.7" date="2026-10-29" type="stable">
       <url type="details">https://github.com/MiguelCarino/ButterEye/releases/tag/v0.0.7</url>
       <description>

@@ -5,7 +5,7 @@
 # (mvgpu/ plus the repository's COPYING).
 
 Name:           buttereye-vs-mvgpu
-Version:        0.0.3
+Version:        0.0.4
 Release:        1%{?dist}
 Summary:        GPU block motion-vector frame interpolation for VapourSynth (Vulkan)
 License:        AGPL-3.0-or-later
@@ -89,6 +89,12 @@ test ! -e %{buildroot}%{_sysconfdir}/vulkan
 %{_datadir}/vulkan/explicit_layer.d/VkLayer_buttereye_frames.json
 
 %changelog
+* Sat Nov 14 2026 The ButterEye contributors - 0.0.4-1
+- Ships the explicit Vulkan layer VK_LAYER_BUTTEREYE_frames, which makes the
+  last in-between frames on the graphics card as each picture goes to the
+  screen; it loads only into an mpv that ButterEye starts with the option on.
+- The motion-vector engine is split out of the VapourSynth plugin so the
+  plugin and the layer share it; the plugin's output is bit-identical.
 * Thu Oct 29 2026 The ButterEye contributors - 0.0.3-1
 - Where the vectors fail over an area the in-between frame fades to a blend;
   a block vector replaces the smooth one only when clearly better, so film

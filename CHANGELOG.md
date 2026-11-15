@@ -5,11 +5,16 @@ All notable changes to ButterEye are listed here, newest first. Versions follow
 [semantic versioning](https://semver.org); while the version starts with `0.`, any
 release may change behaviour or settings.
 
-## Unreleased
+## 0.0.8 — 2026-11-14
 
-Smoothing works again on Fedora 45, text and thin lines no longer vanish with
-GPU motion vectors, and a burst of dropped frames at the start of a video no
-longer makes ButterEye shrink the picture or change engine.
+RIFE on TensorRT draws fine detail sharper, 2D animation is recognised by itself
+(with a Video type choice to override it), a video larger than your screen is
+smoothed at the screen's size, and film plays at a fast screen's full rate with
+RIFE's picture. Smoothing works again on Fedora 45, text and thin lines no
+longer vanish with GPU motion vectors, and a burst of dropped frames at the
+start of a video no longer makes ButterEye shrink the picture or change engine.
+New and experimental: the last frames made on the graphics card as each picture
+goes to the screen, and a public picture-quality benchmark.
 
 ### Fixed
 
